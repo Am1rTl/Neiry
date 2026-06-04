@@ -784,7 +784,7 @@ function connect() {
   ws.onerror = () => ws.close();
 }
 
-let lastEeg = 0, lastPpg = 0, lastMems = 0;
+
 
 function renderSensorStatus(s) {
   // s: {eeg, ppg, mems, skin, cardio, emotions, phy, prod, nfb}
@@ -942,14 +942,14 @@ function handleTick(d) {
     eegChart.data.labels = d.eeg.map((_, i) => i);
     eegChart.data.datasets[0].data = d.eeg.map(s => s[0] ?? null);
     eegChart.data.datasets[1].data = d.eeg.map(s => s[1] ?? null);
-    if (d.eeg.length !== lastEeg) { eegChart.update('none'); lastEeg = d.eeg.length; }
+    eegChart.update('none');
   }
 
   // === PPG plot ===
   if (d.ppg && d.ppg.length) {
     ppgChart.data.labels = d.ppg.map((_, i) => i);
     ppgChart.data.datasets[0].data = d.ppg;
-    if (d.ppg.length !== lastPpg) { ppgChart.update('none'); lastPpg = d.ppg.length; }
+    ppgChart.update('none');
   }
 
   // === MEMS plot ===
@@ -963,7 +963,7 @@ function handleTick(d) {
     memsChart.data.datasets[5].data = d.mems_gyro.map(v => v[1]);
     memsChart.data.datasets[6].data = d.mems_gyro.map(v => v[2]);
     memsChart.data.datasets[7].data = d.mems_gyro.map(v => Math.hypot(v[0], v[1], v[2]));
-    if (d.mems_acc.length !== lastMems) { memsChart.update('none'); lastMems = d.mems_acc.length; }
+    memsChart.update('none');
   }
 
   // === Cardio ===

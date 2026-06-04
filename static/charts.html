@@ -257,9 +257,9 @@ class Stream {
   sliceFlat(tMin) {
     if (this.length === 0) return null;
     // collect points in time order
-    const tArr   = new Array(this.length);
+    const tArr   = new Float64Array(this.length);
     const fArrs  = {};
-    for (const f of this.fields) fArrs[f] = new Array(this.length);
+    for (const f of this.fields) fArrs[f] = new Float64Array(this.length);
     for (let i = 0; i < this.length; i++) {
       const idx = (this.start + i) % this.maxPts;
       tArr[i] = this.arrays.t[idx];
