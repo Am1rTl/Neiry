@@ -338,19 +338,24 @@ def on_ppg(cardio, ppg) -> None:
 
 
 def on_emotions_states(emotion, states) -> None:
+    # IMPORTANT: the official Python wrapper defines this struct with
+    # `focus/chill/stress/anger` field names, but the actual .so writes
+    # `attention/relaxation/cognitiveLoad/cognitiveControl` into those
+    # memory positions (same binary layout, different semantics).
+    # We re-label the keys here so the UI shows the *correct* meaning.
     try:
         d = {
-            "focus": float(states.focus),
-            "chill": float(states.chill),
-            "stress": float(states.stress),
-            "anger": float(states.anger),
-            "selfControl": float(states.selfControl),
+            "attention":      float(states.focus),       # struct field #1
+            "relaxation":     float(states.chill),       # struct field #2
+            "cognitiveLoad":  float(states.stress),      # struct field #3
+            "cognitiveControl": float(states.anger),     # struct field #4
+            "selfControl":    float(states.selfControl),
             "t": S.now(),
         }
         with STATE_LOCK:
             S.latest_emotions = d
             S.emotions_hist.append(d)
-        _cb_log("emot", f"focus={d['focus']:.2f} chill={d['chill']:.2f} stress={d['stress']:.2f}")
+        _cb_log("emot", f"attn={d['attention']:.2f} relax={d['relaxation']:.2f} cogL={d['cognitiveLoad']:.2f} cogC={d['cognitiveControl']:.2f}")
     except BaseException as exc:
         print(f"[cb] on_emotions_states EXC: {exc!r}", flush=True)
 

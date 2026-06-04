@@ -335,10 +335,10 @@ main {
   <section class="panel col-4 panel-magenta">
     <h3><span class="accent"></span>Emotions<span class="live">LIVE</span></h3>
     <div id="emotions-bars">
-      <div class="bar-row"><span class="bar-label">Focus</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Chill</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Stress</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Anger</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Attention</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Relaxation</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Cognitive load</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Cognitive control</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
       <div class="bar-row"><span class="bar-label">Self-control</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
     </div>
   </section>
@@ -595,14 +595,14 @@ function handleTick(d) {
   // === Emotions ===
   if (d.emotions) {
     const e = d.emotions;
-    setBar('em-focus', e.focus);
-    setVal('em-focus-v', e.focus, 1);
-    setBar('em-chill', e.chill);
-    setVal('em-chill-v', e.chill, 1);
-    setBar('em-stress', e.stress);
-    setVal('em-stress-v', e.stress, 1);
-    setBar('em-anger', e.anger);
-    setVal('em-anger-v', e.anger, 1);
+    setBar('em-focus', e.attention);
+    setVal('em-focus-v', e.attention, 1);
+    setBar('em-chill', e.relaxation);
+    setVal('em-chill-v', e.relaxation, 1);
+    setBar('em-stress', e.cognitiveLoad);
+    setVal('em-stress-v', e.cognitiveLoad, 1);
+    setBar('em-anger', e.cognitiveControl);
+    setVal('em-anger-v', e.cognitiveControl, 1);
     setBar('em-sc', e.selfControl);
     setVal('em-sc-v', e.selfControl, 1);
   }
