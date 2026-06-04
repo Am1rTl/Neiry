@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>⚡ NEIRY · Capsule Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js?v=1780587612"></script>
+<style>
+:root {
+  --bg: #04060d;
+  --bg2: #080c1a;
+  --panel: #0a1024;
+  --panel-border: #1a2550;
+  --grid: #1b2750;
+  --neon-cyan: #00f0ff;
+  --neon-magenta: #ff2bd6;
+  --neon-lime: #aaff00;
+  --neon-pink: #ff3e7f;
+  --neon-yellow: #ffea00;
+  --neon-purple: #b66bff;
+  --neon-orange: #ff8a00;
+  --text: #d8e1ff;
+  --text-dim: #6f7bb0;
+  --good: #00ff88;
+  --bad: #ff3355;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse at 20% 0%, rgba(0, 240, 255, 0.08), transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(255, 43, 214, 0.08), transparent 50%),
+    linear-gradient(180deg, #04060d 0%, #06091a 100%);
+  background-attachment: fixed;
+}
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg, transparent 0, transparent 2px,
+    rgba(0, 240, 255, 0.015) 2px, rgba(0, 240, 255, 0.015) 4px);
+  z-index: 1;
+}
+header {
+  position: relative; z-index: 2;
+  padding: 20px 28px;
+  border-bottom: 1px solid var(--panel-border);
+  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
+  background: linear-gradient(180deg, rgba(0,240,255,0.04), transparent);
+  backdrop-filter: blur(8px);
+}
+.logo {
+  font-size: 22px; font-weight: 700; letter-spacing: 4px;
+  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 30px rgba(0,240,255,0.4);
+}
+.logo::before {
+  content: "◈";
+  margin-right: 10px;
+  -webkit-text-fill-color: var(--neon-cyan);
+  filter: drop-shadow(0 0 8px var(--neon-cyan));
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px;
+  background: rgba(10, 16, 36, 0.6);
+}
+.chip .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--text-dim);
+  box-shadow: 0 0 6px currentColor;
+}
+.chip.idle .dot, .chip.searching .dot { background: var(--neon-yellow); animation: pulse 1.5s infinite; }
+.chip.connected .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+.chip.error .dot { background: var(--bad); }
+.chip.connecting .dot { background: var(--neon-orange); animation: pulse 1s infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+#battery {
+  font-size: 14px;
+}
+#battery .lvl {
+  display: inline-block; min-width: 28px; text-align: right;
+  color: var(--neon-cyan); text-shadow: 0 0 8px var(--neon-cyan);
+}
+main {
+  position: relative; z-index: 2;
+  padding: 20px 28px 60px;
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 18px;
+}
+.panel {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--bg2) 100%);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  position: relative;
+  overflow: hidden;
+}
+.panel::before {
+  content: "";
+  position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+  opacity: 0.5;
+}
+.panel h3 {
+  margin: 0 0 10px;
+  font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+  color: var(--text-dim);
+  display: flex; align-items: center; gap: 8px;
+}
+.panel h3 .accent {
+  width: 4px; height: 14px;
+  background: var(--neon-cyan);
+  box-shadow: 0 0 8px var(--neon-cyan);
+}
+.panel.magenta h3 .accent { background: var(--neon-magenta); box-shadow: 0 0 8px var(--neon-magenta); }
+.panel.lime h3 .accent { background: var(--neon-lime); box-shadow: 0 0 8px var(--neon-lime); }
+.panel.pink h3 .accent { background: var(--neon-pink); box-shadow: 0 0 8px var(--neon-pink); }
+.panel.purple h3 .accent { background: var(--neon-purple); box-shadow: 0 0 8px var(--neon-purple); }
+.panel.yellow h3 .accent { background: var(--neon-yellow); box-shadow: 0 0 8px var(--neon-yellow); }
+.panel h3 .live {
+  margin-left: auto;
+  font-size: 9px;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 6px var(--neon-cyan);
+  animation: pulse 1.2s infinite;
+}
+.panel h3 .live::before {
+  content: "●";
+  margin-right: 4px;
+}
+.col-3 { grid-column: span 3; }
+.col-4 { grid-column: span 4; }
+.col-5 { grid-column: span 5; }
+.col-6 { grid-column: span 6; }
+.col-7 { grid-column: span 7; }
+.col-8 { grid-column: span 8; }
+.col-12 { grid-column: span 12; }
+@media (max-width: 1100px) {
+  .col-3, .col-4, .col-5, .col-6, .col-7, .col-8 { grid-column: span 12; }
+}
+.chart-wrap {
+  position: relative;
+  width: 100%;
+  height: 180px;
+}
+.chart-wrap.tall { height: 220px; }
+.chart-wrap.short { height: 130px; }
+.value-big {
+  font-size: 56px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, var(--neon-cyan), #0080a0);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 24px rgba(0,240,255,0.3);
+  line-height: 1;
+}
+.value-big.magenta {
+  background: linear-gradient(180deg, var(--neon-magenta), #802070);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.value-big.lime {
+  background: linear-gradient(180deg, var(--neon-lime), #508000);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.value-big.pink {
+  background: linear-gradient(180deg, var(--neon-pink), #802040);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.unit {
+  font-size: 14px; color: var(--text-dim);
+  margin-left: 6px;
+}
+.bar-row {
+  display: flex; align-items: center; gap: 10px;
+  margin: 6px 0;
+}
+.bar-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-dim);
+  width: 110px;
+  flex-shrink: 0;
+}
+.bar-track {
+  flex: 1; height: 14px;
+  background: rgba(20, 30, 60, 0.6);
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+.bar-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
+  box-shadow: 0 0 12px var(--neon-cyan);
+  transition: width 0.3s ease-out;
+}
+.bar-fill.lime { background: linear-gradient(90deg, var(--neon-lime), var(--neon-cyan)); box-shadow: 0 0 12px var(--neon-lime); }
+.bar-fill.pink { background: linear-gradient(90deg, var(--neon-pink), var(--neon-magenta)); box-shadow: 0 0 12px var(--neon-pink); }
+.bar-fill.yellow { background: linear-gradient(90deg, var(--neon-yellow), var(--neon-orange)); box-shadow: 0 0 12px var(--neon-yellow); }
+.bar-fill.purple { background: linear-gradient(90deg, var(--neon-purple), var(--neon-cyan)); box-shadow: 0 0 12px var(--neon-purple); }
+.bar-val {
+  font-size: 12px;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 6px var(--neon-cyan);
+  font-variant-numeric: tabular-nums;
+  width: 50px;
+  text-align: right;
+}
+.res-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.res-cell {
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(20, 30, 60, 0.3);
+}
+.res-cell .name {
+  font-size: 10px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 1px;
+}
+.res-cell .val {
+  font-size: 18px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+.res-cell.good { border-color: var(--good); box-shadow: 0 0 10px rgba(0,255,136,0.2); }
+.res-cell.good .val { color: var(--good); text-shadow: 0 0 6px var(--good); }
+.res-cell.bad { border-color: var(--bad); box-shadow: 0 0 10px rgba(255,51,85,0.2); }
+.res-cell.bad .val { color: var(--bad); text-shadow: 0 0 6px var(--bad); }
+.status-text {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-top: 4px;
+}
+.heart-pulse {
+  display: inline-block;
+  width: 14px; height: 14px;
+  background: var(--neon-pink);
+  border-radius: 50%;
+  box-shadow: 0 0 16px var(--neon-pink);
+  margin-right: 8px;
+  vertical-align: middle;
+  animation: heartbeat 1s infinite;
+}
+@keyframes heartbeat {
+  0%, 100% { transform: scale(1); }
+  20% { transform: scale(1.4); box-shadow: 0 0 24px var(--neon-pink); }
+  40% { transform: scale(1); }
+}
+.footer-info {
+  font-size: 10px; color: var(--text-dim);
+  margin-top: 8px; line-height: 1.5;
+  font-family: monospace;
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">NEIRY · CAPSULE</div>
+  <span class="chip idle" id="chip-status"><span class="dot"></span><span id="status-text">idle</span></span>
+  <span class="chip" id="chip-device"><span class="dot"></span><span id="device-name">—</span></span>
+  <span class="chip" id="battery">🔋 <span class="lvl">—</span>%</span>
+  <span class="chip" id="chip-mode"><span class="dot"></span>mode <span id="mode-val">—</span></span>
+  <span class="chip" id="chip-cal">⚙ <span id="cal-val">not calibrated</span></span>
+</header>
+
+<main>
+  <!-- EEG -->
+  <section class="panel col-7">
+    <h3><span class="accent"></span>EEG Signal<span class="live">LIVE</span></h3>
+    <div class="chart-wrap tall"><canvas id="eeg-chart"></canvas></div>
+    <div class="footer-info">ch: <span id="eeg-channels">—</span> · sr: <span id="eeg-sr">—</span> Hz</div>
+  </section>
+
+  <!-- Cardio -->
+  <section class="panel col-5">
+    <h3><span class="accent"></span>Cardio<span class="live">LIVE</span></h3>
+    <div style="display:flex; align-items:baseline; gap:14px;">
+      <span class="heart-pulse"></span>
+      <div>
+        <div><span class="value-big pink" id="hr-val">—</span><span class="unit">bpm</span></div>
+        <div class="status-text" id="hr-quality">no contact</div>
+      </div>
+    </div>
+    <div style="margin-top:14px;">
+      <div class="bar-row">
+        <span class="bar-label">Stress Idx</span>
+        <div class="bar-track"><div class="bar-fill pink" id="stress-bar" style="width:0%"></div></div>
+        <span class="bar-val" id="stress-val">—</span>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Kaplan Idx</span>
+        <div class="bar-track"><div class="bar-fill yellow" id="kaplan-bar" style="width:0%"></div></div>
+        <span class="bar-val" id="kaplan-val">—</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- PPG -->
+  <section class="panel col-6">
+    <h3><span class="accent"></span>PPG (Photoplethysmogram)<span class="live">LIVE</span></h3>
+    <div class="chart-wrap"><canvas id="ppg-chart"></canvas></div>
+  </section>
+
+  <!-- MEMS -->
+  <section class="panel col-6">
+    <h3><span class="accent"></span>MEMS · Accelerometer / Gyroscope<span class="live">LIVE</span></h3>
+    <div class="chart-wrap"><canvas id="mems-chart"></canvas></div>
+  </section>
+
+  <!-- Emotions -->
+  <section class="panel col-4 panel-magenta">
+    <h3><span class="accent"></span>Emotions<span class="live">LIVE</span></h3>
+    <div id="emotions-bars">
+      <div class="bar-row"><span class="bar-label">Focus</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Chill</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Stress</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Anger</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Self-control</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
+    </div>
+  </section>
+
+  <!-- NFB -->
+  <section class="panel col-4">
+    <h3><span class="accent"></span>NFB (α/β/θ)<span class="live">LIVE</span></h3>
+    <div class="chart-wrap short"><canvas id="nfb-chart"></canvas></div>
+  </section>
+
+  <!-- Resistances -->
+  <section class="panel col-4 panel-lime">
+    <h3><span class="accent"></span>Electrode Resistance<span class="live">LIVE</span></h3>
+    <div class="res-grid" id="res-grid">
+      <div class="res-cell bad"><div class="name">—</div><div class="val">—</div></div>
+    </div>
+    <div class="footer-info">good: &lt; 500 kΩ · bad: &gt; 1000 kΩ (∞)</div>
+  </section>
+
+  <!-- Productivity -->
+  <section class="panel col-6 panel-pink">
+    <h3><span class="accent"></span>Productivity<span class="live">LIVE</span></h3>
+    <div id="prod-rows">
+      <div class="bar-row"><span class="bar-label">Productivity</span><div class="bar-track"><div class="bar-fill" id="pr-prod" style="width:0%"></div></div><span class="bar-val" id="pr-prod-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Concentration</span><div class="bar-track"><div class="bar-fill lime" id="pr-conc" style="width:0%"></div></div><span class="bar-val" id="pr-conc-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Relaxation</span><div class="bar-track"><div class="bar-fill purple" id="pr-rel" style="width:0%"></div></div><span class="bar-val" id="pr-rel-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Fatigue</span><div class="bar-track"><div class="bar-fill yellow" id="pr-fat" style="width:0%"></div></div><span class="bar-val" id="pr-fat-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Gravity (Load)</span><div class="bar-track"><div class="bar-fill pink" id="pr-grv" style="width:0%"></div></div><span class="bar-val" id="pr-grv-v">—</span></div>
+    </div>
+  </section>
+
+  <!-- Physiological States -->
+  <section class="panel col-6 panel-purple">
+    <h3><span class="accent"></span>Physiological States<span class="live">LIVE</span></h3>
+    <div id="phy-rows">
+      <div class="bar-row"><span class="bar-label">Relaxation</span><div class="bar-track"><div class="bar-fill purple" id="ph-rel" style="width:0%"></div></div><span class="bar-val" id="ph-rel-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Concentration</span><div class="bar-track"><div class="bar-fill" id="ph-conc" style="width:0%"></div></div><span class="bar-val" id="ph-conc-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Fatigue</span><div class="bar-track"><div class="bar-fill yellow" id="ph-fat" style="width:0%"></div></div><span class="bar-val" id="ph-fat-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Stress</span><div class="bar-track"><div class="bar-fill pink" id="ph-str" style="width:0%"></div></div><span class="bar-val" id="ph-str-v">—</span></div>
+      <div class="bar-row"><span class="bar-label">Involvement</span><div class="bar-track"><div class="bar-fill lime" id="ph-inv" style="width:0%"></div></div><span class="bar-val" id="ph-inv-v">—</span></div>
+    </div>
+  </section>
+
+  <!-- Calibration info -->
+  <section class="panel col-12 panel-yellow">
+    <h3><span class="accent"></span>Calibration / Device</h3>
+    <div class="footer-info" id="cal-info">waiting for headband…</div>
+  </section>
+</main>
+
+<script>
+// =============== Chart.js default styling ===============
+Chart.defaults.color = '#6f7bb0';
+Chart.defaults.borderColor = 'rgba(26, 37, 80, 0.6)';
+Chart.defaults.font.family = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace";
+Chart.defaults.font.size = 10;
+const gridColor = 'rgba(26, 37, 80, 0.55)';
+const tickColor = '#3a4a7a';
+
+// Bulletproof gradient helper: never throws. Returns a solid translucent
+// color when chartArea isn't ready (Chart.js v4 calls backgroundColor
+// callbacks at option-resolve time, before layout, and again on every
+// resize — both moments chartArea is undefined).
+function neonGradient(_ctx, area, hex) {
+  if (!area || typeof area.top !== 'number' || typeof area.bottom !== 'number') {
+    return hex + '40';   // 25% solid
+  }
+  try {
+    const g = _ctx.createLinearGradient(0, area.top, 0, area.bottom);
+    g.addColorStop(0, hex + 'cc');
+    g.addColorStop(1, hex + '00');
+    return g;
+  } catch (e) {
+    return hex + '40';
+  }
+}
+
+// =============== EEG chart ===============
+const eegCtx = document.getElementById('eeg-chart').getContext('2d');
+const eegChart = new Chart(eegCtx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [
+      { label: 'Ch1', data: [], borderColor: '#00f0ff', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#00f0ff'), borderWidth: 1.5, pointRadius: 0, tension: 0, fill: false },
+      { label: 'Ch2', data: [], borderColor: '#ff2bd6', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#ff2bd6'), borderWidth: 1.5, pointRadius: 0, tension: 0, fill: false },
+    ],
+  },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 12 } } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: gridColor, drawBorder: false }, ticks: { color: tickColor, maxTicksLimit: 4 } },
+    },
+  },
+});
+
+// =============== PPG chart ===============
+const ppgCtx = document.getElementById('ppg-chart').getContext('2d');
+const ppgChart = new Chart(ppgCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [{ label: 'PPG', data: [], borderColor: '#aaff00', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#aaff00'), borderWidth: 1.6, pointRadius: 0, tension: 0, fill: true }] },
+  options: { responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false } },
+    scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
+});
+
+// =============== MEMS chart ===============
+const memsCtx = document.getElementById('mems-chart').getContext('2d');
+const memsChart = new Chart(memsCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { label: 'accX', data: [], borderColor: '#00f0ff', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
+    { label: 'accY', data: [], borderColor: '#ff2bd6', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
+    { label: 'accZ', data: [], borderColor: '#aaff00', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
+    { label: 'gyrX', data: [], borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: 'gyrY', data: [], borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: 'gyrZ', data: [], borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+  ] },
+  options: { responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } } },
+    scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
+});
+
+// =============== NFB chart ===============
+const nfbCtx = document.getElementById('nfb-chart').getContext('2d');
+const nfbChart = new Chart(nfbCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { label: 'α', data: [], borderColor: '#00f0ff', borderWidth: 1.4, pointRadius: 0, tension: 0.2, fill: false },
+    { label: 'β', data: [], borderColor: '#ff2bd6', borderWidth: 1.4, pointRadius: 0, tension: 0.2, fill: false },
+    { label: 'θ', data: [], borderColor: '#ffea00', borderWidth: 1.4, pointRadius: 0, tension: 0.2, fill: false },
+  ] },
+  options: { responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10 } } },
+    scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 3 } } } },
+});
+
+// =============== Update helpers ===============
+function setBar(id, value) {
+  const v = Math.max(0, Math.min(100, value || 0));
+  document.getElementById(id).style.width = v + '%';
+}
+function setVal(id, value, digits = 1) {
+  document.getElementById(id).textContent = (value === null || value === undefined) ? '—' : Number(value).toFixed(digits);
+}
+
+function setStatus(s) {
+  const chip = document.getElementById('chip-status');
+  chip.className = 'chip ' + s;
+  document.getElementById('status-text').textContent = s;
+}
+
+// =============== WebSocket ===============
+let ws;
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => setStatus('connecting');
+  ws.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    handleTick(d);
+  };
+  ws.onclose = () => {
+    setStatus('error');
+    setTimeout(connect, 1500);
+  };
+  ws.onerror = () => ws.close();
+}
+
+let lastEeg = 0, lastPpg = 0, lastMems = 0;
+
+function handleTick(d) {
+  // status
+  setStatus(d.status || 'idle');
+  document.getElementById('device-name').textContent = d.device || '—';
+  document.getElementById('mode-val').textContent = d.mode === null ? '—' : d.mode;
+  document.getElementById('cal-val').textContent = d.calibrated ? 'calibrated' : 'not calibrated';
+  document.querySelector('#chip-cal').style.borderColor = d.calibrated ? 'var(--good)' : 'var(--panel-border)';
+  document.querySelector('#chip-cal').style.color = d.calibrated ? 'var(--good)' : '';
+
+  // battery
+  const lvl = document.querySelector('#battery .lvl');
+  lvl.textContent = (d.battery === null || d.battery === undefined) ? '—' : d.battery;
+  const batChip = document.getElementById('battery');
+  if (d.battery !== null && d.battery !== undefined) {
+    batChip.style.borderColor = d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--good)';
+    lvl.style.color = d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--neon-cyan)';
+    lvl.style.textShadow = `0 0 8px ${d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--neon-cyan)'}`;
+  }
+
+  // calibration info
+  if (d.calibration) {
+    const c = d.calibration;
+    document.getElementById('cal-info').innerHTML =
+      `individual α-frequency: <b style="color:var(--neon-cyan)">${c.individualFrequency?.toFixed(2)} Hz</b> · ` +
+      `bandwidth: <b style="color:var(--neon-cyan)">${c.individualBandwidth?.toFixed(2)}</b> · ` +
+      `peak: <b style="color:var(--neon-cyan)">${c.individualPeakFrequency?.toFixed(2)} Hz</b> · ` +
+      `range: <b style="color:var(--neon-cyan)">${c.lowerFrequency?.toFixed(1)}–${c.upperFrequency?.toFixed(1)} Hz</b> · ` +
+      `device: <b>${d.device || '—'}</b> · serial: <b>${d.serial || '—'}</b> · lib: <b>${d.eeg_sr || ''}Hz</b>`;
+  } else if (d.device) {
+    document.getElementById('cal-info').textContent = `${d.device} (${d.serial}) — waiting for closed-eye calibration (30 s)`;
+  } else {
+    document.getElementById('cal-info').textContent = d.message || 'scanning…';
+  }
+
+  // EEG channels
+  document.getElementById('eeg-channels').textContent = (d.eeg_channels || []).join(', ') || '—';
+
+  // === EEG plot ===
+  if (d.eeg && d.eeg.length) {
+    eegChart.data.labels = d.eeg.map((_, i) => i);
+    eegChart.data.datasets[0].data = d.eeg.map(s => s[0] ?? null);
+    eegChart.data.datasets[1].data = d.eeg.map(s => s[1] ?? null);
+    if (d.eeg.length !== lastEeg) { eegChart.update('none'); lastEeg = d.eeg.length; }
+  }
+
+  // === PPG plot ===
+  if (d.ppg && d.ppg.length) {
+    ppgChart.data.labels = d.ppg.map((_, i) => i);
+    ppgChart.data.datasets[0].data = d.ppg;
+    if (d.ppg.length !== lastPpg) { ppgChart.update('none'); lastPpg = d.ppg.length; }
+  }
+
+  // === MEMS plot ===
+  if (d.mems_acc && d.mems_acc.length) {
+    memsChart.data.labels = d.mems_acc.map((_, i) => i);
+    memsChart.data.datasets[0].data = d.mems_acc.map(v => v[0]);
+    memsChart.data.datasets[1].data = d.mems_acc.map(v => v[1]);
+    memsChart.data.datasets[2].data = d.mems_acc.map(v => v[2]);
+    memsChart.data.datasets[3].data = d.mems_gyro.map(v => v[0]);
+    memsChart.data.datasets[4].data = d.mems_gyro.map(v => v[1]);
+    memsChart.data.datasets[5].data = d.mems_gyro.map(v => v[2]);
+    if (d.mems_acc.length !== lastMems) { memsChart.update('none'); lastMems = d.mems_acc.length; }
+  }
+
+  // === Cardio ===
+  if (d.cardio) {
+    const c = d.cardio;
+    document.getElementById('hr-val').textContent = c.heartRate > 0 ? c.heartRate.toFixed(0) : '—';
+    const q = document.getElementById('hr-quality');
+    if (!c.skinContact) q.textContent = '⚠ no skin contact';
+    else if (c.motionArtifacts) q.textContent = '⚠ motion artifact';
+    else if (!c.metricsAvailable) q.textContent = 'acquiring signal…';
+    else q.textContent = `♡ good signal · HRV ${c.kaplanIndex.toFixed(0)}`;
+    q.style.color = !c.skinContact ? 'var(--bad)' : c.motionArtifacts ? 'var(--neon-yellow)' : 'var(--good)';
+    setBar('stress-bar', c.stressIndex);
+    setVal('stress-val', c.stressIndex, 1);
+    setBar('kaplan-bar', c.kaplanIndex);
+    setVal('kaplan-val', c.kaplanIndex, 1);
+  }
+
+  // === Emotions ===
+  if (d.emotions) {
+    const e = d.emotions;
+    setBar('em-focus', e.focus);
+    setVal('em-focus-v', e.focus, 1);
+    setBar('em-chill', e.chill);
+    setVal('em-chill-v', e.chill, 1);
+    setBar('em-stress', e.stress);
+    setVal('em-stress-v', e.stress, 1);
+    setBar('em-anger', e.anger);
+    setVal('em-anger-v', e.anger, 1);
+    setBar('em-sc', e.selfControl);
+    setVal('em-sc-v', e.selfControl, 1);
+  }
+
+  // === NFB ===
+  if (d.nfb && d.nfb.length) {
+    nfbChart.data.labels = d.nfb.map((_, i) => i);
+    nfbChart.data.datasets[0].data = d.nfb.map(v => v.alpha);
+    nfbChart.data.datasets[1].data = d.nfb.map(v => v.beta);
+    nfbChart.data.datasets[2].data = d.nfb.map(v => v.theta);
+    nfbChart.update('none');
+  }
+
+  // === Resistances ===
+  if (d.resistances && d.resistances.length) {
+    const grid = document.getElementById('res-grid');
+    grid.innerHTML = '';
+    d.resistances.forEach(r => {
+      const cell = document.createElement('div');
+      const cls = r.is_inf || r.value > 1000 ? 'bad' : r.value < 500 ? 'good' : '';
+      cell.className = 'res-cell ' + cls;
+      const v = r.is_inf ? '∞' : (r.value >= 1000 ? '>1MΩ' : r.value < 1 ? r.value.toFixed(2) : r.value.toFixed(0));
+      const unit = r.is_inf ? '' : r.value < 1 ? 'kΩ' : 'kΩ';
+      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${v}${unit && !r.is_inf ? ' '+unit : ''}</div>`;
+      grid.appendChild(cell);
+    });
+  }
+
+  // === Productivity ===
+  if (d.prod) {
+    const p = d.prod;
+    setBar('pr-prod', p.productivityScore);
+    setVal('pr-prod-v', p.productivityScore, 1);
+    setBar('pr-conc', p.concentrationScore);
+    setVal('pr-conc-v', p.concentrationScore, 1);
+    setBar('pr-rel', p.relaxationScore);
+    setVal('pr-rel-v', p.relaxationScore, 1);
+    setBar('pr-fat', p.fatigueScore);
+    setVal('pr-fat-v', p.fatigueScore, 1);
+    setBar('pr-grv', p.gravityScore);
+    setVal('pr-grv-v', p.gravityScore, 1);
+  }
+
+  // === Physiological States ===
+  if (d.phy) {
+    const p = d.phy;
+    setBar('ph-rel', p.relaxation);
+    setVal('ph-rel-v', p.relaxation, 1);
+    setBar('ph-conc', p.concentration);
+    setVal('ph-conc-v', p.concentration, 1);
+    setBar('ph-fat', p.fatigue);
+    setVal('ph-fat-v', p.fatigue, 1);
+    setBar('ph-str', p.stress);
+    setVal('ph-str-v', p.stress, 1);
+    setBar('ph-inv', p.involvement);
+    setVal('ph-inv-v', p.involvement, 1);
+  }
+}
+
+connect();
+</script>
+</body>
+</html>
