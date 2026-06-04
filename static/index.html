@@ -139,6 +139,41 @@ main {
   text-shadow: 0 0 6px var(--neon-cyan);
   animation: pulse 1.2s infinite;
 }
+.panel h3 .help {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px; height: 18px;
+  border: 1px solid var(--panel-border);
+  border-radius: 50%;
+  font-size: 11px;
+  color: var(--text-dim);
+  cursor: help;
+  user-select: none;
+  transition: all .15s;
+}
+.panel h3 .help:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
+.help-popup {
+  display: none;
+  position: fixed;
+  z-index: 50;
+  background: rgba(8,12,28,.96);
+  border: 1px solid var(--neon-cyan);
+  border-radius: 6px;
+  padding: 12px 14px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text);
+  box-shadow: 0 0 20px rgba(0,240,255,.35);
+  max-width: 360px;
+  pointer-events: none;
+}
+.help-popup.open { display: block; }
+.help-row { white-space: nowrap; }
+.help-row b { color: var(--neon-cyan); }
+.help-row u { text-decoration-color: var(--neon-cyan); }
+}
 .panel h3 .live::before {
   content: "●";
   margin-right: 4px;
@@ -262,6 +297,175 @@ main {
   border-radius: 50%;
   box-shadow: 0 0 16px var(--neon-pink);
   margin-right: 8px;
+}
+</style>
+
+<style>
+/* ============================================================================
+   SETUP OVERLAY — covers page while headband isn't ready / calibrating
+   ============================================================================ */
+#setup-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  display: none;
+  align-items: center; justify-content: center;
+  background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%);
+  backdrop-filter: blur(6px);
+}
+#setup-overlay.show { display: flex; }
+.setup-card {
+  text-align: center;
+  padding: 36px 44px;
+  border: 1px solid var(--neon-cyan);
+  border-radius: 14px;
+  background: rgba(10,16,36,0.85);
+  box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05);
+  max-width: 460px;
+}
+.setup-card h2 {
+  font-size: 22px;
+  letter-spacing: 4px;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 12px var(--neon-cyan);
+  margin: 0 0 12px;
+  text-transform: uppercase;
+}
+.setup-card p {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 8px 0 18px;
+}
+.setup-card .hint {
+  color: var(--neon-yellow);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-top: 14px;
+}
+.setup-btn {
+  display: inline-block;
+  margin: 10px 8px;
+  padding: 14px 28px;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--neon-cyan);
+  border: 1px solid var(--neon-cyan);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all .2s;
+  text-shadow: 0 0 6px var(--neon-cyan);
+}
+.setup-btn:hover { background: rgba(0,240,255,0.12); box-shadow: 0 0 18px var(--neon-cyan); }
+.setup-btn:active { transform: scale(0.97); }
+.setup-btn.skip { color: var(--text-dim); border-color: var(--panel-border); text-shadow: none; }
+.setup-btn.skip:hover { color: var(--neon-pink); border-color: var(--neon-pink); }
+.setup-btn[disabled] { opacity: 0.4; pointer-events: none; }
+
+/* circular countdown timer */
+.timer-svg { display: block; margin: 18px auto 6px; }
+.timer-svg .track { fill: none; stroke: rgba(0,240,255,0.15); stroke-width: 6; }
+.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round;
+                    transform: rotate(-90deg); transform-origin: 50% 50%;
+                    transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
+.timer-svg .ring.warn { stroke: var(--neon-pink); }
+.timer-svg text {
+  fill: var(--neon-cyan);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-weight: 600;
+}
+.setup-state-searching h2 { animation: pulse 1.2s infinite; }
+.spinner { width: 40px; height: 40px; margin: 10px auto;
+           border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan);
+           border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- sensor status grid on the calibration overlay ---- */
+.sensor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 14px 0 16px;
+  width: 100%;
+  max-width: 420px;
+}
+.sensor {
+  position: relative;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(0,240,255,0.12);
+  border-radius: 6px;
+  padding: 8px 8px 7px 22px;
+  text-align: left;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.25;
+  min-height: 44px;
+  transition: border-color 0.25s, background 0.25s;
+}
+.sensor::before {
+  content: '';
+  position: absolute;
+  left: 9px; top: 50%;
+  width: 8px; height: 8px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #555;
+  box-shadow: 0 0 0 0 transparent;
+  transition: background 0.25s, box-shadow 0.25s;
+}
+.sensor.state-ok {
+  border-color: rgba(0,255,170,0.35);
+  background: rgba(0,255,170,0.05);
+}
+.sensor.state-ok::before {
+  background: var(--good);
+  box-shadow: 0 0 8px var(--good);
+}
+.sensor.state-warn {
+  border-color: rgba(255,210,0,0.35);
+  background: rgba(255,210,0,0.04);
+}
+.sensor.state-warn::before {
+  background: #ffd200;
+  box-shadow: 0 0 8px #ffd200;
+}
+.sensor.state-error {
+  border-color: rgba(255,80,120,0.5);
+  background: rgba(255,80,120,0.05);
+}
+.sensor.state-error::before {
+  background: var(--bad);
+  box-shadow: 0 0 8px var(--bad);
+}
+.sensor.state-none {
+  opacity: 0.6;
+}
+.sensor .name {
+  display: block;
+  color: var(--neon-cyan);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  margin-bottom: 1px;
+  text-transform: uppercase;
+}
+.sensor.state-ok .name  { color: var(--good); }
+.sensor.state-warn .name { color: #ffd200; }
+.sensor.state-error .name { color: var(--bad); }
+.sensor .value {
+  display: block;
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
   vertical-align: middle;
   animation: heartbeat 1s infinite;
 }
@@ -278,6 +482,59 @@ main {
 </style>
 </head>
 <body>
+
+<!-- ====== SETUP OVERLAY ====== -->
+<div id="setup-overlay" class="setup-state-searching">
+  <!-- state: searching (no headband) -->
+  <div class="setup-card" data-state="searching">
+    <h2>⚡ NEIRY · Headband</h2>
+    <div class="spinner"></div>
+    <p>Searching for the headband…<br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode and bring it close</span></p>
+  </div>
+  <!-- state: ready (headband connected, not calibrated) -->
+  <div class="setup-card" data-state="ready" style="display:none">
+    <h2>⚙ Calibration</h2>
+    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br>
+       Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
+    <div class="sensor-grid" id="sensor-grid">
+      <div class="sensor state-none" data-sensor="eeg"><span class="name">EEG</span><span class="value">—</span></div>
+      <div class="sensor state-none" data-sensor="skin"><span class="name">SKIN</span><span class="value">—</span></div>
+      <div class="sensor state-none" data-sensor="ppg"><span class="name">PPG</span><span class="value">—</span></div>
+      <div class="sensor state-none" data-sensor="cardio"><span class="name">HEART</span><span class="value">—</span></div>
+      <div class="sensor state-none" data-sensor="mems"><span class="name">MOTION</span><span class="value">—</span></div>
+      <div class="sensor state-none" data-sensor="nfb"><span class="name">NFB</span><span class="value">—</span></div>
+    </div>
+    <button class="setup-btn" id="btn-start-cal">▶ START CALIBRATION</button>
+    <button class="setup-btn skip" id="btn-skip-cal">SKIP</button>
+    <div class="hint">You can recalibrate later from the main view</div>
+  </div>
+  <!-- state: running (30-sec timer) -->
+  <div class="setup-card" data-state="running" style="display:none">
+    <h2 style="color:var(--neon-pink); text-shadow:0 0 14px var(--neon-pink)">👁 Close your eyes</h2>
+    <svg class="timer-svg" width="180" height="180" viewBox="0 0 180 180">
+      <circle class="track" cx="90" cy="90" r="78" />
+      <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring"
+              stroke-dasharray="490" stroke-dashoffset="0" />
+      <text x="90" y="90" id="timer-text">30</text>
+    </svg>
+    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br>
+       <span style="font-size:11px; color:var(--text-dim)" id="timer-hint">measuring your individual α-rhythm…</span></p>
+  </div>
+  <!-- state: complete -->
+  <div class="setup-card" data-state="complete" style="display:none">
+    <h2 style="color:var(--good); text-shadow:0 0 14px var(--good)">✓ CALIBRATED</h2>
+    <p id="cal-result-line">individual α-frequency: <b style="color:var(--neon-cyan)">— Hz</b></p>
+    <p style="color:var(--text-dim); font-size:11px">Entering dashboard…</p>
+  </div>
+  <!-- state: failed -->
+  <div class="setup-card" data-state="failed" style="display:none">
+    <h2 style="color:var(--bad); text-shadow:0 0 14px var(--bad)">✗ CALIBRATION FAILED</h2>
+    <p id="cal-fail-msg">Could not measure individual α-rhythm.</p>
+    <button class="setup-btn" id="btn-retry-cal">↻ RETRY</button>
+    <button class="setup-btn skip" id="btn-skip-cal-2">SKIP</button>
+  </div>
+</div>
+
 <header>
   <div class="logo">NEIRY · CAPSULE</div>
   <span class="chip idle" id="chip-status"><span class="dot"></span><span id="status-text">idle</span></span>
@@ -285,6 +542,7 @@ main {
   <span class="chip" id="battery">🔋 <span class="lvl">—</span>%</span>
   <span class="chip" id="chip-mode"><span class="dot"></span>mode <span id="mode-val">—</span></span>
   <span class="chip" id="chip-cal">⚙ <span id="cal-val">not calibrated</span></span>
+  <a href="/charts" style="margin-left:auto; color:var(--neon-cyan); text-decoration:none; font-size:11px; letter-spacing:2px; padding:5px 12px; border:1px solid var(--neon-cyan); border-radius:3px;">📈 FULL CHARTS →</a>
 </header>
 
 <main>
@@ -327,7 +585,21 @@ main {
 
   <!-- MEMS -->
   <section class="panel col-6">
-    <h3><span class="accent"></span>MEMS · Accelerometer / Gyroscope<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span>Head motion · Accel (m/s²) + Gyro (°/s)<span class="live">LIVE</span>
+      <span class="help" data-help="mems">?</span>
+    </h3>
+    <div class="help-popup" id="help-mems">
+      <div class="help-row"><b>3-axis accelerometer</b> — measures head <u>linear</u> acceleration (m/s²)</div>
+      <div class="help-row"><span style="color:#00f0ff">━ accX</span> tilt left/right (ear → ear)</div>
+      <div class="help-row"><span style="color:#ff2bd6">━ accY</span> nod forward/back (chin → chest)</div>
+      <div class="help-row"><span style="color:#aaff00">━ accZ</span> lean up/down (face up vs down)</div>
+      <div class="help-row" style="margin-top:6px"><span style="color:#ffffff">━ |a|</span> total acceleration magnitude (1g ≈ 9.81 at rest)</div>
+      <div class="help-row" style="margin-top:6px"><b>3-axis gyroscope</b> — measures <u>angular</u> velocity (°/s, dashed)</div>
+      <div class="help-row"><span style="color:#ff8a00">┄ gyrX</span> roll (rotate head side to side)</div>
+      <div class="help-row"><span style="color:#b66bff">┄ gyrY</span> pitch (nod speed)</div>
+      <div class="help-row"><span style="color:#ffea00">┄ gyrZ</span> yaw (shake head "no")</div>
+      <div class="help-row" style="margin-top:6px"><span style="color:#ffffff">┄ |ω|</span> total rotation speed — spikes when you move</div>
+    </div>
     <div class="chart-wrap"><canvas id="mems-chart"></canvas></div>
   </section>
 
@@ -452,12 +724,14 @@ const memsCtx = document.getElementById('mems-chart').getContext('2d');
 const memsChart = new Chart(memsCtx, {
   type: 'line',
   data: { labels: [], datasets: [
-    { label: 'accX', data: [], borderColor: '#00f0ff', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
-    { label: 'accY', data: [], borderColor: '#ff2bd6', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
-    { label: 'accZ', data: [], borderColor: '#aaff00', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
-    { label: 'gyrX', data: [], borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
-    { label: 'gyrY', data: [], borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
-    { label: 'gyrZ', data: [], borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: 'acc · X (left/right)', data: [], borderColor: '#00f0ff', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
+    { label: 'acc · Y (fwd/back)',   data: [], borderColor: '#ff2bd6', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
+    { label: 'acc · Z (up/down)',    data: [], borderColor: '#aaff00', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
+    { label: '|a| total (m/s²)',     data: [], borderColor: '#ffffff', borderWidth: 1.4, pointRadius: 0, tension: 0, fill: false },
+    { label: 'gyro · X (roll)',      data: [], borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: 'gyro · Y (pitch)',     data: [], borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: 'gyro · Z (yaw)',       data: [], borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: '|ω| total (°/s)',      data: [], borderColor: '#ffffff', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
   ] },
   options: { responsive: true, maintainAspectRatio: false, animation: false,
     plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } } },
@@ -512,6 +786,90 @@ function connect() {
 
 let lastEeg = 0, lastPpg = 0, lastMems = 0;
 
+function renderSensorStatus(s) {
+  // s: {eeg, ppg, mems, skin, cardio, emotions, phy, prod, nfb}
+  // Each: {state: 'ok'|'warn'|'error'|'none', ...extras}
+  if (!s) return;
+  const fmtHz = sr => sr ? `${sr} Hz` : '';
+  const setEl = (key, name, value) => {
+    const el = document.querySelector(`.sensor[data-sensor="${key}"]`);
+    if (!el) return;
+    const v = s[key];
+    el.classList.remove('state-ok', 'state-warn', 'state-error', 'state-none');
+    el.classList.add('state-' + (v?.state || 'none'));
+    el.querySelector('.name').textContent = name;
+    el.querySelector('.value').textContent = value;
+  };
+
+  // EEG
+  let eegVal = '—';
+  if (s.eeg) {
+    if (s.eeg.state === 'ok') {
+      const ch = (s.eeg.channels || []).join(' · ') || '—';
+      eegVal = `${s.eeg.sr || '?'} Hz · ${ch}`;
+    } else {
+      eegVal = 'no data';
+    }
+  }
+  setEl('eeg', 'EEG', eegVal);
+
+  // SKIN (electrode contact)
+  let skinVal = '—';
+  if (s.skin) {
+    if (s.skin.state === 'ok') {
+      const r = s.skin.max_r;
+      skinVal = `good · ${r < 1000 ? Math.round(r) + ' Ω' : (r/1000).toFixed(1) + ' kΩ'}`;
+    } else if (s.skin.state === 'warn') {
+      skinVal = `${s.skin.n_good}/${s.skin.n_ch} ok · wet electrodes`;
+    } else if (s.skin.state === 'error') {
+      skinVal = 'no contact · put on head';
+    } else {
+      skinVal = '—';
+    }
+  }
+  setEl('skin', 'SKIN', skinVal);
+
+  // PPG
+  let ppgVal = '—';
+  if (s.ppg) {
+    ppgVal = s.ppg.state === 'ok' ? `${s.ppg.sr || '?'} Hz` : 'no data';
+  }
+  setEl('ppg', 'PPG', ppgVal);
+
+  // CARDIO
+  let cardioVal = '—';
+  if (s.cardio) {
+    if (s.cardio.state === 'ok') {
+      cardioVal = `${s.cardio.hr?.toFixed(0) || '—'} bpm`;
+    } else if (s.cardio.state === 'warn') {
+      cardioVal = s.cardio.reason || 'weak';
+    } else {
+      cardioVal = '—';
+    }
+  }
+  setEl('cardio', 'HEART', cardioVal);
+
+  // MEMS
+  let memsVal = '—';
+  if (s.mems) {
+    memsVal = s.mems.state === 'ok' ? `${s.mems.sr || '?'} Hz` : 'no data';
+  }
+  setEl('mems', 'MOTION', memsVal);
+
+  // NFB
+  let nfbVal = '—';
+  if (s.nfb) {
+    if (s.nfb.state === 'ok') {
+      nfbVal = `${s.nfb.n} pts`;
+    } else if (s.nfb.state === 'warn') {
+      nfbVal = 'after cal';
+    } else {
+      nfbVal = '—';
+    }
+  }
+  setEl('nfb', 'NFB', nfbVal);
+}
+
 function handleTick(d) {
   // status
   setStatus(d.status || 'idle');
@@ -520,6 +878,36 @@ function handleTick(d) {
   document.getElementById('cal-val').textContent = d.calibrated ? 'calibrated' : 'not calibrated';
   document.querySelector('#chip-cal').style.borderColor = d.calibrated ? 'var(--good)' : 'var(--panel-border)';
   document.querySelector('#chip-cal').style.color = d.calibrated ? 'var(--good)' : '';
+
+  // === SETUP OVERLAY orchestration ===
+  const phase = d.calibration_phase || 'idle';
+  const connected = (d.status === 'connected' || d.status === 'streaming' || d.device);
+  if (phase === 'complete' || phase === 'skipped') {
+    hideSetup();
+  } else if (phase === 'running') {
+    if (!calInterval) startTimer(d.calibration_started_at);
+    showSetupState('running');
+  } else if (connected && (phase === 'ready' || phase === 'idle')) {
+    // Device is connected — show calibration overlay regardless of whether
+    // calibration_phase is "ready" or still "idle" (the latter can happen
+    // if the calibrator init failed before the backend fix was applied).
+    stopTimer();
+    showSetupState('ready');
+  } else if (phase === 'failed') {
+    stopTimer();
+    const m = document.getElementById('cal-fail-msg');
+    if (m) m.textContent = d.message || 'Could not measure individual α-rhythm.';
+    showSetupState('failed');
+  } else {
+    // Headband not connected — show searching overlay
+    stopTimer();
+    const m = document.getElementById('setup-searching-msg');
+    if (m) m.textContent = d.message || 'put it in pairing mode and bring it close';
+    showSetupState('searching');
+  }
+
+  // sensor status grid (works in all states, updates every tick)
+  renderSensorStatus(d.sensor_status);
 
   // battery
   const lvl = document.querySelector('#battery .lvl');
@@ -570,9 +958,11 @@ function handleTick(d) {
     memsChart.data.datasets[0].data = d.mems_acc.map(v => v[0]);
     memsChart.data.datasets[1].data = d.mems_acc.map(v => v[1]);
     memsChart.data.datasets[2].data = d.mems_acc.map(v => v[2]);
-    memsChart.data.datasets[3].data = d.mems_gyro.map(v => v[0]);
-    memsChart.data.datasets[4].data = d.mems_gyro.map(v => v[1]);
-    memsChart.data.datasets[5].data = d.mems_gyro.map(v => v[2]);
+    memsChart.data.datasets[3].data = d.mems_acc.map(v => Math.hypot(v[0], v[1], v[2]));
+    memsChart.data.datasets[4].data = d.mems_gyro.map(v => v[0]);
+    memsChart.data.datasets[5].data = d.mems_gyro.map(v => v[1]);
+    memsChart.data.datasets[6].data = d.mems_gyro.map(v => v[2]);
+    memsChart.data.datasets[7].data = d.mems_gyro.map(v => Math.hypot(v[0], v[1], v[2]));
     if (d.mems_acc.length !== lastMems) { memsChart.update('none'); lastMems = d.mems_acc.length; }
   }
 
@@ -662,7 +1052,99 @@ function handleTick(d) {
   }
 }
 
-connect();
+// Fetch initial state from server BEFORE showing overlay, so that
+// on page reload we instantly show the correct state (calibration ready,
+// device connected, etc.) instead of flashing "Searching…".
+(async function initOverlay() {
+  try {
+    const r = await fetch('/api/status');
+    if (r.ok) {
+      const st = await r.json();
+      handleTick({
+        status: st.status,
+        message: st.message,
+        battery: st.battery,
+        device: st.device,
+        serial: st.serial,
+        mode: st.mode,
+        calibrated: st.calibrated,
+        calibration: st.calibration,
+        calibration_phase: st.calibration_phase,
+        calibration_started_at: st.calibration_started_at || 0,
+        eeg_channels: st.channels,
+        eeg_sr: st.eeg_sr,
+        ppg_sr: st.ppg_sr,
+        mems_sr: st.mems_sr,
+      });
+    }
+  } catch (e) { /* ignore — WS will catch up */ }
+  connect();
+})();
+
+// === SETUP OVERLAY — show only when calibrated/skipped, hide during searching/cal ===
+const overlay = document.getElementById('setup-overlay');
+function showSetupState(name) {
+  overlay.classList.add('show');
+  overlay.className = 'show setup-state-' + name;
+  for (const el of overlay.querySelectorAll('[data-state]')) {
+    el.style.display = (el.dataset.state === name) ? '' : 'none';
+  }
+}
+function hideSetup() { overlay.classList.remove('show'); }
+
+function sendCmd(action) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action }));
+}
+document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
+document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
+document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
+document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
+
+// Circular timer state
+let calStartedAt = 0;
+let calInterval = null;
+const CAL_DURATION = 30;
+const RING_CIRC = 2 * Math.PI * 78;   // 490.088...
+function tickTimer() {
+  const elapsed = (Date.now()/1000) - calStartedAt;
+  const remaining = Math.max(0, CAL_DURATION - elapsed);
+  const ring = document.getElementById('timer-ring');
+  const text = document.getElementById('timer-text');
+  if (!ring || !text) return;
+  const frac = remaining / CAL_DURATION;
+  ring.setAttribute('stroke-dashoffset', (1 - frac) * RING_CIRC);
+  text.textContent = Math.ceil(remaining);
+  if (remaining < 5) ring.classList.add('warn'); else ring.classList.remove('warn');
+  if (remaining <= 0 && calInterval) { clearInterval(calInterval); calInterval = null; }
+}
+function startTimer(fromServerTs) {
+  // If server gave us a t, use it; else use now
+  calStartedAt = fromServerTs || (Date.now()/1000);
+  if (calInterval) clearInterval(calInterval);
+  tickTimer();
+  calInterval = setInterval(tickTimer, 100);
+}
+function stopTimer() { if (calInterval) { clearInterval(calInterval); calInterval = null; } }
+
+// === Help-popup wiring (click ? icon to show, click anywhere to hide) ===
+document.querySelectorAll('.help').forEach(el => {
+  el.addEventListener('click', e => {
+    e.stopPropagation();
+    const id = 'help-' + el.dataset.help;
+    const popup = document.getElementById(id);
+    if (!popup) return;
+    // close all others, toggle this one
+    document.querySelectorAll('.help-popup.open').forEach(p => { if (p !== popup) p.classList.remove('open'); });
+    popup.classList.toggle('open');
+    // position next to the ? icon
+    const r = el.getBoundingClientRect();
+    popup.style.top  = (r.bottom + window.scrollY + 6) + 'px';
+    popup.style.left = (r.left + window.scrollX - 320) + 'px';
+  });
+});
+document.addEventListener('click', () => {
+  document.querySelectorAll('.help-popup.open').forEach(p => p.classList.remove('open'));
+});
 </script>
 </body>
 </html>

@@ -9,6 +9,7 @@ WebSocket clients at ~10 Hz.
 
 import asyncio
 import ctypes
+import json
 import os
 import sys
 import threading
@@ -121,9 +122,9 @@ def _nfb_user_state_impl(_nfb, state):
 # Shared state.
 # --------------------------------------------------------------------------- #
 
-EEG_WINDOW = 1024
-PPG_WINDOW = 512
-MEMS_WINDOW = 512
+EEG_WINDOW = 7500       # ~30 s at 250 Hz — enough headroom for live+history
+PPG_WINDOW = 3000       # ~30 s at 100 Hz
+MEMS_WINDOW = 7500      # ~30 s at 250 Hz
 RES_WINDOW = 256
 
 
@@ -144,6 +145,19 @@ class State:
         self.calibrated: bool = False
         self.library_version: str = ""
         self._device_ready: bool = False  # set True once STAGE 17 done; stops scan loop
+
+        # Calibration control (user-driven):
+        #   "idle"      — headband not connected, or no calibrator yet
+        #   "ready"     — calibrator prepared, waiting for user to press Start
+        #   "running"   — calibrate_quick() in progress (~30 s closed-eyes)
+        #   "complete"  — calibration finished, data flowing with personalised bands
+        #   "skipped"   — user opted out; data still flows but NFB is uncalibrated
+        #   "failed"    — calibration error
+        self.calibration_phase: str = "idle"
+        self._calibration_started_at: float = 0.0
+        self._calibrator = None              # set in _handle_devices_in_worker
+        self._calibration_requested: bool = False  # set by WS command, consumed by capsule thread
+        self._calibration_skip: bool = False
 
         self.latest_emotions: dict[str, Any] | None = None
         self.latest_cardio: dict[str, Any] | None = None
@@ -503,10 +517,48 @@ def capsule_worker() -> None:
                 locator.update()
             except Exception:
                 pass
+
+            # User-driven calibration control
+            with STATE_LOCK:
+                _req_start = S._calibration_requested
+                _req_skip  = S._calibration_skip
+                S._calibration_requested = False
+                S._calibration_skip     = False
+                _cal_phase = S.calibration_phase
+                _calibrator = S._calibrator
+
+                # Fallback: if the device is connected and ready but
+                # calibration_phase is still "idle" (e.g. calibrator init
+                # failed before the fix above was applied), promote to
+                # "ready" so the frontend shows the calibration overlay
+                # instead of "Searching…".
+                if _cal_phase == "idle":
+                    S.calibration_phase = "ready"
+                    _cal_phase = "ready"
+                    print("[capsule] fallback: promoted calibration_phase from idle to ready", flush=True)
+
+            if _req_skip and _cal_phase in ("ready", "idle"):
+                with STATE_LOCK:
+                    S.calibration_phase = "skipped"
+                    S.calibrated = True
+                print("[capsule] STAGE 16: calibration SKIPPED by user", flush=True)
+            elif _req_start and _cal_phase == "ready" and _calibrator is not None:
+                try:
+                    _calibrator.calibrate_quick()
+                    with STATE_LOCK:
+                        S.calibration_phase = "running"
+                        S._calibration_started_at = time.time()
+                    print("[capsule] STAGE 16: calibration STARTED by user", flush=True)
+                except Exception as exc:
+                    with STATE_LOCK:
+                        S.calibration_phase = "failed"
+                        S.status_message = f"Calibration start failed: {exc}"
+                    print(f"[capsule] STAGE 16: calibration start FAILED: {exc}", flush=True)
+
             time.sleep(0.5)
             if iter_n % 10 == 0:
                 with STATE_LOCK:
-                    print(f"[capsule] idle: eeg={len(S.eeg)} ppg={len(S.ppg)} mems={len(S.mems_acc)} emot={S.latest_emotions is not None} cardio={S.latest_cardio is not None}", flush=True)
+                    print(f"[capsule] idle: eeg={len(S.eeg)} ppg={len(S.ppg)} mems={len(S.mems_acc)} emot={S.latest_emotions is not None} cardio={S.latest_cardio is not None} cal={S.calibration_phase}", flush=True)
             continue
 
         if now >= next_search_at:
@@ -563,18 +615,17 @@ def _make_device_list_handler(locator, lib):
 
 
 def _on_device_list_inner(loc, info, fail_reason, locator, lib, state) -> None:
-    # TEMPORARY MINIMAL TEST: do nothing except count devices.
-    # The previous version crashed AFTER "captured serial=...". We need to
-    # know whether the crash is:
-    #   (a) somewhere in this function, or
-    #   (b) at C-library level when our callback returns, or
-    #   (c) re-entry into the callback from a second call.
     try:
         n = len(info)
     except Exception:
         n = 0
     with STATE_LOCK:
-        S.status_message = f"Found {n} device(s) (minimal test)"
+        # Do NOT overwrite status_message if the device is already connected.
+        # The C library fires this callback when a search window expires
+        # (with 0 devices) even after the device is connected. Overwriting
+        # here would erase "Connected to …" / "Calibration complete" etc.
+        if not S._device_ready:
+            S.status_message = f"Found {n} device(s) (minimal test)"
     if n > 0 and not state["done"]:
         state["done"] = True
         # Hand off to the worker; do not do any further C work in the callback.
@@ -702,14 +753,31 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
             phy = PhysiologicalStates(device, lib)
             phy.set_on_states(on_phy_states)
             phy.set_on_calibrated(on_phy_calibrated)
-            print("[capsule] STAGE 12: PhysiologicalStates ready", flush=True)
+            # CRITICAL: the metrics callback (on_phy_states) only fires AFTER
+            # the classifier runs its own baseline calibration. Without this
+            # call the panel stays empty forever.
+            # NOTE: start_baseline_calibration() may not exist in all API
+            # versions (e.g. v2.0.72). Use hasattr guard.
+            if hasattr(phy, 'start_baseline_calibration'):
+                phy.start_baseline_calibration()
+                print("[capsule] STAGE 12: PhysiologicalStates ready (baseline calibration started)", flush=True)
+            else:
+                print("[capsule] STAGE 12: PhysiologicalStates ready (no start_baseline_calibration in this API version — classifier will self-start)", flush=True)
         except Exception as exc:
             print(f"phy: {exc}", file=sys.stderr)
 
         try:
             prod = Productivity(device, lib)
             prod.set_on_metrics_update(on_prod_metrics)
-            print("[capsule] STAGE 13: Productivity ready", flush=True)
+            # Same as above: productivity needs a baseline calibration before
+            # it starts emitting metrics.
+            # NOTE: start_baseline_calibration() may not exist in all API
+            # versions (e.g. v2.0.72). Use hasattr guard.
+            if hasattr(prod, 'start_baseline_calibration'):
+                prod.start_baseline_calibration()
+                print("[capsule] STAGE 13: Productivity ready (baseline calibration started)", flush=True)
+            else:
+                print("[capsule] STAGE 13: Productivity ready (no start_baseline_calibration in this API version — classifier will self-start)", flush=True)
         except Exception as exc:
             print(f"prod: {exc}", file=sys.stderr)
 
@@ -727,15 +795,26 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
         device.start()
         print("[capsule] STAGE 15 OK: device.start() returned", flush=True)
 
-        # Quick alpha calibration
+        # Quick alpha calibration — prepared but NOT started.
+        # The user will trigger it from the dashboard once the headband is on
+        # their head and they're ready to sit still with eyes closed.
         cal = None
         try:
             cal = Calibrator(device, lib)
             cal.set_on_calibration_finished(_on_calibration)
-            cal.calibrate_quick()
-            print("[capsule] STAGE 16: calibration kicked off", flush=True)
+            with STATE_LOCK:
+                S._calibrator = cal
+                S.calibration_phase = "ready"
+            print("[capsule] STAGE 16: calibrator prepared (waiting for user 'start')", flush=True)
         except Exception as exc:
-            print(f"calibration start failed: {exc}", file=sys.stderr)
+            print(f"calibrator init failed: {exc}", file=sys.stderr)
+            # IMPORTANT: even if the calibrator fails, set phase to "ready"
+            # so the user can still skip calibration and use the device.
+            # Without this, calibration_phase stays "idle" and the frontend
+            # shows "Searching…" instead of the calibration overlay.
+            with STATE_LOCK:
+                S.calibration_phase = "ready"
+                S.status_message = f"Connected to {S.device_name} (calibration unavailable)"
 
         # NFB — DISABLED for now. The C library's clCNFB_CreateCalibrated
         # requires a finished calibrator and aborts if the calibrator isn't
@@ -770,6 +849,7 @@ def _on_calibration(calibrator, data) -> None:
         with STATE_LOCK:
             S.latest_calibration = d
             S.calibrated = True
+            S.calibration_phase = "complete"
             S.status_message = "Calibration complete"
         print(f"[cb] calibration finished: {d}", flush=True)
     except BaseException as exc:
@@ -790,6 +870,11 @@ async def index() -> FileResponse:
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
+@app.get("/charts")
+async def charts() -> FileResponse:
+    return FileResponse(os.path.join(STATIC_DIR, "charts.html"))
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     with STATE_LOCK:
@@ -806,6 +891,8 @@ async def api_status() -> dict[str, Any]:
             "mems_sr": S.mems_sample_rate,
             "library": S.library_version,
             "calibrated": S.calibrated,
+            "calibration_phase": S.calibration_phase,
+            "calibration_started_at": S._calibration_started_at,
             "calibration": S.latest_calibration,
         }
 
@@ -834,14 +921,223 @@ async def api_buffers() -> dict[str, Any]:
         }
 
 
+def _sensor_status(S) -> dict:
+    """Compact per-sensor health snapshot for the calibration overlay.
+    Each entry: ``state`` ∈ {ok, warn, none, error} + optional value/unit.
+    Computed cheaply under STATE_LOCK (no C-callback calls)."""
+    out: dict[str, Any] = {}
+
+    # --- EEG: >100 samples in buffer ≈ 0.4 s @ 250 Hz ---
+    n_eeg = len(S.eeg)
+    eeg_sr = S.eeg_sample_rate
+    if n_eeg >= 100 and eeg_sr > 0:
+        out["eeg"] = {"state": "ok", "sr": eeg_sr, "n": n_eeg, "channels": list(S.channel_names)}
+    else:
+        out["eeg"] = {"state": "none", "sr": eeg_sr, "n": n_eeg, "channels": list(S.channel_names)}
+
+    # --- PPG ---
+    n_ppg = len(S.ppg)
+    ppg_sr = S.ppg_sample_rate
+    if n_ppg >= 50 and ppg_sr > 0:
+        out["ppg"] = {"state": "ok", "sr": ppg_sr, "n": n_ppg}
+    else:
+        out["ppg"] = {"state": "none", "sr": ppg_sr, "n": n_ppg}
+
+    # --- MEMS (accelerometer + gyroscope) ---
+    n_mems = len(S.mems_acc)
+    mems_sr = S.mems_sample_rate
+    if n_mems >= 100 and mems_sr > 0:
+        out["mems"] = {"state": "ok", "sr": mems_sr, "n": n_mems}
+    else:
+        out["mems"] = {"state": "none", "sr": mems_sr, "n": n_mems}
+
+    # --- Skin contact via electrode resistances ---
+    res = S.latest_resistances or []
+    n_ch = len(res)
+    n_bad = 0
+    n_good = 0
+    max_r = 0.0
+    for r in res:
+        v = r.get("value")
+        is_inf = r.get("is_inf")
+        try:
+            if is_inf or v is None:
+                n_bad += 1
+            else:
+                fv = float(v)
+                if fv != fv or fv >= 5e6:  # NaN or >= 5 MΩ
+                    n_bad += 1
+                else:
+                    n_good += 1
+                    if fv > max_r:
+                        max_r = fv
+        except Exception:
+            n_bad += 1
+    if n_ch == 0:
+        out["skin"] = {"state": "none", "n_ch": 0, "n_good": 0, "n_bad": 0, "max_r": None}
+    elif n_bad == 0:
+        out["skin"] = {"state": "ok", "n_ch": n_ch, "n_good": n_good, "n_bad": 0, "max_r": max_r}
+    elif n_good > 0:
+        out["skin"] = {"state": "warn", "n_ch": n_ch, "n_good": n_good, "n_bad": n_bad, "max_r": max_r}
+    else:
+        out["skin"] = {"state": "error", "n_ch": n_ch, "n_good": 0, "n_bad": n_bad, "max_r": None}
+
+    # --- Cardio (HR / stress / HRV) ---
+    cardio = S.latest_cardio
+    if cardio is None:
+        out["cardio"] = {"state": "none"}
+    else:
+        hr = cardio.get("heartRate")
+        skin = cardio.get("skinContact")
+        motion = cardio.get("motionArtifacts")
+        avail = cardio.get("metricsAvailable")
+        if avail and skin and hr and hr > 30:
+            out["cardio"] = {"state": "ok", "hr": hr, "si": cardio.get("stressIndex"), "ki": cardio.get("kaplanIndex")}
+        elif not skin:
+            out["cardio"] = {"state": "warn", "reason": "no skin contact", "hr": hr, "skin": False, "motion": motion}
+        elif motion:
+            out["cardio"] = {"state": "warn", "reason": "motion artifacts", "hr": hr, "skin": skin, "motion": True}
+        else:
+            out["cardio"] = {"state": "warn", "reason": "signal weak", "hr": hr, "skin": skin, "motion": motion}
+
+    # --- Emotions / Physiological states / Productivity (need EEG + calibration) ---
+    if S.latest_emotions:
+        e = S.latest_emotions
+        out["emotions"] = {"state": "ok", "attention": e.get("attention"), "relaxation": e.get("relaxation")}
+    else:
+        out["emotions"] = {"state": "none"}
+    if S.latest_phy:
+        p = S.latest_phy
+        out["phy"] = {"state": "ok", "fatigue": p.get("fatigue"), "relaxation": p.get("relaxation"), "concentration": p.get("concentration"), "stress": p.get("stress")}
+    else:
+        out["phy"] = {"state": "none"}
+    if S.latest_prod:
+        pr = S.latest_prod
+        out["prod"] = {"state": "ok", "fatigue": pr.get("fatigueScore"), "productivity": pr.get("productivityScore")}
+    else:
+        out["prod"] = {"state": "none"}
+
+    # --- NFB: needs calibrated device with running session ---
+    n_nfb = len(S.nfb_hist)
+    if n_nfb > 0:
+        last = S.nfb_hist[-1]
+        out["nfb"] = {"state": "ok", "n": n_nfb, "last": last.get("alpha") if last is not None else None}
+    elif S.calibration_phase in ("ready", "running"):
+        out["nfb"] = {"state": "warn", "reason": "not calibrated yet", "n": 0}
+    elif S.calibrated:
+        out["nfb"] = {"state": "none", "reason": "calibrated, no NFB session", "n": 0}
+    else:
+        out["nfb"] = {"state": "none", "n": 0}
+
+    return out
+
+
+def _sanitize(obj):
+    """In-place: replace NaN/Inf floats with None. Recurses into lists/dicts.
+    Stops at the first level of dict keys; values are walked."""
+    if isinstance(obj, dict):
+        for k in list(obj.keys()):
+            v = obj[k]
+            if isinstance(v, float):
+                if v != v or v == float("inf") or v == float("-inf"):  # NaN/Inf
+                    obj[k] = None
+            elif isinstance(v, (dict, list)):
+                _sanitize(v)
+    elif isinstance(obj, list):
+        for i in range(len(obj)):
+            v = obj[i]
+            if isinstance(v, float):
+                if v != v or v == float("inf") or v == float("-inf"):
+                    obj[i] = None
+            elif isinstance(v, (dict, list)):
+                _sanitize(v)
+
+
+class _WSDelta:
+    """Per-WebSocket-connection delta cursor so each client gets only NEW samples.
+    On first connect, ``last_t`` is None and we send the full tail (so the
+    client can backfill). On subsequent ticks we send only samples with
+    t > last_t, and update last_t to the last sample sent."""
+    __slots__ = ("eeg_last_t", "ppg_last_t", "mems_last_t")
+    def __init__(self) -> None:
+        self.eeg_last_t: float | None = None
+        self.ppg_last_t: float | None = None
+        self.mems_last_t: float | None = None
+
+
+def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int,
+                  first_sync_max: int = 500):
+    """Return a {t0, sr, ch1, ch2, n} payload containing only NEW samples
+    (t > last_t). On FIRST sync (last_t is None) only the most recent
+    ``first_sync_max`` samples are sent (≈ 2 s at 250 Hz, 5 s at 100 Hz)
+    so the first WS frame stays well under 100 KB and the browser doesn't
+    choke. Updates last_t to the last sample included."""
+    if not times or not samples:
+        return None, last_t
+    if last_t is None:
+        # first sync: only the tail
+        if len(times) > first_sync_max:
+            new_t = times[-first_sync_max:]
+            new_s = samples[-first_sync_max:]
+        else:
+            new_t = times
+            new_s = samples
+    else:
+        new_t, new_s = [], []
+        for i, t in enumerate(times):
+            if t > last_t:
+                new_t.append(t)
+                new_s.append(samples[i])
+    if not new_t:
+        return None, last_t
+    payload = {
+        "t0": new_t[0],
+        "sr": sr,
+        "n":  len(new_t),
+    }
+    if n_ch >= 2:
+        payload["ch1"] = [s[0] for s in new_s]
+        payload["ch2"] = [s[1] for s in new_s]
+    else:
+        # 1-channel stream (PPG) — just put flat array under "samples"
+        if isinstance(new_s[0], (list, tuple)):
+            payload["samples"] = [s[0] for s in new_s]
+        else:
+            payload["samples"] = list(new_s)
+    return payload, new_t[-1]
+
+
 async def ws_sender(ws: WebSocket) -> None:
+    delta = _WSDelta()
     try:
         while True:
             await asyncio.sleep(0.1)  # 10 Hz
             with STATE_LOCK:
+                # ---- high-rate streams: per-sample time + deltas ----
+                eeg_t  = list(S.eeg_t)
+                eeg_s  = list(S.eeg)
+                ppg_t  = list(S.ppg_t)
+                ppg_s  = list(S.ppg)
+                mems_t = list(S.mems_t)
+                mems_a = list(S.mems_acc)
+                mems_g = list(S.mems_gyro)
+
+                eeg_p,  delta.eeg_last_t  = _build_batch(eeg_t,  eeg_s,  max(len(S.channel_names), 1), delta.eeg_last_t,  S.eeg_sample_rate)
+                ppg_p,  delta.ppg_last_t  = _build_batch(ppg_t,  ppg_s,  1,                              delta.ppg_last_t,  S.ppg_sample_rate)
+                mems_p, delta.mems_last_t = _build_batch(mems_t, list(zip(mems_a, mems_g)), 1,        delta.mems_last_t, S.mems_sample_rate)
+                # mems: split back into acc + gyro for client convenience
+                if mems_p is not None:
+                    n = mems_p["n"]
+                    acc_arr = [list(mems_a[i]) for i in range(len(mems_t) - n, len(mems_t))]
+                    gyr_arr = [list(mems_g[i]) for i in range(len(mems_t) - n, len(mems_t))]
+                    mems_p["acc"] = acc_arr
+                    mems_p["gyro"] = gyr_arr
+                    del mems_p["samples"]
+
                 payload = {
                     "type": "tick",
                     "t": S.now(),
+                    "t_server": time.time(),
                     "status": S.status,
                     "message": S.status_message,
                     "battery": S.battery,
@@ -850,23 +1146,40 @@ async def ws_sender(ws: WebSocket) -> None:
                     "mode": S.device_mode,
                     "calibrated": S.calibrated,
                     "calibration": S.latest_calibration,
+                    "calibration_phase": S.calibration_phase,
+                    "calibration_started_at": S._calibration_started_at,
                     "eeg_channels": S.channel_names,
-                    "eeg_sr": S.eeg_sample_rate,
-                    "emotions": S.latest_emotions,
-                    "cardio": S.latest_cardio,
-                    "phy": S.latest_phy,
-                    "prod": S.latest_prod,
+                    "eeg_sr":  S.eeg_sample_rate,
+                    "ppg_sr":  S.ppg_sample_rate,
+                    "mems_sr": S.mems_sample_rate,
+                    "emotions":  S.latest_emotions,
+                    "cardio":    S.latest_cardio,
+                    "phy":       S.latest_phy,
+                    "prod":      S.latest_prod,
                     "resistances": S.latest_resistances,
-                    "eeg": list(S.eeg)[-256:],
-                    "ppg": list(S.ppg)[-256:],
-                    "mems_acc": list(S.mems_acc)[-256:],
-                    "mems_gyro": list(S.mems_gyro)[-256:],
-                    "mems_t": list(S.mems_t)[-256:],
                     "resistances_hist": list(S.resistances_hist)[-128:],
                     "res_channel_names": S.res_channel_names,
                     "nfb": list(S.nfb_hist)[-128:],
+                    "sensor_status": _sensor_status(S),
+                    # OLD format (live oscilloscope on main dashboard): last ~1 s of each stream
+                    "eeg":  list(S.eeg)[-256:],
+                    "ppg":  list(S.ppg)[-256:],
+                    "mems_acc":  list(S.mems_acc)[-256:],
+                    "mems_gyro": list(S.mems_gyro)[-256:],
+                    # NEW format (charts page): per-sample time + deltas only
+                    "eeg_stream":  eeg_p,
+                    "ppg_stream":  ppg_p,
+                    "mems_stream": mems_p,
                 }
             try:
+                # CRITICAL: the C library sometimes produces NaN/Inf (bad
+                # electrode contact, divide-by-zero in their DSP, etc.).
+                # Python's json.dumps happily serialises these as bare ``NaN``
+                # / ``Infinity`` tokens — which are NOT valid JSON, and the
+                # browser's JSON.parse throws on them, breaking the WS.
+                # We sanitise: NaN/Inf → null. Lists/dicts are walked in
+                # place; scalars are replaced directly.
+                _sanitize(payload)
                 await ws.send_json(payload)
             except Exception:
                 return
@@ -882,9 +1195,34 @@ async def ws_sender(ws: WebSocket) -> None:
 async def ws_endpoint(ws: WebSocket) -> None:
     await ws.accept()
     S.connected_clients.add(ws)
+
+    async def receiver():
+        try:
+            while True:
+                msg = await ws.receive_text()
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    continue
+                action = (data or {}).get("action")
+                if action == "start_calibration":
+                    with STATE_LOCK:
+                        S._calibration_requested = True
+                elif action == "skip_calibration":
+                    with STATE_LOCK:
+                        S._calibration_skip = True
+        except WebSocketDisconnect:
+            return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    rcv = asyncio.create_task(receiver())
     try:
         await ws_sender(ws)
     finally:
+        rcv.cancel()
         S.connected_clients.discard(ws)
 
 
