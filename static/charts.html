@@ -7,143 +7,84 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
-:root {
-  --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550;
-  --grid: #1b2750;
-  --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00;
-  --neon-pink: #ff3e7f; --neon-yellow: #ffea00; --neon-purple: #b66bff;
-  --neon-orange: #ff8a00; --neon-red: #ff3355;
-  --text: #d8e1ff; --text-dim: #6f7bb0; --good: #00ff88; --bad: #ff3355;
-}
+:root { --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550; --grid: #1b2750; --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00; --neon-pink: #ff3e7f; --neon-yellow: #ffea00; --neon-purple: #b66bff; --neon-orange: #ff8a00; --neon-red: #ff3355; --text: #d8e1ff; --text-dim: #6f7bb0; --good: #00ff88; --bad: #ff3355; }
 * { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
-  font-family: 'JetBrains Mono','Fira Code','Courier New',monospace; min-height: 100vh; }
-body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:1;
-  background: radial-gradient(ellipse at 20% 0%, rgba(0,240,255,0.06), transparent 50%),
-              radial-gradient(ellipse at 80% 100%, rgba(255,43,214,0.06), transparent 50%); }
-header { position: relative; z-index: 2; padding: 14px 24px; border-bottom: 1px solid var(--panel-border);
-  display: flex; align-items: center; gap: 18px; flex-wrap: wrap; background: var(--bg2); }
-header h1 { margin: 0; font-size: 18px; letter-spacing: 3px;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
-  -webkit-background-clip: text; background-clip: text; color: transparent; }
-header a { color: var(--text-dim); text-decoration: none; font-size: 12px;
-  padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 4px; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono','Fira Code','Courier New',monospace; min-height: 100vh; }
+body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:1; background: radial-gradient(ellipse at 20% 0%, rgba(0,240,255,0.06), transparent 50%), radial-gradient(ellipse at 80% 100%, rgba(255,43,214,0.06), transparent 50%); }
+header { position: relative; z-index: 2; padding: 14px 24px; border-bottom: 1px solid var(--panel-border); display: flex; align-items: center; gap: 18px; flex-wrap: wrap; background: var(--bg2); }
+header h1 { margin: 0; font-size: 18px; letter-spacing: 3px; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+header a { color: var(--text-dim); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 4px; }
 header a:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); }
-.status-chip { padding: 4px 10px; border-radius: 4px; font-size: 11px;
-  border: 1px solid var(--panel-border); }
+.status-chip { padding: 4px 10px; border-radius: 4px; font-size: 11px; border: 1px solid var(--panel-border); }
 .status-chip.connected { border-color: var(--good); color: var(--good); }
 .status-chip.connecting { border-color: var(--neon-yellow); color: var(--neon-yellow); }
 .status-chip.searching { border-color: var(--neon-cyan); color: var(--neon-cyan); }
 .status-chip.error { border-color: var(--bad); color: var(--bad); }
-
-/* Tab bar */
 .tabs { display: flex; gap: 6px; padding: 12px 24px 0; flex-wrap: wrap; align-items: center; position: relative; z-index: 2; }
-.tab-group { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--panel-border);
-  border-radius: 6px; background: var(--bg2); }
-.tab-group .tab { padding: 6px 12px; font-size: 11px; letter-spacing: 1px;
-  border-radius: 3px; cursor: pointer; color: var(--text-dim); user-select: none; }
-.tab-group .tab.active { background: var(--panel); color: var(--neon-cyan);
-  box-shadow: 0 0 8px rgba(0,240,255,0.25); }
+.tab-group { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--bg2); }
+.tab-group .tab { padding: 6px 12px; font-size: 11px; letter-spacing: 1px; border-radius: 3px; cursor: pointer; color: var(--text-dim); user-select: none; }
+.tab-group .tab.active { background: var(--panel); color: var(--neon-cyan); box-shadow: 0 0 8px rgba(0,240,255,0.25); }
 .tab-group .tab:hover:not(.active) { color: var(--text); }
 .tab-label { color: var(--text-dim); font-size: 11px; margin-right: 8px; letter-spacing: 1px; }
-
 main { padding: 18px 24px 32px; position: relative; z-index: 2; }
-
-/* All-in-one mode */
 .allinone .chart-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
 .split .chart-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
 @media (max-width: 1100px) { .split .chart-grid { grid-template-columns: 1fr; } }
-.chart-card { background: var(--panel); border: 1px solid var(--panel-border);
-  border-radius: 6px; padding: 14px 16px; }
-.chart-card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 2px;
-  color: var(--text-dim); display: flex; justify-content: space-between; align-items: center; }
-.chart-card h3 .legend { color: var(--neon-cyan); font-size: 10px; }
+.chart-card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 6px; padding: 14px 16px; }
+.chart-card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 2px; color: var(--text-dim); display: flex; justify-content: space-between; align-items: center; }
 .chart-card .chart-wrap { position: relative; height: 220px; }
 .allinone .chart-card .chart-wrap { height: 280px; }
-
 .legend-chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.legend-chip { display: inline-flex; gap: 4px; align-items: center; font-size: 10px;
-  padding: 2px 6px; border-radius: 3px; background: var(--bg2); border: 1px solid var(--panel-border); }
+.legend-chip { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; padding: 2px 6px; border-radius: 3px; background: var(--bg2); border: 1px solid var(--panel-border); }
 .legend-chip .dot { width: 8px; height: 8px; border-radius: 50%; }
-
-footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px;
-  border-top: 1px solid var(--panel-border); position: relative; z-index: 2; }
-
-/* ============================================================================
-   SETUP OVERLAY — same UX as main dashboard
-   ============================================================================ */
-#setup-overlay { position: fixed; inset: 0; z-index: 100; display: none;
-  align-items: center; justify-content: center;
-  background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%);
-  backdrop-filter: blur(6px); }
+footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px; border-top: 1px solid var(--panel-border); position: relative; z-index: 2; }
+#setup-overlay { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%); backdrop-filter: blur(6px); }
 #setup-overlay.show { display: flex; }
-.setup-card { text-align: center; padding: 36px 44px;
-  border: 1px solid var(--neon-cyan); border-radius: 14px;
-  background: rgba(10,16,36,0.85);
-  box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05);
-  max-width: 460px; }
-.setup-card h2 { font-size: 22px; letter-spacing: 4px; color: var(--neon-cyan);
-  text-shadow: 0 0 12px var(--neon-cyan); margin: 0 0 12px; text-transform: uppercase; }
+.setup-card { text-align: center; padding: 36px 44px; border: 1px solid var(--neon-cyan); border-radius: 14px; background: rgba(10,16,36,0.85); box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05); max-width: 460px; }
+.setup-card h2 { font-size: 22px; letter-spacing: 4px; color: var(--neon-cyan); text-shadow: 0 0 12px var(--neon-cyan); margin: 0 0 12px; text-transform: uppercase; }
 .setup-card p { color: var(--text); font-size: 13px; line-height: 1.6; margin: 8px 0 18px; }
-.setup-card .hint { color: var(--neon-yellow); font-size: 11px; letter-spacing: 1px;
-  text-transform: uppercase; margin-top: 14px; }
-.setup-btn { display: inline-block; margin: 10px 8px; padding: 14px 28px;
-  font-family: inherit; font-size: 13px; letter-spacing: 3px; text-transform: uppercase;
-  background: transparent; color: var(--neon-cyan); border: 1px solid var(--neon-cyan);
-  border-radius: 4px; cursor: pointer; transition: all .2s; text-shadow: 0 0 6px var(--neon-cyan); }
+.setup-card .hint { color: var(--neon-yellow); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-top: 14px; }
+.setup-btn { display: inline-block; margin: 10px 8px; padding: 14px 28px; font-family: inherit; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; background: transparent; color: var(--neon-cyan); border: 1px solid var(--neon-cyan); border-radius: 4px; cursor: pointer; transition: all .2s; text-shadow: 0 0 6px var(--neon-cyan); }
 .setup-btn:hover { background: rgba(0,240,255,0.12); box-shadow: 0 0 18px var(--neon-cyan); }
-.setup-btn:active { transform: scale(0.97); }
-.setup-btn.skip { color: var(--text-dim); border-color: var(--panel-border); text-shadow: none; }
-.setup-btn.skip:hover { color: var(--neon-pink); border-color: var(--neon-pink); }
 .timer-svg { display: block; margin: 18px auto 6px; }
 .timer-svg .track { fill: none; stroke: rgba(0,240,255,0.15); stroke-width: 6; }
-.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round;
-  transform: rotate(-90deg); transform-origin: 50% 50%;
-  transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
+.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
 .timer-svg .ring.warn { stroke: var(--neon-pink); }
-.timer-svg text { fill: var(--neon-cyan); font-family: 'JetBrains Mono', monospace;
-  font-size: 28px; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
-.spinner { width: 40px; height: 40px; margin: 10px auto;
-  border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan);
-  border-radius: 50%; animation: spin 0.8s linear infinite; }
+.timer-svg text { fill: var(--neon-cyan); font-family: 'JetBrains Mono', monospace; font-size: 28px; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
+.spinner { width: 40px; height: 40px; margin: 10px auto; border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body class="allinone">
 
-<!-- ====== SETUP OVERLAY ====== -->
 <div id="setup-overlay" class="show setup-state-searching">
   <div class="setup-card" data-state="searching">
     <h2>📈 CHARTS · Headband</h2>
     <div class="spinner"></div>
-    <p>Searching for the headband…<br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode and bring it close</span></p>
+    <p>Searching for the headband…<br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode</span></p>
   </div>
   <div class="setup-card" data-state="ready" style="display:none">
     <h2>⚙ Calibration</h2>
-    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br>
-       Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
+    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br> Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
     <button class="setup-btn" id="btn-start-cal">▶ START CALIBRATION</button>
     <button class="setup-btn skip" id="btn-skip-cal">SKIP</button>
-    <div class="hint">You can recalibrate later from the main dashboard</div>
   </div>
   <div class="setup-card" data-state="running" style="display:none">
-    <h2 style="color:var(--neon-pink); text-shadow:0 0 14px var(--neon-pink)">👁 Close your eyes</h2>
+    <h2>👁 Close your eyes</h2>
     <svg class="timer-svg" width="180" height="180" viewBox="0 0 180 180">
       <circle class="track" cx="90" cy="90" r="78" />
-      <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring"
-              stroke-dasharray="490" stroke-dashoffset="0" />
+      <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring" stroke-dasharray="490" stroke-dashoffset="0" />
       <text x="90" y="90" id="timer-text">30</text>
     </svg>
-    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br>
-       <span style="font-size:11px; color:var(--text-dim)">measuring your individual α-rhythm…</span></p>
+    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br> <span style="font-size:11px; color:var(--text-dim)">measuring your individual α-rhythm…</span></p>
   </div>
   <div class="setup-card" data-state="complete" style="display:none">
-    <h2 style="color:var(--good); text-shadow:0 0 14px var(--good)">✓ CALIBRATED</h2>
+    <h2>✓ CALIBRATED</h2>
     <p id="cal-result-line">individual α-frequency: <b style="color:var(--neon-cyan)">— Hz</b></p>
     <p style="color:var(--text-dim); font-size:11px">Entering charts…</p>
   </div>
   <div class="setup-card" data-state="failed" style="display:none">
-    <h2 style="color:var(--bad); text-shadow:0 0 14px var(--bad)">✗ CALIBRATION FAILED</h2>
+    <h2>✗ CALIBRATION FAILED</h2>
     <p id="cal-fail-msg">Could not measure individual α-rhythm.</p>
     <button class="setup-btn" id="btn-retry-cal">↻ RETRY</button>
     <button class="setup-btn skip" id="btn-skip-cal-2">SKIP</button>
@@ -167,13 +108,11 @@ footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px;
     <div class="tab active" data-window="900">15 MIN</div>
     <div class="tab" data-window="0">ALL</div>
   </div>
-
   <span class="tab-label" style="margin-left:18px;">LAYOUT</span>
   <div class="tab-group" id="layout-tabs">
     <div class="tab active" data-layout="allinone">ALL IN ONE</div>
     <div class="tab" data-layout="split">SPLIT</div>
   </div>
-
   <span class="tab-label" style="margin-left:18px;">SMOOTHING</span>
   <div class="tab-group" id="smooth-tabs">
     <div class="tab" data-smooth="0">RAW</div>
@@ -184,14 +123,11 @@ footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px;
 </div>
 
 <main>
-  <div class="chart-grid" id="grid">
-    <!-- Cards are populated by JS -->
-  </div>
+  <div class="chart-grid" id="grid"></div>
 </main>
 
 <footer>
-  <div>window: <b id="foot-window">15 min</b> · layout: <b id="foot-layout">all-in-one</b> · smoothing: <b id="foot-smooth">×3</b> ·
-       server time: <b id="foot-clock">—</b></div>
+  <div>window: <b id="foot-window">15 min</b> · layout: <b id="foot-layout">all-in-one</b> · smoothing: <b id="foot-smooth">×3</b> · server time: <b id="foot-clock">—</b></div>
 </footer>
 
 <script>
@@ -206,38 +142,27 @@ function neonGradient(_ctx, area, hex) {
   if (!area || typeof area.top !== 'number' || typeof area.bottom !== 'number') return hex + '40';
   try {
     const g = _ctx.createLinearGradient(0, area.top, 0, area.bottom);
-    g.addColorStop(0, hex + 'cc');
-    g.addColorStop(1, hex + '00');
-    return g;
+    g.addColorStop(0, hex + 'cc'); g.addColorStop(1, hex + '00'); return g;
   } catch (e) { return hex + '40'; }
 }
 
-// ============================================================================
-//  Stream ring buffer — parallel typed arrays, dedup by t, max-Pts cap
-// ============================================================================
 class Stream {
-  /**
-   * @param {string[]} fields  parallel field names (e.g. ['eeg_ch1','eeg_ch2'])
-   * @param {number}   maxPts  maximum points kept (older points dropped FIFO)
-   */
   constructor(fields, maxPts) {
     this.fields = fields;
     this.arrays = { t: new Float64Array(maxPts) };
     for (const f of fields) this.arrays[f] = new Float64Array(maxPts);
-    this.hasValue = new Uint8Array(maxPts);  // 0 = no data, 1 = data
     this.maxPts  = maxPts;
-    this.start   = 0;        // index of oldest valid point
-    this.length  = 0;        // number of valid points
+    this.start   = 0;
+    this.length  = 0;
     this.lastT   = -Infinity;
   }
   append(t, values) {
-    if (t <= this.lastT) return false;        // dedup
+    if (t <= this.lastT) return false;
     if (this.length < this.maxPts) {
       const idx = (this.start + this.length) % this.maxPts;
       this._write(idx, t, values);
       this.length++;
     } else {
-      // overwrite oldest (FIFO)
       this._write(this.start, t, values);
       this.start = (this.start + 1) % this.maxPts;
     }
@@ -246,17 +171,13 @@ class Stream {
   }
   _write(idx, t, values) {
     this.arrays.t[idx] = t;
-    this.hasValue[idx] = 1;
     for (const f of this.fields) {
       const v = values[f];
       this.arrays[f][idx] = (v === null || v === undefined || Number.isNaN(v)) ? 0 : v;
     }
   }
-  /** For read-side: convert ring (start, length) → flat contiguous arrays
-   *  trimmed to t >= tMin. Returns {t:[], fields...:[], n} or null. */
   sliceFlat(tMin) {
     if (this.length === 0) return null;
-    // collect points in time order
     const tArr   = new Float64Array(this.length);
     const fArrs  = {};
     for (const f of this.fields) fArrs[f] = new Float64Array(this.length);
@@ -265,7 +186,6 @@ class Stream {
       tArr[i] = this.arrays.t[idx];
       for (const f of this.fields) fArrs[f][i] = this.arrays[f][idx];
     }
-    // binary search for first t >= tMin
     let lo = 0, hi = tArr.length;
     while (lo < hi) { const m = (lo + hi) >> 1; if (tArr[m] < tMin) lo = m + 1; else hi = m; }
     const start = lo;
@@ -278,425 +198,237 @@ class Stream {
   }
 }
 
-// ============================================================================
-//  Stream instances (per-stream cap tuned for 1m/5m/15m windows at 250 Hz)
-// ============================================================================
 const streams = {
-  eeg:      new Stream(['eeg_ch1', 'eeg_ch2'],                                                90000),  // 6 min @ 250 Hz
-  ppg:      new Stream(['ppg'],                                                                36000),  // 6 min @ 100 Hz
-  mems:     new Stream(['accX','accY','accZ','accMag','gyrX','gyrY','gyrZ','gyrMag'],         90000),  // 6 min @ 250 Hz
-  cardio:   new Stream(['heartRate','stressIndex','kaplanIndex'],                              5400),  // 90 min @ 1 Hz
+  eeg:      new Stream(['eeg_ch1', 'eeg_ch2'],                                                90000),
+  ppg:      new Stream(['ppg'],                                                                36000),
+  mems:     new Stream(['accX','accY','accZ','accMag','gyrX','gyrY','gyrZ','gyrMag'],         90000),
+  cardio:   new Stream(['heartRate','stressIndex','kaplanIndex'],                              5400),
   emotions: new Stream(['attention','relaxation','cognitiveLoad','cognitiveControl','selfControl'], 5400),
   phy:      new Stream(['relaxation','concentration','fatigue','stress','involvement'],         5400),
   prod:     new Stream(['productivityScore','concentrationScore','relaxationScore','fatigueScore'], 5400),
   nfb:      new Stream(['alpha','beta','theta','delta','smr'],                                 5400),
 };
 
-// ============================================================================
-//  Display configuration (separate from buffer mechanics)
-// ============================================================================
 const STREAMS_CFG = {
-  eeg:      { label: 'EEG (Ch1, Ch2)',  unit: 'µV', ymin: -150, ymax: 150, datasets: [
-    { key: 'eeg_ch1', label: 'Ch1 · O1–T3', color: '#00f0ff' },
-    { key: 'eeg_ch2', label: 'Ch2 · O2–T4', color: '#ff2bd6' } ] },
-  ppg:      { label: 'PPG (photoplethysmogram)', unit: '', datasets: [
-    { key: 'ppg', label: 'PPG', color: '#aaff00' } ] },
-  mems:     { label: 'Head motion — Accel (m/s²) + Gyro (°/s)', unit: '', datasets: [
-    { key: 'accX',   label: 'acc · X (left/right)',  color: '#00f0ff' },
-    { key: 'accY',   label: 'acc · Y (fwd/back)',    color: '#ff2bd6' },
-    { key: 'accZ',   label: 'acc · Z (up/down)',     color: '#aaff00' },
-    { key: 'accMag', label: '|a| total (m/s²)',      color: '#ffffff', width: 1.6 },
-    { key: 'gyrX',   label: 'gyro · X (roll)',       color: '#ff8a00', dash: [3,3] },
-    { key: 'gyrY',   label: 'gyro · Y (pitch)',      color: '#b66bff', dash: [3,3] },
-    { key: 'gyrZ',   label: 'gyro · Z (yaw)',        color: '#ffea00', dash: [3,3] },
-    { key: 'gyrMag', label: '|ω| total (°/s)',       color: '#ffffff', dash: [3,3], width: 1.4 } ] },
-  cardio:   { label: 'Cardio (HR, stress, HRV)', unit: '', ymin: 0, ymax: 200, datasets: [
-    { key: 'heartRate',   label: 'HR (bpm)',     color: '#ff3e7f' },
-    { key: 'stressIndex', label: 'stress idx',   color: '#ffea00' },
-    { key: 'kaplanIndex', label: 'HRV (Kaplan)', color: '#00f0ff' } ] },
-  emotions: { label: 'Emotions', unit: '0–1', ymin: 0, ymax: 1, datasets: [
-    { key: 'attention',        label: 'Attention',         color: '#00f0ff' },
-    { key: 'relaxation',       label: 'Relaxation',        color: '#aaff00' },
-    { key: 'cognitiveLoad',    label: 'Cognitive load',    color: '#ff3e7f' },
-    { key: 'cognitiveControl', label: 'Cognitive control', color: '#ffea00' },
-    { key: 'selfControl',      label: 'Self-control',      color: '#b66bff' } ] },
-  phy:      { label: 'Physiological states', unit: '0–1', ymin: 0, ymax: 1, datasets: [
-    { key: 'relaxation',   label: 'Relaxation',   color: '#aaff00' },
-    { key: 'concentration',label: 'Concentration',color: '#00f0ff' },
-    { key: 'fatigue',      label: 'Fatigue',      color: '#ff8a00' },
-    { key: 'stress',       label: 'Stress',       color: '#ff3e7f' },
-    { key: 'involvement',  label: 'Involvement',  color: '#b66bff' } ] },
-  prod:     { label: 'Productivity', unit: '0–100', ymin: 0, ymax: 100, datasets: [
-    { key: 'productivityScore', label: 'Productivity',  color: '#ffea00' },
-    { key: 'concentrationScore',label: 'Concentration', color: '#00f0ff' },
-    { key: 'relaxationScore',   label: 'Relaxation',    color: '#aaff00' },
-    { key: 'fatigueScore',      label: 'Fatigue',       color: '#ff8a00' } ] },
-  nfb:      { label: 'NFB band powers (α, β, θ, δ, SMR)', unit: '', datasets: [
-    { key: 'alpha', label: 'α alpha', color: '#00f0ff' },
-    { key: 'beta',  label: 'β beta',  color: '#ff2bd6' },
-    { key: 'theta', label: 'θ theta', color: '#ffea00' },
-    { key: 'delta', label: 'δ delta', color: '#ff8a00' },
-    { key: 'smr',   label: 'SMR',     color: '#b66bff' } ] },
+  eeg:      { fast: true, label: 'EEG (Ch1, Ch2)',  unit: 'µV', ymin: -150, ymax: 150, datasets: [{ key: 'eeg_ch1', label: 'Ch1 · O1–T3', color: '#00f0ff' }, { key: 'eeg_ch2', label: 'Ch2 · O2–T4', color: '#ff2bd6' }] },
+  ppg:      { fast: true, label: 'PPG (photoplethysmogram)', unit: '', datasets: [{ key: 'ppg', label: 'PPG', color: '#aaff00' }] },
+  mems:     { fast: true, label: 'Head motion — Accel (m/s²) + Gyro (°/s)', unit: '', datasets: [{ key: 'accX', label: 'acc · X', color: '#00f0ff' }, { key: 'accY', label: 'acc · Y', color: '#ff2bd6' }, { key: 'accZ', label: 'acc · Z', color: '#aaff00' }, { key: 'accMag', label: '|a| total', color: '#ffffff', width: 1.6 }, { key: 'gyrX', label: 'gyro · X', color: '#ff8a00', dash: [3,3] }, { key: 'gyrY', label: 'gyro · Y', color: '#b66bff', dash: [3,3] }, { key: 'gyrZ', label: 'gyro · Z', color: '#ffea00', dash: [3,3] }, { key: 'gyrMag', label: '|ω| total', color: '#ffffff', dash: [3,3], width: 1.4 }] },
+  cardio:   { label: 'Cardio (HR, stress, HRV)', unit: '', ymin: 0, ymax: 200, datasets: [{ key: 'heartRate', label: 'HR (bpm)', color: '#ff3e7f' }, { key: 'stressIndex', label: 'stress idx', color: '#ffea00' }, { key: 'kaplanIndex', label: 'HRV (Kaplan)', color: '#00f0ff' }] },
+  emotions: { label: 'Эмоции', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'attention', label: 'Фокус', color: '#00f0ff' }, { key: 'relaxation', label: 'Азарт', color: '#aaff00' }, { key: 'cognitiveLoad', label: 'Когнитивная нагрузка', color: '#ff3e7f' }, { key: 'cognitiveControl', label: 'Волнение', color: '#ffea00' }, { key: 'selfControl', label: 'Самоконтроль', color: '#b66bff' }] },
+  phy:      { label: 'Physiological states', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'relaxation', label: 'Relaxation', color: '#aaff00' }, { key: 'concentration', label: 'Concentration', color: '#00f0ff' }, { key: 'fatigue', label: 'Fatigue', color: '#ff8a00' }, { key: 'stress', label: 'Stress', color: '#ff3e7f' }, { key: 'involvement', label: 'Involvement', color: '#b66bff' }] },
+  prod:     { label: 'Productivity', unit: '0–100', ymin: 0, ymax: 100, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
+  nfb:      { label: 'NFB band powers (α, β, θ, δ, SMR)', unit: '', datasets: [{ key: 'alpha', label: 'α alpha', color: '#00f0ff' }, { key: 'beta', label: 'β beta', color: '#ff2bd6' }, { key: 'theta', label: 'θ theta', color: '#ffea00' }, { key: 'delta', label: 'δ delta', color: '#ff8a00' }, { key: 'smr', label: 'SMR', color: '#b66bff' }] },
 };
 
-// ============================================================================
-//  State
-// ============================================================================
-const state = {
-  windowSec: 900,        // 15 min default
-  layout:    'allinone',
-  smooth:    3,
-  charts:    {},
-  maxRenderPts: 1500,    // decimate to at most this many points per dataset
-};
+const state = { windowSec: 900, layout: 'allinone', smooth: 3, charts: {}, maxRenderPts: 400 };
 
-// ============================================================================
-//  Ingest (consume new *_stream batches from WS)
-// ============================================================================
 function ingest(d) {
-  const tickT = d.t_server;
+  if (typeof d.t_server !== 'number' || typeof d.t !== 'number') return;
+  const serverT0 = d.t_server - d.t;
 
-  // ---- EEG (delta) ----
   if (d.eeg_stream && d.eeg_stream.n) {
     const { t0, sr, n, ch1, ch2 } = d.eeg_stream;
-    for (let i = 0; i < n; i++) {
-      streams.eeg.append(t0 + i / sr, { eeg_ch1: ch1[i], eeg_ch2: ch2[i] });
-    }
+    for (let i = 0; i < n; i++) streams.eeg.append(serverT0 + t0 + i / sr, { eeg_ch1: ch1[i], eeg_ch2: ch2[i] });
   }
-  // ---- PPG (delta) ----
   if (d.ppg_stream && d.ppg_stream.n) {
     const { t0, sr, n, samples } = d.ppg_stream;
-    for (let i = 0; i < n; i++) {
-      streams.ppg.append(t0 + i / sr, { ppg: samples[i] });
-    }
+    for (let i = 0; i < n; i++) streams.ppg.append(serverT0 + t0 + i / sr, { ppg: samples[i] });
   }
-  // ---- MEMS (delta) ----
   if (d.mems_stream && d.mems_stream.n) {
     const { t0, sr, n, acc, gyro } = d.mems_stream;
     for (let i = 0; i < n; i++) {
       const ax = acc[i][0], ay = acc[i][1], az = acc[i][2];
       const gx = gyro[i][0], gy = gyro[i][1], gz = gyro[i][2];
-      streams.mems.append(t0 + i / sr, {
-        accX: ax, accY: ay, accZ: az, accMag: Math.hypot(ax, ay, az),
-        gyrX: gx, gyrY: gy, gyrZ: gz, gyrMag: Math.hypot(gx, gy, gz)
-      });
+      streams.mems.append(serverT0 + t0 + i / sr, { accX: ax, accY: ay, accZ: az, accMag: Math.hypot(ax, ay, az), gyrX: gx, gyrY: gy, gyrZ: gz, gyrMag: Math.hypot(gx, gy, gz) });
     }
   }
-  // ---- Cardio / Emotions / Phy / Prod (one scalar per tick) ----
-  if (d.cardio)   streams.cardio  .append(tickT, { heartRate: d.cardio.heartRate,   stressIndex: d.cardio.stressIndex,   kaplanIndex: d.cardio.kaplanIndex });
-  if (d.emotions) streams.emotions.append(tickT, d.emotions);
-  if (d.phy)      streams.phy     .append(tickT, d.phy);
-  if (d.prod)     streams.prod    .append(tickT, d.prod);
-  // ---- NFB (server sends array; take latest) ----
-  if (d.nfb && d.nfb.length) {
-    const last = d.nfb[d.nfb.length - 1];
-    streams.nfb.append(tickT, last);
+
+  if (d.cardio_history && d.cardio_history.length) {
+    d.cardio_history.forEach(h => { if(h && h.t) streams.cardio.append(serverT0 + h.t, h); });
+  } else if (d.cardio && d.cardio.t) {
+    streams.cardio.append(serverT0 + d.cardio.t, d.cardio);
+  }
+
+  if (d.emotions_history && d.emotions_history.length) {
+    d.emotions_history.forEach(h => { if(h && h.t) streams.emotions.append(serverT0 + h.t, h); });
+  } else if (d.emotions && d.emotions.t) {
+    streams.emotions.append(serverT0 + d.emotions.t, d.emotions);
+  }
+
+  if (d.phy && d.phy.t) streams.phy.append(serverT0 + d.phy.t, d.phy);
+  if (d.prod && d.prod.t) streams.prod.append(serverT0 + d.prod.t, d.prod);
+
+  if (d.nfb_history_list && d.nfb_history_list.length) {
+    d.nfb_history_list.forEach(h => { if(h && h.t) streams.nfb.append(serverT0 + h.t, h); });
+  } else if (d.nfb && d.nfb.length) {
+    const lastNfb = d.nfb[d.nfb.length - 1];
+    if (lastNfb && lastNfb.t) streams.nfb.append(serverT0 + lastNfb.t, lastNfb);
   }
 }
 
-// ============================================================================
-//  Decimation — bucket-averaging in the time dimension
-// ============================================================================
 function decimate(tArr, yArr, n, maxOut) {
   if (n <= maxOut) return { t: tArr, y: yArr, n };
   const stride = n / maxOut;
-  const tOut = new Array(maxOut);
-  const yOut = new Array(maxOut);
+  const tOut = new Float64Array(maxOut), yOut = new Float64Array(maxOut);
   for (let i = 0; i < maxOut; i++) {
-    const a = Math.floor(i * stride);
-    const b = Math.floor((i + 1) * stride);
-    let s = 0, k = 0;
-    for (let j = a; j < b; j++) { s += yArr[j]; k++; }
-    tOut[i] = tArr[a];
-    yOut[i] = k ? s / k : 0;
+    const a = Math.floor(i * stride), b = Math.floor((i + 1) * stride);
+    let s = 0, k = 0; for (let j = a; j < b; j++) { s += yArr[j]; k++; }
+    tOut[i] = tArr[a]; yOut[i] = k ? s / k : 0;
   }
   return { t: tOut, y: yOut, n: maxOut };
 }
 
-// ============================================================================
-//  Smoothing — centered moving average (applied AFTER decimation for speed)
-// ============================================================================
-function smooth(tArr, yArr, n, w) {
+function fastSmooth(tArr, yArr, n, w) {
   if (w <= 1 || n < 3) return yArr;
   const half = (w - 1) >> 1;
-  const out = new Array(n);
+  const out = new Float64Array(n);
+  let sum = 0, count = 0;
   for (let i = 0; i < n; i++) {
-    let s = 0, k = 0;
-    const lo = Math.max(0, i - half), hi = Math.min(n - 1, i + half);
-    for (let j = lo; j <= hi; j++) { s += yArr[j]; k++; }
-    out[i] = s / k;
+    if (i + half < n) { sum += yArr[i + half]; count++; }
+    if (i - half - 1 >= 0) { sum -= yArr[i - half - 1]; count--; }
+    out[i] = sum / count;
   }
   return out;
 }
 
-// ============================================================================
-//  Refresh one chart
-// ============================================================================
 function refreshChart(streamKey) {
-  const ch = state.charts[streamKey];
-  if (!ch) return;
-  const cfg = STREAMS_CFG[streamKey];
-  const s   = streams[streamKey];
-  if (s.length === 0) return;
-
-  // window cutoff = lastT - windowSec (0 = all)
+  const ch = state.charts[streamKey]; if (!ch) return;
+  const cfg = STREAMS_CFG[streamKey], s = streams[streamKey]; if (s.length === 0) return;
   const tMin = state.windowSec > 0 ? s.lastT - state.windowSec : -Infinity;
-  const sliced = s.sliceFlat(tMin);
-  if (!sliced) return;
+  const sliced = s.sliceFlat(tMin); if (!sliced) return;
 
   for (let di = 0; di < cfg.datasets.length; di++) {
     const key = cfg.datasets[di].key;
     let tArr = sliced.t, yArr = sliced[key], n = sliced.n;
-
-    // Decimate FIRST (preserves overall shape, big perf win)
-    if (n > state.maxRenderPts) {
-      const d = decimate(tArr, yArr, n, state.maxRenderPts);
-      tArr = d.t; yArr = d.y; n = d.n;
-    }
-    // Then smooth
-    if (state.smooth > 1) yArr = smooth(tArr, yArr, n, state.smooth);
-
-    // Build {x, y} points
-    const pts = new Array(n);
-    for (let i = 0; i < n; i++) pts[i] = { x: tArr[i], y: yArr[i] };
+    if (n > state.maxRenderPts) { const d = decimate(tArr, yArr, n, state.maxRenderPts); tArr = d.t; yArr = d.y; n = d.n; }
+    if (state.smooth > 1) yArr = fastSmooth(tArr, yArr, n, state.smooth);
+    const pts = new Array(n); for (let i = 0; i < n; i++) pts[i] = { x: tArr[i], y: yArr[i] };
     ch.data.datasets[di].data = pts;
   }
   ch.update('none');
 }
+
 function refreshAll() { for (const k of Object.keys(state.charts)) refreshChart(k); }
 
-// ============================================================================
-//  Chart construction
-// ============================================================================
-function fmtClock(unixSec) {
-  const d = new Date(unixSec * 1000);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
+function fmtClock(unixSec) { const d = new Date(unixSec * 1000); return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
 
 function makeChart(canvasId, streamKey) {
-  const cfg = STREAMS_CFG[streamKey];
-  const ctx = document.getElementById(canvasId).getContext('2d');
+  const cfg = STREAMS_CFG[streamKey], ctx = document.getElementById(canvasId).getContext('2d');
   const datasets = cfg.datasets.map(d => ({
-    label: d.label,
-    data: [],
-    borderColor: d.color,
-    backgroundColor: (c) => neonGradient(c.chart.ctx, c.chart.chartArea, d.color),
-    borderWidth: d.width || 1.2,
-    pointRadius: 0,
-    tension: 0.15,
-    fill: false,
-    borderDash: d.dash || [],
-    spanGaps: true,
+    label: d.label, data: [], borderColor: d.color, backgroundColor: (c) => neonGradient(c.chart.ctx, c.chart.chartArea, d.color),
+    borderWidth: d.width || 1.5, pointRadius: 0, tension: cfg.fast ? 0.15 : 0.4, cubicInterpolationMode: cfg.fast ? 'default' : 'monotone', fill: false, borderDash: d.dash || [], spanGaps: true,
   }));
   return new Chart(ctx, {
-    type: 'line',
-    data: { labels: [], datasets },
+    type: 'line', data: { labels: [], datasets },
     options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      parsing: false, normalized: true,
+      responsive: true, maintainAspectRatio: false, animation: false, parsing: false, normalized: true,
       plugins: {
         legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } },
-        tooltip: {
-          mode: 'nearest', intersect: false, animation: false,
-          callbacks: { title: items => fmtClock(items[0].parsed.x) }
-        },
+        tooltip: { mode: 'nearest', intersect: false, animation: false, callbacks: { title: items => fmtClock(items[0].parsed.x) } },
       },
       scales: {
-        x: {
-          type: 'linear', display: true,
-          ticks: { color: tickColor, maxTicksLimit: 8, callback: v => fmtClock(v) },
-          grid: { color: gridColor },
-        },
-        y: {
-          display: true, grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 5 },
-          ...(cfg.ymin !== null && cfg.ymin !== undefined ? { suggestedMin: cfg.ymin } : {}),
-          ...(cfg.ymax !== null && cfg.ymax !== undefined ? { suggestedMax: cfg.ymax } : {}),
-        },
+        x: { type: 'linear', display: true, ticks: { color: tickColor, maxTicksLimit: 8, callback: v => fmtClock(v) }, grid: { color: gridColor } },
+        y: { display: true, grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 5 }, ...(cfg.ymin !== null && cfg.ymin !== undefined ? { suggestedMin: cfg.ymin } : {}), ...(cfg.ymax !== null && cfg.ymax !== undefined ? { suggestedMax: cfg.ymax } : {}) },
       },
     },
   });
 }
 
-// ============================================================================
-//  DOM
-// ============================================================================
 function buildGrid() {
-  const grid = document.getElementById('grid');
-  grid.innerHTML = '';
+  const grid = document.getElementById('grid'); grid.innerHTML = '';
   const keys = ['eeg', 'ppg', 'mems', 'cardio', 'emotions', 'phy', 'prod', 'nfb'];
   for (const k of keys) {
-    const cfg = STREAMS_CFG[k];
-    const card = document.createElement('div');
-    card.className = 'chart-card';
-    card.innerHTML = `
-      <h3>
-        <span>${cfg.label} <span style="color:var(--text-dim)">${cfg.unit ? '· ' + cfg.unit : ''}</span></span>
-        <span class="legend-chips">
-          ${cfg.datasets.map(d => `<span class="legend-chip"><span class="dot" style="background:${d.color}"></span>${d.label}</span>`).join('')}
-        </span>
-      </h3>
-      <div class="chart-wrap"><canvas id="chart-${k}"></canvas></div>`;
-    grid.appendChild(card);
-    state.charts[k] = makeChart(`chart-${k}`, k);
+    const cfg = STREAMS_CFG[k], card = document.createElement('div'); card.className = 'chart-card';
+    card.innerHTML = `<h3><span>${cfg.label} <span style="color:var(--text-dim)">${cfg.unit ? '· ' + cfg.unit : ''}</span></span><span class="legend-chips">${cfg.datasets.map(d => `<span class="legend-chip"><span class="dot" style="background:${d.color}"></span>${d.label}</span>`).join('')}</span></h3><div class="chart-wrap"><canvas id="chart-${k}"></canvas></div>`;
+    grid.appendChild(card); state.charts[k] = makeChart(`chart-${k}`, k);
   }
 }
 
-// ============================================================================
-//  WebSocket
-// ============================================================================
 let ws;
-function setStatus(s) {
-  const c = document.getElementById('status-chip');
-  c.className = 'status-chip ' + s;
-  c.textContent = s;
-}
+let dataDirty = false;
+let lastRenderTime = 0;
+
+function setStatus(s) { const c = document.getElementById('status-chip'); c.className = 'status-chip ' + s; c.textContent = s; }
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => setStatus('connecting');
   ws.onmessage = (ev) => {
     try {
-      const d = JSON.parse(ev.data);
-      if (d.status) setStatus(d.status);
-      if (d.battery !== null && d.battery !== undefined) {
-        document.getElementById('battery').textContent = 'batt: ' + d.battery + '%';
-      }
+      const d = JSON.parse(ev.data); if (d.status) setStatus(d.status);
+      if (d.battery !== null && d.battery !== undefined) document.getElementById('battery').textContent = 'batt: ' + d.battery + '%';
       document.getElementById('info').textContent = d.device ? `${d.device} (${d.serial}) · ${(d.eeg_sr || '')}Hz` : '';
       ingest(d);
-      refreshAll();
       updateSetupOverlay(d);
+      dataDirty = true;
     } catch (e) { console.error('WS parse error', e); }
   };
   ws.onclose = () => { setStatus('error'); setTimeout(connect, 1500); };
   ws.onerror = () => ws.close();
 }
 
-// ============================================================================
-//  Tabs
-// ============================================================================
+function renderLoop(now) {
+  if (dataDirty && (now - lastRenderTime > 66)) {
+    refreshAll();
+    dataDirty = false;
+    lastRenderTime = now;
+  }
+  requestAnimationFrame(renderLoop);
+}
+requestAnimationFrame(renderLoop);
+
 function bindTabs(groupId, attr, onChange) {
   const g = document.getElementById(groupId);
   g.addEventListener('click', e => {
     const t = e.target.closest('.tab'); if (!t) return;
-    g.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    const v = t.getAttribute(attr);
-    onChange(v);
+    g.querySelectorAll('.tab').forEach(x => x.classList.remove('active')); t.classList.add('active');
+    onChange(t.getAttribute(attr));
   });
 }
-bindTabs('window-tabs', 'data-window', v => {
-  state.windowSec = v === '0' ? 0 : parseInt(v, 10);
-  document.getElementById('foot-window').textContent = state.windowSec === 0 ? 'all' : (state.windowSec/60) + ' min';
-  refreshAll();
-});
-bindTabs('layout-tabs', 'data-layout', v => {
-  state.layout = v;
-  document.body.className = v;
-  document.getElementById('foot-layout').textContent = v;
-  setTimeout(() => { for (const k of Object.keys(state.charts)) state.charts[k].resize(); }, 50);
-});
-bindTabs('smooth-tabs', 'data-smooth', v => {
-  state.smooth = parseInt(v, 10);
-  document.getElementById('foot-smooth').textContent = '×' + state.smooth;
-  refreshAll();
-});
+bindTabs('window-tabs', 'data-window', v => { state.windowSec = v === '0' ? 0 : parseInt(v, 10); document.getElementById('foot-window').textContent = state.windowSec === 0 ? 'all' : (state.windowSec/60) + ' min'; refreshAll(); });
+bindTabs('layout-tabs', 'data-layout', v => { state.layout = v; document.body.className = v; document.getElementById('foot-layout').textContent = v; setTimeout(() => { for (const k of Object.keys(state.charts)) state.charts[k].resize(); }, 50); });
+bindTabs('smooth-tabs', 'data-smooth', v => { state.smooth = parseInt(v, 10); document.getElementById('foot-smooth').textContent = '×' + state.smooth; refreshAll(); });
 
-// clock
-setInterval(() => {
-  document.getElementById('foot-clock').textContent = new Date().toLocaleTimeString();
-}, 1000);
+setInterval(() => { document.getElementById('foot-clock').textContent = new Date().toLocaleTimeString(); }, 1000);
 
-// init
 buildGrid();
 connect();
 
-// === SETUP OVERLAY ===
 const overlay = document.getElementById('setup-overlay');
-function showSetupState(name) {
-  overlay.className = 'show setup-state-' + name;
-  for (const el of overlay.querySelectorAll('[data-state]')) {
-    el.style.display = (el.dataset.state === name) ? '' : 'none';
-  }
-}
+function showSetupState(name) { overlay.className = 'show setup-state-' + name; for (const el of overlay.querySelectorAll('[data-state]')) { el.style.display = (el.dataset.state === name) ? '' : 'none'; } }
 function hideSetup() { overlay.classList.remove('show'); }
 
 let _lastSetupPhase = null;
 function updateSetupOverlay(d) {
-  const phase = d.calibration_phase || 'idle';
-  const connected = (d.status === 'connected' || d.status === 'streaming' || d.device);
-  let state;
-  if (phase === 'complete' || phase === 'skipped')          state = 'complete';
-  else if (phase === 'running')                              state = 'running';
-  else if (connected && (phase === 'ready' || phase === 'idle')) state = 'ready';
-  else if (phase === 'failed')                               state = 'failed';
-  else                                                       state = 'searching';
-
+  const phase = d.calibration_phase || 'idle', connected = (d.status === 'connected' || d.status === 'streaming' || d.device);
+  let state = (phase === 'complete' || phase === 'skipped') ? 'complete' : phase === 'running' ? 'running' : (connected && (phase === 'ready' || phase === 'idle')) ? 'ready' : phase === 'failed' ? 'failed' : 'searching';
   if (state === 'running' && !calInterval) startTimer(d.calibration_started_at);
-  if (state === 'searching') {
-    const m = document.getElementById('setup-searching-msg');
-    if (m) m.textContent = d.message || 'put it in pairing mode and bring it close';
-  }
-  if (state === 'failed') {
-    const m = document.getElementById('cal-fail-msg');
-    if (m) m.textContent = d.message || 'Could not measure individual α-rhythm.';
-  }
-
-  if (state === _lastSetupPhase) return;
-  _lastSetupPhase = state;
-
-  if (state === 'complete') {
-    stopTimer();
-    if (phase === 'complete' && d.calibration && d.calibration.individualFrequency) {
-      const el = document.getElementById('cal-result-line');
-      if (el) el.innerHTML = `individual α-frequency: <b style="color:var(--neon-cyan)">${d.calibration.individualFrequency.toFixed(2)} Hz</b>`;
-    }
-    showSetupState('complete');
-    setTimeout(hideSetup, 1500);
-  } else if (state === 'running') {
-    showSetupState('running');
-  } else if (state === 'ready') {
-    stopTimer();
-    showSetupState('ready');
-  } else if (state === 'failed') {
-    stopTimer();
-    showSetupState('failed');
-  } else {
-    stopTimer();
-    showSetupState('searching');
-  }
+  if (state === 'searching') { const m = document.getElementById('setup-searching-msg'); if (m) m.textContent = d.message || 'put it in pairing mode'; }
+  if (state === 'failed') { const m = document.getElementById('cal-fail-msg'); if (m) m.textContent = d.message || 'Could not measure α-rhythm.'; }
+  if (state === _lastSetupPhase) return; _lastSetupPhase = state;
+  if (state === 'complete') { stopTimer(); if (phase === 'complete' && d.calibration && d.calibration.individualFrequency) { const el = document.getElementById('cal-result-line'); if (el) el.innerHTML = `individual α-frequency: <b style="color:var(--neon-cyan)">${d.calibration.individualFrequency.toFixed(2)} Hz</b>`; } showSetupState('complete'); setTimeout(hideSetup, 1500); }
+  else if (state === 'running') showSetupState('running');
+  else if (state === 'ready') { stopTimer(); showSetupState('ready'); }
+  else if (state === 'failed') { stopTimer(); showSetupState('failed'); }
+  else { stopTimer(); showSetupState('searching'); }
 }
 
-function sendCmd(action) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action }));
-}
+function sendCmd(action) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action })); }
 document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
 document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
 
-// circular timer
-let calStartedAt = 0;
-let calInterval = null;
-const CAL_DURATION = 30;
-const RING_CIRC = 2 * Math.PI * 78;
+let calStartedAt = 0, calInterval = null;
+const CAL_DURATION = 30, RING_CIRC = 2 * Math.PI * 78;
 function tickTimer() {
-  const elapsed = (Date.now()/1000) - calStartedAt;
-  const remaining = Math.max(0, CAL_DURATION - elapsed);
-  const ring = document.getElementById('timer-ring');
-  const text = document.getElementById('timer-text');
-  if (!ring || !text) return;
-  const frac = remaining / CAL_DURATION;
-  ring.setAttribute('stroke-dashoffset', (1 - frac) * RING_CIRC);
-  text.textContent = Math.ceil(remaining);
+  const remaining = Math.max(0, CAL_DURATION - ((Date.now()/1000) - calStartedAt));
+  const ring = document.getElementById('timer-ring'), text = document.getElementById('timer-text'); if (!ring || !text) return;
+  ring.setAttribute('stroke-dashoffset', (1 - (remaining / CAL_DURATION)) * RING_CIRC); text.textContent = Math.ceil(remaining);
   if (remaining < 5) ring.classList.add('warn'); else ring.classList.remove('warn');
   if (remaining <= 0 && calInterval) { clearInterval(calInterval); calInterval = null; }
 }
-function startTimer(fromServerTs) {
-  calStartedAt = fromServerTs || (Date.now()/1000);
-  if (calInterval) clearInterval(calInterval);
-  tickTimer();
-  calInterval = setInterval(tickTimer, 100);
-}
+function startTimer(f) { calStartedAt = f || (Date.now()/1000); if (calInterval) clearInterval(calInterval); tickTimer(); calInterval = setInterval(tickTimer, 100); }
 function stopTimer() { if (calInterval) { clearInterval(calInterval); calInterval = null; } }
 </script>
 </body>

@@ -147,12 +147,6 @@ class State:
         self._device_ready: bool = False  # set True once STAGE 17 done; stops scan loop
 
         # Calibration control (user-driven):
-        #   "idle"      — headband not connected, or no calibrator yet
-        #   "ready"     — calibrator prepared, waiting for user to press Start
-        #   "running"   — calibrate_quick() in progress (~30 s closed-eyes)
-        #   "complete"  — calibration finished, data flowing with personalised bands
-        #   "skipped"   — user opted out; data still flows but NFB is uncalibrated
-        #   "failed"    — calibration error
         self.calibration_phase: str = "idle"
         self._calibration_started_at: float = 0.0
         self._calibrator = None              # set in _handle_devices_in_worker
@@ -192,10 +186,6 @@ STATE_LOCK = threading.Lock()
 
 
 def _safe_cb(name: str, fn):
-    """Wrap a ctypes callback so that any Python exception inside it is
-    caught and logged instead of crashing the whole process. Without this,
-    a single faulty C-thread callback (e.g. a null pointer deref that
-    surfaces as a Python TypeError) would tear down the FastAPI server."""
     def wrapper(*args, **kwargs):
         try:
             return fn(*args, **kwargs)
@@ -205,13 +195,11 @@ def _safe_cb(name: str, fn):
             traceback.print_exc()
     return wrapper
 
-# Throttled stdout logging for the callback flood. Every Nth call we print a
-# one-line summary so the log shows liveness without drowning in samples.
 _LOG_EVERY: dict[str, int] = {
     "eeg": 8,        # every 8th EEG packet (each ~1s of 250Hz)
     "mems": 8,
     "ppg": 8,
-    "res": 1,        # resistances are rare, log all
+    "res": 1,        
     "batt": 1,
     "mode": 1,
     "emot": 1,
@@ -225,8 +213,6 @@ _LOG_FIRST: dict[str, bool] = {k: True for k in _LOG_EVERY}
 
 
 def _cb_log(name: str, msg: str) -> None:
-    """Throttled one-line log from inside a C callback. Always logs the
-    FIRST event of each kind, then every Nth."""
     _LOG_COUNT[name] = _LOG_COUNT.get(name, 0) + 1
     n = _LOG_COUNT[name]
     if _LOG_FIRST.get(name, True):
@@ -239,7 +225,7 @@ def _cb_log(name: str, msg: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Capsule callbacks (run inside the C thread).
+# Capsule callbacks
 # --------------------------------------------------------------------------- #
 
 def on_battery(device, charge: int) -> None:
@@ -352,17 +338,12 @@ def on_ppg(cardio, ppg) -> None:
 
 
 def on_emotions_states(emotion, states) -> None:
-    # IMPORTANT: the official Python wrapper defines this struct with
-    # `focus/chill/stress/anger` field names, but the actual .so writes
-    # `attention/relaxation/cognitiveLoad/cognitiveControl` into those
-    # memory positions (same binary layout, different semantics).
-    # We re-label the keys here so the UI shows the *correct* meaning.
     try:
         d = {
-            "attention":      float(states.focus),       # struct field #1
-            "relaxation":     float(states.chill),       # struct field #2
-            "cognitiveLoad":  float(states.stress),      # struct field #3
-            "cognitiveControl": float(states.anger),     # struct field #4
+            "attention":      float(states.focus),       
+            "relaxation":     float(states.chill),       
+            "cognitiveLoad":  float(states.stress),      
+            "cognitiveControl": float(states.anger),     
             "selfControl":    float(states.selfControl),
             "t": S.now(),
         }
@@ -462,7 +443,7 @@ def on_nfb_user_state(nfb, user_state) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Capsule worker thread.
+# Capsule worker thread
 # --------------------------------------------------------------------------- #
 
 def capsule_worker() -> None:
@@ -487,9 +468,6 @@ def capsule_worker() -> None:
     locator.set_on_devices_list(_make_device_list_handler(locator, lib))
     print("[capsule] STAGE 3 OK — entering scan loop", flush=True)
 
-    # Search-and-retry loop. The locator fires on_device_list either when
-    # devices are found OR when the search window expires. If 0 devices come
-    # back, we just kick off another search window.
     SEARCH_WINDOW_S = 10
     next_search_at = 0.0
     last_status_message = ""
@@ -507,11 +485,6 @@ def capsule_worker() -> None:
 
         now = time.time()
 
-        # CRITICAL: once the device is fully connected and streaming, STOP
-        # scanning. The C library pumps its own internal thread; calling
-        # request_devices() afterwards interferes with the BLE stream and
-        # causes EEG callbacks to stop firing. Just call update() to give
-        # the C library a chance to do housekeeping, and idle.
         if device_ready:
             try:
                 locator.update()
@@ -527,11 +500,6 @@ def capsule_worker() -> None:
                 _cal_phase = S.calibration_phase
                 _calibrator = S._calibrator
 
-                # Fallback: if the device is connected and ready but
-                # calibration_phase is still "idle" (e.g. calibrator init
-                # failed before the fix above was applied), promote to
-                # "ready" so the frontend shows the calibration overlay
-                # instead of "Searching…".
                 if _cal_phase == "idle":
                     S.calibration_phase = "ready"
                     _cal_phase = "ready"
@@ -555,8 +523,8 @@ def capsule_worker() -> None:
                         S.status_message = f"Calibration start failed: {exc}"
                     print(f"[capsule] STAGE 16: calibration start FAILED: {exc}", flush=True)
 
-            time.sleep(0.5)
-            if iter_n % 10 == 0:
+            time.sleep(0.04)
+            if iter_n % 125 == 0:
                 with STATE_LOCK:
                     print(f"[capsule] idle: eeg={len(S.eeg)} ppg={len(S.ppg)} mems={len(S.mems_acc)} emot={S.latest_emotions is not None} cardio={S.latest_cardio is not None} cal={S.calibration_phase}", flush=True)
             continue
@@ -579,10 +547,8 @@ def capsule_worker() -> None:
                 time.sleep(2.0)
                 continue
             next_search_at = now + SEARCH_WINDOW_S
-            # give the BT stack a brief moment before pumping
             time.sleep(0.1)
 
-        # Heartbeat every 5s so the log shows the worker is alive.
         if now - last_heartbeat >= 5.0:
             last_heartbeat = now
             with STATE_LOCK:
@@ -597,7 +563,6 @@ def capsule_worker() -> None:
 
 def _make_device_list_handler(locator, lib):
     state = {"done": False}
-
     def on_device_list(loc, info, fail_reason) -> None:
         if state["done"]:
             return
@@ -605,12 +570,9 @@ def _make_device_list_handler(locator, lib):
             _on_device_list_inner(loc, info, fail_reason, locator, lib, state)
         except Exception as exc:
             print(f"[capsule] EXCEPTION in on_device_list: {exc!r}", flush=True)
-            import traceback
-            traceback.print_exc()
             with STATE_LOCK:
                 S.status = "error"
                 S.status_message = f"Device-list handler error: {exc}"
-
     return on_device_list
 
 
@@ -620,15 +582,10 @@ def _on_device_list_inner(loc, info, fail_reason, locator, lib, state) -> None:
     except Exception:
         n = 0
     with STATE_LOCK:
-        # Do NOT overwrite status_message if the device is already connected.
-        # The C library fires this callback when a search window expires
-        # (with 0 devices) even after the device is connected. Overwriting
-        # here would erase "Connected to …" / "Calibration complete" etc.
         if not S._device_ready:
             S.status_message = f"Found {n} device(s) (minimal test)"
     if n > 0 and not state["done"]:
         state["done"] = True
-        # Hand off to the worker; do not do any further C work in the callback.
         threading.Thread(
             target=_handle_devices_in_worker,
             args=(locator, lib, [(str(info[0].get_serial()), str(info[0].get_name()))], 0, n, state),
@@ -637,18 +594,12 @@ def _on_device_list_inner(loc, info, fail_reason, locator, lib, state) -> None:
 
 
 def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) -> None:
-    """Run on a fresh Python thread (NOT inside the C callback). The whole
-    body is wrapped in a single try/except BaseException so that any single
-    C-level error path (ctypes Python exception, type error, etc.) is
-    contained here and cannot take down the web server. The .so's abort()
-    will still kill the process, but Python-level faults won't."""
     print(f"[capsule] HW-A: worker thread started (n={n})", flush=True)
     try:
         with STATE_LOCK:
             S.status_message = f"Found {n} device(s)"
 
         if n == 0 or not devices:
-            print("[capsule] HW-Z: no devices, returning", flush=True)
             return
 
         serial, name = devices[0]
@@ -658,7 +609,6 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
         device = Device(locator, serial, lib)
         print("[capsule] STAGE 5 OK: Device created", flush=True)
 
-        # Subscribe to the connection-status event BEFORE calling connect.
         connected_flag = {"hit": False}
         def on_conn(dev, status):
             print(f"[capsule] STAGE 6 EVENT: connection_status = {status}", flush=True)
@@ -677,32 +627,25 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
         device.connect(bipolarChannels=True)
         print("[capsule] STAGE 7: connect() returned", flush=True)
 
-        # Wait until device is actually connected (or timeout).
-        # The BLE handshake can take 10-20s on first connect, so we allow 30s.
         print("[capsule] STAGE 8: waiting for connection event (up to 30s)", flush=True)
         connected = False
         for i in range(750):
             locator.update()
             time.sleep(0.04)
             if connected_flag["hit"]:
-                print(f"[capsule] STAGE 8: connection_event after {(i+1)*40} ms", flush=True)
                 connected = True
                 break
             try:
                 if device.is_connected():
-                    print(f"[capsule] STAGE 8: is_connected()=True after {(i+1)*40} ms", flush=True)
                     connected = True
                     connected_flag["hit"] = True
                     break
             except Exception:
                 pass
         if not connected:
-            print("[capsule] STAGE 8 TIMEOUT: no connection event in 30s — aborting this attempt", flush=True)
+            print("[capsule] STAGE 8 TIMEOUT: no connection event — aborting attempt", flush=True)
             with STATE_LOCK:
-                S.status_message = "Device found, but did not connect in 30s (is it in pairing mode?)"
-            # CRITICAL: do NOT call any further C methods on `device` here.
-            # The C library aborts the process if you query a not-connected device.
-            # Just drop it; the next scan cycle will create a fresh Device.
+                S.status_message = "Device found, but did not connect in 30s"
             try:
                 device.release()
             except Exception:
@@ -711,8 +654,7 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
 
         print("[capsule] STAGE 9: querying channel names and sample rates", flush=True)
         channel_names_obj = device.get_channel_names()
-        channels = [channel_names_obj.get_name_by_index(i)
-                    for i in range(len(channel_names_obj))]
+        channels = [channel_names_obj.get_name_by_index(i) for i in range(len(channel_names_obj))]
         eeg_sr = device.get_eeg_sample_rate()
         info_obj = device.get_info()
         print(f"[capsule] STAGE 9 OK: channels={channels} eeg_sr={eeg_sr}", flush=True)
@@ -726,14 +668,8 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
             S.mems_sample_rate = 250
             S.status = "connected"
             S.status_message = f"Connected to {S.device_name}"
-            # Tell the main scan loop to stop scanning. The C library will
-            # pump the BLE stream itself; we just need to call update()
-            # occasionally.
             S._device_ready = True
 
-        # Classifiers — construct + subscribe. Each in its own try/except so
-        # one missing classifier (e.g. Cardio not supported) doesn't kill the
-        # rest.
         try:
             emotions = Emotions(device, lib)
             emotions.set_on_states_update(on_emotions_states)
@@ -753,31 +689,22 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
             phy = PhysiologicalStates(device, lib)
             phy.set_on_states(on_phy_states)
             phy.set_on_calibrated(on_phy_calibrated)
-            # CRITICAL: the metrics callback (on_phy_states) only fires AFTER
-            # the classifier runs its own baseline calibration. Without this
-            # call the panel stays empty forever.
-            # NOTE: start_baseline_calibration() may not exist in all API
-            # versions (e.g. v2.0.72). Use hasattr guard.
             if hasattr(phy, 'start_baseline_calibration'):
                 phy.start_baseline_calibration()
                 print("[capsule] STAGE 12: PhysiologicalStates ready (baseline calibration started)", flush=True)
             else:
-                print("[capsule] STAGE 12: PhysiologicalStates ready (no start_baseline_calibration in this API version — classifier will self-start)", flush=True)
+                print("[capsule] STAGE 12: PhysiologicalStates ready", flush=True)
         except Exception as exc:
             print(f"phy: {exc}", file=sys.stderr)
 
         try:
             prod = Productivity(device, lib)
             prod.set_on_metrics_update(on_prod_metrics)
-            # Same as above: productivity needs a baseline calibration before
-            # it starts emitting metrics.
-            # NOTE: start_baseline_calibration() may not exist in all API
-            # versions (e.g. v2.0.72). Use hasattr guard.
             if hasattr(prod, 'start_baseline_calibration'):
                 prod.start_baseline_calibration()
                 print("[capsule] STAGE 13: Productivity ready (baseline calibration started)", flush=True)
             else:
-                print("[capsule] STAGE 13: Productivity ready (no start_baseline_calibration in this API version — classifier will self-start)", flush=True)
+                print("[capsule] STAGE 13: Productivity ready", flush=True)
         except Exception as exc:
             print(f"prod: {exc}", file=sys.stderr)
 
@@ -785,19 +712,13 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
             mems = MEMS(device, lib)
             mems.set_on_update(on_mems)
             print("[capsule] STAGE 14: MEMS ready", flush=True)
-        except CapsuleException as exc:
-            print(f"mems: {exc.message}", file=sys.stderr)
         except Exception as exc:
             print(f"mems: {exc}", file=sys.stderr)
 
-        # Start streaming
         print("[capsule] STAGE 15: device.start()", flush=True)
         device.start()
-        print("[capsule] STAGE 15 OK: device.start() returned", flush=True)
+        print("[capsule] STAGE 15 OK", flush=True)
 
-        # Quick alpha calibration — prepared but NOT started.
-        # The user will trigger it from the dashboard once the headband is on
-        # their head and they're ready to sit still with eyes closed.
         cal = None
         try:
             cal = Calibrator(device, lib)
@@ -805,21 +726,13 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
             with STATE_LOCK:
                 S._calibrator = cal
                 S.calibration_phase = "ready"
-            print("[capsule] STAGE 16: calibrator prepared (waiting for user 'start')", flush=True)
+            print("[capsule] STAGE 16: calibrator prepared", flush=True)
         except Exception as exc:
             print(f"calibrator init failed: {exc}", file=sys.stderr)
-            # IMPORTANT: even if the calibrator fails, set phase to "ready"
-            # so the user can still skip calibration and use the device.
-            # Without this, calibration_phase stays "idle" and the frontend
-            # shows "Searching…" instead of the calibration overlay.
             with STATE_LOCK:
                 S.calibration_phase = "ready"
                 S.status_message = f"Connected to {S.device_name} (calibration unavailable)"
 
-        # NFB — DISABLED for now. The C library's clCNFB_CreateCalibrated
-        # requires a finished calibrator and aborts if the calibrator isn't
-        # ready yet. We use clCNFB_Create (no calibrator) instead. If you
-        # want NFB data, change NFB(...) to pass calibrator=None.
         try:
             nfb = NFB(device, lib, calibrator=None)
             nfb.set_on_user_state(on_nfb_user_state)
@@ -829,14 +742,11 @@ def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) 
 
         state["done"] = True
         print("[capsule] HW-Z: ALL STAGES DONE", flush=True)
-
     except BaseException as exc:
         with STATE_LOCK:
             S.status = "error"
             S.status_message = f"Worker crashed: {exc!r}"
-        print(f"[capsule] WORKER CRASHED (caught): {exc!r}", flush=True)
-        import traceback
-        traceback.print_exc()
+        print(f"[capsule] WORKER CRASHED: {exc!r}", flush=True)
 
 
 def _on_calibration(calibrator, data) -> None:
@@ -857,7 +767,7 @@ def _on_calibration(calibrator, data) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Web layer.
+# Web layer
 # --------------------------------------------------------------------------- #
 
 app = FastAPI(title="Capsule Neiry Dashboard")
@@ -899,8 +809,6 @@ async def api_status() -> dict[str, Any]:
 
 @app.get("/api/buffers")
 async def api_buffers() -> dict[str, Any]:
-    """Diagnostic: how many samples are currently buffered for each stream.
-    Use this to confirm data is flowing without opening the browser."""
     with STATE_LOCK:
         return {
             "eeg_samples": len(S.eeg),
@@ -922,12 +830,7 @@ async def api_buffers() -> dict[str, Any]:
 
 
 def _sensor_status(S) -> dict:
-    """Compact per-sensor health snapshot for the calibration overlay.
-    Each entry: ``state`` ∈ {ok, warn, none, error} + optional value/unit.
-    Computed cheaply under STATE_LOCK (no C-callback calls)."""
     out: dict[str, Any] = {}
-
-    # --- EEG: >100 samples in buffer ≈ 0.4 s @ 250 Hz ---
     n_eeg = len(S.eeg)
     eeg_sr = S.eeg_sample_rate
     if n_eeg >= 100 and eeg_sr > 0:
@@ -935,7 +838,6 @@ def _sensor_status(S) -> dict:
     else:
         out["eeg"] = {"state": "none", "sr": eeg_sr, "n": n_eeg, "channels": list(S.channel_names)}
 
-    # --- PPG ---
     n_ppg = len(S.ppg)
     ppg_sr = S.ppg_sample_rate
     if n_ppg >= 50 and ppg_sr > 0:
@@ -943,7 +845,6 @@ def _sensor_status(S) -> dict:
     else:
         out["ppg"] = {"state": "none", "sr": ppg_sr, "n": n_ppg}
 
-    # --- MEMS (accelerometer + gyroscope) ---
     n_mems = len(S.mems_acc)
     mems_sr = S.mems_sample_rate
     if n_mems >= 100 and mems_sr > 0:
@@ -951,7 +852,6 @@ def _sensor_status(S) -> dict:
     else:
         out["mems"] = {"state": "none", "sr": mems_sr, "n": n_mems}
 
-    # --- Skin contact via electrode resistances ---
     res = S.latest_resistances or []
     n_ch = len(res)
     n_bad = 0
@@ -965,7 +865,7 @@ def _sensor_status(S) -> dict:
                 n_bad += 1
             else:
                 fv = float(v)
-                if fv != fv or fv >= 5e6:  # NaN or >= 5 MΩ
+                if fv != fv or fv >= 5e6:
                     n_bad += 1
                 else:
                     n_good += 1
@@ -982,7 +882,6 @@ def _sensor_status(S) -> dict:
     else:
         out["skin"] = {"state": "error", "n_ch": n_ch, "n_good": 0, "n_bad": n_bad, "max_r": None}
 
-    # --- Cardio (HR / stress / HRV) ---
     cardio = S.latest_cardio
     if cardio is None:
         out["cardio"] = {"state": "none"}
@@ -1000,7 +899,6 @@ def _sensor_status(S) -> dict:
         else:
             out["cardio"] = {"state": "warn", "reason": "signal weak", "hr": hr, "skin": skin, "motion": motion}
 
-    # --- Emotions / Physiological states / Productivity (need EEG + calibration) ---
     if S.latest_emotions:
         e = S.latest_emotions
         out["emotions"] = {"state": "ok", "attention": e.get("attention"), "relaxation": e.get("relaxation")}
@@ -1017,7 +915,6 @@ def _sensor_status(S) -> dict:
     else:
         out["prod"] = {"state": "none"}
 
-    # --- NFB: needs calibrated device with running session ---
     n_nfb = len(S.nfb_hist)
     if n_nfb > 0:
         last = S.nfb_hist[-1]
@@ -1033,13 +930,11 @@ def _sensor_status(S) -> dict:
 
 
 def _sanitize(obj):
-    """In-place: replace NaN/Inf floats with None. Recurses into lists/dicts.
-    Stops at the first level of dict keys; values are walked."""
     if isinstance(obj, dict):
         for k in list(obj.keys()):
             v = obj[k]
             if isinstance(v, float):
-                if v != v or v == float("inf") or v == float("-inf"):  # NaN/Inf
+                if v != v or v == float("inf") or v == float("-inf"):
                     obj[k] = None
             elif isinstance(v, (dict, list)):
                 _sanitize(v)
@@ -1054,10 +949,6 @@ def _sanitize(obj):
 
 
 class _WSDelta:
-    """Per-WebSocket-connection delta cursor so each client gets only NEW samples.
-    On first connect, ``last_t`` is None and we send the full tail (so the
-    client can backfill). On subsequent ticks we send only samples with
-    t > last_t, and update last_t to the last sample sent."""
     __slots__ = ("eeg_last_t", "ppg_last_t", "mems_last_t")
     def __init__(self) -> None:
         self.eeg_last_t: float | None = None
@@ -1065,17 +956,10 @@ class _WSDelta:
         self.mems_last_t: float | None = None
 
 
-def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int,
-                  first_sync_max: int = 500):
-    """Return a {t0, sr, ch1, ch2, n} payload containing only NEW samples
-    (t > last_t). On FIRST sync (last_t is None) only the most recent
-    ``first_sync_max`` samples are sent (≈ 2 s at 250 Hz, 5 s at 100 Hz)
-    so the first WS frame stays well under 100 KB and the browser doesn't
-    choke. Updates last_t to the last sample included."""
+def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, first_sync_max: int = 500):
     if not times or not samples:
         return None, last_t
     if last_t is None:
-        # first sync: only the tail
         if len(times) > first_sync_max:
             new_t = times[-first_sync_max:]
             new_s = samples[-first_sync_max:]
@@ -1099,7 +983,6 @@ def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int,
         payload["ch1"] = [s[0] for s in new_s]
         payload["ch2"] = [s[1] for s in new_s]
     else:
-        # 1-channel stream (PPG) — just put flat array under "samples"
         if isinstance(new_s[0], (list, tuple)):
             payload["samples"] = [s[0] for s in new_s]
         else:
@@ -1109,11 +992,11 @@ def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int,
 
 async def ws_sender(ws: WebSocket) -> None:
     delta = _WSDelta()
+    is_first = True
     try:
         while True:
             await asyncio.sleep(0.1)  # 10 Hz
             with STATE_LOCK:
-                # ---- high-rate streams: per-sample time + deltas ----
                 eeg_t  = list(S.eeg_t)
                 eeg_s  = list(S.eeg)
                 ppg_t  = list(S.ppg_t)
@@ -1122,10 +1005,12 @@ async def ws_sender(ws: WebSocket) -> None:
                 mems_a = list(S.mems_acc)
                 mems_g = list(S.mems_gyro)
 
-                eeg_p,  delta.eeg_last_t  = _build_batch(eeg_t,  eeg_s,  max(len(S.channel_names), 1), delta.eeg_last_t,  S.eeg_sample_rate)
-                ppg_p,  delta.ppg_last_t  = _build_batch(ppg_t,  ppg_s,  1,                              delta.ppg_last_t,  S.ppg_sample_rate)
-                mems_p, delta.mems_last_t = _build_batch(mems_t, list(zip(mems_a, mems_g)), 1,        delta.mems_last_t, S.mems_sample_rate)
-                # mems: split back into acc + gyro for client convenience
+                # На первой синхронизации разрешаем отправить полный буфер истории (до 7500 точек)
+                sync_max = 7500 if is_first else 500
+                eeg_p,  delta.eeg_last_t  = _build_batch(eeg_t,  eeg_s,  max(len(S.channel_names), 1), delta.eeg_last_t,  S.eeg_sample_rate, first_sync_max=sync_max)
+                ppg_p,  delta.ppg_last_t  = _build_batch(ppg_t,  ppg_s,  1,                              delta.ppg_last_t,  S.ppg_sample_rate, first_sync_max=sync_max)
+                mems_p, delta.mems_last_t = _build_batch(mems_t, list(zip(mems_a, mems_g)), 1,        delta.mems_last_t, S.mems_sample_rate, first_sync_max=sync_max)
+                
                 if mems_p is not None:
                     n = mems_p["n"]
                     acc_arr = [list(mems_a[i]) for i in range(len(mems_t) - n, len(mems_t))]
@@ -1133,6 +1018,17 @@ async def ws_sender(ws: WebSocket) -> None:
                     mems_p["acc"] = acc_arr
                     mems_p["gyro"] = gyr_arr
                     del mems_p["samples"]
+
+                # Вытаскиваем полные списки истории для медленных графиков при первом открытии
+                if is_first:
+                    cardio_hist_list = list(S.cardio_hist)
+                    emotions_hist_list = list(S.emotions_hist)
+                    nfb_hist_list = list(S.nfb_hist)
+                    is_first = False
+                else:
+                    cardio_hist_list = []
+                    emotions_hist_list = []
+                    nfb_hist_list = []
 
                 payload = {
                     "type": "tick",
@@ -1161,24 +1057,21 @@ async def ws_sender(ws: WebSocket) -> None:
                     "res_channel_names": S.res_channel_names,
                     "nfb": list(S.nfb_hist)[-128:],
                     "sensor_status": _sensor_status(S),
-                    # OLD format (live oscilloscope on main dashboard): last ~1 s of each stream
+                    
+                    # Пакеты восстановления истории для страниц после перезагрузки
+                    "cardio_history": cardio_hist_list,
+                    "emotions_history": emotions_hist_list,
+                    "nfb_history_list": nfb_hist_list,
+                    
                     "eeg":  list(S.eeg)[-256:],
                     "ppg":  list(S.ppg)[-256:],
                     "mems_acc":  list(S.mems_acc)[-256:],
                     "mems_gyro": list(S.mems_gyro)[-256:],
-                    # NEW format (charts page): per-sample time + deltas only
                     "eeg_stream":  eeg_p,
                     "ppg_stream":  ppg_p,
                     "mems_stream": mems_p,
                 }
             try:
-                # CRITICAL: the C library sometimes produces NaN/Inf (bad
-                # electrode contact, divide-by-zero in their DSP, etc.).
-                # Python's json.dumps happily serialises these as bare ``NaN``
-                # / ``Infinity`` tokens — which are NOT valid JSON, and the
-                # browser's JSON.parse throws on them, breaking the WS.
-                # We sanitise: NaN/Inf → null. Lists/dicts are walked in
-                # place; scalars are replaced directly.
                 _sanitize(payload)
                 await ws.send_json(payload)
             except Exception:
@@ -1234,7 +1127,4 @@ async def on_startup() -> None:
 
 if __name__ == "__main__":
     import uvicorn
-    # 0.0.0.0 = IPv4 only. On hosts with net.ipv6.bindv6only=1 (Kali default)
-    # binding to :: would not accept IPv4 traffic, so we stay on 0.0.0.0.
-    # Open the dashboard at http://127.0.0.1:8000 (not localhost, see README).
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

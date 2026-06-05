@@ -3,499 +3,123 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>⚡ NEIRY · Capsule Dashboard</title>
+<title> NEIRY · Capsule Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js?v=1780587612"></script>
 <style>
-:root {
-  --bg: #04060d;
-  --bg2: #080c1a;
-  --panel: #0a1024;
-  --panel-border: #1a2550;
-  --grid: #1b2750;
-  --neon-cyan: #00f0ff;
-  --neon-magenta: #ff2bd6;
-  --neon-lime: #aaff00;
-  --neon-pink: #ff3e7f;
-  --neon-yellow: #ffea00;
-  --neon-purple: #b66bff;
-  --neon-orange: #ff8a00;
-  --text: #d8e1ff;
-  --text-dim: #6f7bb0;
-  --good: #00ff88;
-  --bad: #ff3355;
-}
+:root { --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550; --grid: #1b2750; --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00; --neon-pink: #ff3e7f; --neon-yellow: #ffea00; --neon-purple: #b66bff; --neon-orange: #ff8a00; --text: #d8e1ff; --text-dim: #6f7bb0; --good: #00ff88; --bad: #ff3355; }
 * { box-sizing: border-box; }
-html, body {
-  margin: 0; padding: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
-  min-height: 100vh;
-  background-image:
-    radial-gradient(ellipse at 20% 0%, rgba(0, 240, 255, 0.08), transparent 50%),
-    radial-gradient(ellipse at 80% 100%, rgba(255, 43, 214, 0.08), transparent 50%),
-    linear-gradient(180deg, #04060d 0%, #06091a 100%);
-  background-attachment: fixed;
-}
-body::before {
-  content: "";
-  position: fixed; inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    0deg, transparent 0, transparent 2px,
-    rgba(0, 240, 255, 0.015) 2px, rgba(0, 240, 255, 0.015) 4px);
-  z-index: 1;
-}
-header {
-  position: relative; z-index: 2;
-  padding: 20px 28px;
-  border-bottom: 1px solid var(--panel-border);
-  display: flex; align-items: center; gap: 24px; flex-wrap: wrap;
-  background: linear-gradient(180deg, rgba(0,240,255,0.04), transparent);
-  backdrop-filter: blur(8px);
-}
-.logo {
-  font-size: 22px; font-weight: 700; letter-spacing: 4px;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
-  text-shadow: 0 0 30px rgba(0,240,255,0.4);
-}
-.logo::before {
-  content: "◈";
-  margin-right: 10px;
-  -webkit-text-fill-color: var(--neon-cyan);
-  filter: drop-shadow(0 0 8px var(--neon-cyan));
-}
-.chip {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 6px 14px;
-  border: 1px solid var(--panel-border);
-  border-radius: 999px;
-  font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px;
-  background: rgba(10, 16, 36, 0.6);
-}
-.chip .dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--text-dim);
-  box-shadow: 0 0 6px currentColor;
-}
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace; min-height: 100vh; background-image: radial-gradient(ellipse at 20% 0%, rgba(0, 240, 255, 0.08), transparent 50%), radial-gradient(ellipse at 80% 100%, rgba(255, 43, 214, 0.08), transparent 50%), linear-gradient(180deg, #04060d 0%, #06091a 100%); background-attachment: fixed; }
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1; background: repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(0, 240, 255, 0.015) 2px, rgba(0, 240, 255, 0.015) 4px); }
+header { position: relative; z-index: 2; padding: 20px 28px; border-bottom: 1px solid var(--panel-border); display: flex; align-items: center; gap: 24px; flex-wrap: wrap; background: linear-gradient(180deg, rgba(0,240,255,0.04), transparent); backdrop-filter: blur(8px); }
+.logo { font-size: 22px; font-weight: 700; letter-spacing: 4px; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 30px rgba(0,240,255,0.4); }
+.logo::before { content: "◈"; margin-right: 10px; -webkit-text-fill-color: var(--neon-cyan); filter: drop-shadow(0 0 8px var(--neon-cyan)); }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border: 1px solid var(--panel-border); border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; background: rgba(10, 16, 36, 0.6); }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); box-shadow: 0 0 6px currentColor; }
 .chip.idle .dot, .chip.searching .dot { background: var(--neon-yellow); animation: pulse 1.5s infinite; }
 .chip.connected .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
 .chip.error .dot { background: var(--bad); }
 .chip.connecting .dot { background: var(--neon-orange); animation: pulse 1s infinite; }
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
-}
-#battery {
-  font-size: 14px;
-}
-#battery .lvl {
-  display: inline-block; min-width: 28px; text-align: right;
-  color: var(--neon-cyan); text-shadow: 0 0 8px var(--neon-cyan);
-}
-main {
-  position: relative; z-index: 2;
-  padding: 20px 28px 60px;
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  gap: 18px;
-}
-.panel {
-  background: linear-gradient(180deg, var(--panel) 0%, var(--bg2) 100%);
-  border: 1px solid var(--panel-border);
-  border-radius: 14px;
-  padding: 16px 18px;
-  position: relative;
-  overflow: hidden;
-}
-.panel::before {
-  content: "";
-  position: absolute; top: 0; left: 0; right: 0; height: 1px;
-  background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
-  opacity: 0.5;
-}
-.panel h3 {
-  margin: 0 0 10px;
-  font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
-  color: var(--text-dim);
-  display: flex; align-items: center; gap: 8px;
-}
-.panel h3 .accent {
-  width: 4px; height: 14px;
-  background: var(--neon-cyan);
-  box-shadow: 0 0 8px var(--neon-cyan);
-}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+#battery { font-size: 14px; }
+#battery .lvl { display: inline-block; min-width: 28px; text-align: right; color: var(--neon-cyan); text-shadow: 0 0 8px var(--neon-cyan); }
+main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; }
+.panel { background: linear-gradient(180deg, var(--panel) 0%, var(--bg2) 100%); border: 1px solid var(--panel-border); border-radius: 14px; padding: 16px 18px; position: relative; overflow: hidden; }
+.panel::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent); opacity: 0.5; }
+.panel h3 { margin: 0 0 10px; font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--text-dim); display: flex; align-items: center; gap: 8px; }
+.panel h3 .accent { width: 4px; height: 14px; background: var(--neon-cyan); box-shadow: 0 0 8px var(--neon-cyan); }
 .panel.magenta h3 .accent { background: var(--neon-magenta); box-shadow: 0 0 8px var(--neon-magenta); }
 .panel.lime h3 .accent { background: var(--neon-lime); box-shadow: 0 0 8px var(--neon-lime); }
 .panel.pink h3 .accent { background: var(--neon-pink); box-shadow: 0 0 8px var(--neon-pink); }
 .panel.purple h3 .accent { background: var(--neon-purple); box-shadow: 0 0 8px var(--neon-purple); }
 .panel.yellow h3 .accent { background: var(--neon-yellow); box-shadow: 0 0 8px var(--neon-yellow); }
-.panel h3 .live {
-  margin-left: auto;
-  font-size: 9px;
-  color: var(--neon-cyan);
-  text-shadow: 0 0 6px var(--neon-cyan);
-  animation: pulse 1.2s infinite;
-}
-.panel h3 .help {
-  margin-left: 8px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px; height: 18px;
-  border: 1px solid var(--panel-border);
-  border-radius: 50%;
-  font-size: 11px;
-  color: var(--text-dim);
-  cursor: help;
-  user-select: none;
-  transition: all .15s;
-}
+.panel h3 .live { margin-left: auto; font-size: 9px; color: var(--neon-cyan); text-shadow: 0 0 6px var(--neon-cyan); animation: pulse 1.2s infinite; }
+.panel h3 .live::before { content: "●"; margin-right: 4px; }
+.panel h3 .help { margin-left: 8px; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: 1px solid var(--panel-border); border-radius: 50%; font-size: 11px; color: var(--text-dim); cursor: help; user-select: none; transition: all .15s; }
 .panel h3 .help:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); box-shadow: 0 0 6px var(--neon-cyan); }
-.help-popup {
-  display: none;
-  position: fixed;
-  z-index: 50;
-  background: rgba(8,12,28,.96);
-  border: 1px solid var(--neon-cyan);
-  border-radius: 6px;
-  padding: 12px 14px;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--text);
-  box-shadow: 0 0 20px rgba(0,240,255,.35);
-  max-width: 360px;
-  pointer-events: none;
-}
+.help-popup { display: none; position: fixed; z-index: 50; background: rgba(8,12,28,.96); border: 1px solid var(--neon-cyan); border-radius: 6px; padding: 12px 14px; font-size: 11px; line-height: 1.6; color: var(--text); box-shadow: 0 0 20px rgba(0,240,255,.35); max-width: 360px; pointer-events: none; }
 .help-popup.open { display: block; }
 .help-row { white-space: nowrap; }
 .help-row b { color: var(--neon-cyan); }
 .help-row u { text-decoration-color: var(--neon-cyan); }
-}
-.panel h3 .live::before {
-  content: "●";
-  margin-right: 4px;
-}
-.col-3 { grid-column: span 3; }
-.col-4 { grid-column: span 4; }
-.col-5 { grid-column: span 5; }
-.col-6 { grid-column: span 6; }
-.col-7 { grid-column: span 7; }
-.col-8 { grid-column: span 8; }
-.col-12 { grid-column: span 12; }
-@media (max-width: 1100px) {
-  .col-3, .col-4, .col-5, .col-6, .col-7, .col-8 { grid-column: span 12; }
-}
-.chart-wrap {
-  position: relative;
-  width: 100%;
-  height: 180px;
-}
+.col-3 { grid-column: span 3; } .col-4 { grid-column: span 4; } .col-5 { grid-column: span 5; } .col-6 { grid-column: span 6; } .col-7 { grid-column: span 7; } .col-8 { grid-column: span 8; } .col-12 { grid-column: span 12; }
+@media (max-width: 1100px) { .col-3, .col-4, .col-5, .col-6, .col-7, .col-8 { grid-column: span 12; } }
+.chart-wrap { position: relative; width: 100%; height: 180px; }
 .chart-wrap.tall { height: 220px; }
 .chart-wrap.short { height: 130px; }
-.value-big {
-  font-size: 56px; font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  background: linear-gradient(180deg, var(--neon-cyan), #0080a0);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
-  text-shadow: 0 0 24px rgba(0,240,255,0.3);
-  line-height: 1;
-}
-.value-big.magenta {
-  background: linear-gradient(180deg, var(--neon-magenta), #802070);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-.value-big.lime {
-  background: linear-gradient(180deg, var(--neon-lime), #508000);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-.value-big.pink {
-  background: linear-gradient(180deg, var(--neon-pink), #802040);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-.unit {
-  font-size: 14px; color: var(--text-dim);
-  margin-left: 6px;
-}
-.bar-row {
-  display: flex; align-items: center; gap: 10px;
-  margin: 6px 0;
-}
-.bar-label {
-  font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
-  color: var(--text-dim);
-  width: 110px;
-  flex-shrink: 0;
-}
-.bar-track {
-  flex: 1; height: 14px;
-  background: rgba(20, 30, 60, 0.6);
-  border: 1px solid var(--panel-border);
-  border-radius: 3px;
-  position: relative;
-  overflow: hidden;
-}
-.bar-fill {
-  position: absolute; left: 0; top: 0; bottom: 0;
-  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta));
-  box-shadow: 0 0 12px var(--neon-cyan);
-  transition: width 0.3s ease-out;
-}
+.value-big { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; background: linear-gradient(180deg, var(--neon-cyan), #0080a0); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 24px rgba(0,240,255,0.3); line-height: 1; }
+.value-big.magenta { background: linear-gradient(180deg, var(--neon-magenta), #802070); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.value-big.lime { background: linear-gradient(180deg, var(--neon-lime), #508000); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.value-big.pink { background: linear-gradient(180deg, var(--neon-pink), #802040); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+.unit { font-size: 14px; color: var(--text-dim); margin-left: 6px; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.bar-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); width: 140px; flex-shrink: 0; }
+.bar-track { flex: 1; height: 14px; background: rgba(20, 30, 60, 0.6); border: 1px solid var(--panel-border); border-radius: 3px; position: relative; overflow: hidden; }
+.bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); box-shadow: 0 0 12px var(--neon-cyan); transition: width 0.3s ease-out; }
 .bar-fill.lime { background: linear-gradient(90deg, var(--neon-lime), var(--neon-cyan)); box-shadow: 0 0 12px var(--neon-lime); }
 .bar-fill.pink { background: linear-gradient(90deg, var(--neon-pink), var(--neon-magenta)); box-shadow: 0 0 12px var(--neon-pink); }
 .bar-fill.yellow { background: linear-gradient(90deg, var(--neon-yellow), var(--neon-orange)); box-shadow: 0 0 12px var(--neon-yellow); }
 .bar-fill.purple { background: linear-gradient(90deg, var(--neon-purple), var(--neon-cyan)); box-shadow: 0 0 12px var(--neon-purple); }
-.bar-val {
-  font-size: 12px;
-  color: var(--neon-cyan);
-  text-shadow: 0 0 6px var(--neon-cyan);
-  font-variant-numeric: tabular-nums;
-  width: 50px;
-  text-align: right;
-}
-.res-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-.res-cell {
-  border: 1px solid var(--panel-border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: rgba(20, 30, 60, 0.3);
-}
-.res-cell .name {
-  font-size: 10px; color: var(--text-dim);
-  text-transform: uppercase; letter-spacing: 1px;
-}
-.res-cell .val {
-  font-size: 18px; font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  margin-top: 2px;
-}
+.bar-val { font-size: 12px; color: var(--neon-cyan); text-shadow: 0 0 6px var(--neon-cyan); font-variant-numeric: tabular-nums; width: 50px; text-align: right; }
+.res-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.res-cell { border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px 10px; background: rgba(20, 30, 60, 0.3); }
+.res-cell .name { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
+.res-cell .val { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
 .res-cell.good { border-color: var(--good); box-shadow: 0 0 10px rgba(0,255,136,0.2); }
 .res-cell.good .val { color: var(--good); text-shadow: 0 0 6px var(--good); }
 .res-cell.bad { border-color: var(--bad); box-shadow: 0 0 10px rgba(255,51,85,0.2); }
 .res-cell.bad .val { color: var(--bad); text-shadow: 0 0 6px var(--bad); }
-.status-text {
-  font-size: 10px;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-top: 4px;
-}
-.heart-pulse {
-  display: inline-block;
-  width: 14px; height: 14px;
-  background: var(--neon-pink);
-  border-radius: 50%;
-  box-shadow: 0 0 16px var(--neon-pink);
-  margin-right: 8px;
-}
-</style>
+.status-text { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
+.heart-pulse { display: inline-block; width: 14px; height: 14px; background: var(--neon-pink); border-radius: 50%; box-shadow: 0 0 16px var(--neon-pink); margin-right: 8px; animation: heartbeat 1s infinite; }
+@keyframes heartbeat { 0%, 100% { transform: scale(1); } 20% { transform: scale(1.4); box-shadow: 0 0 24px var(--neon-pink); } 40% { transform: scale(1); } }
+.footer-info { font-size: 10px; color: var(--text-dim); margin-top: 8px; line-height: 1.5; font-family: monospace; }
 
-<style>
-/* ============================================================================
-   SETUP OVERLAY — covers page while headband isn't ready / calibrating
-   ============================================================================ */
-#setup-overlay {
-  position: fixed; inset: 0; z-index: 100;
-  display: none;
-  align-items: center; justify-content: center;
-  background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%);
-  backdrop-filter: blur(6px);
-}
+#setup-overlay { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%); backdrop-filter: blur(6px); }
 #setup-overlay.show { display: flex; }
-.setup-card {
-  text-align: center;
-  padding: 36px 44px;
-  border: 1px solid var(--neon-cyan);
-  border-radius: 14px;
-  background: rgba(10,16,36,0.85);
-  box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05);
-  max-width: 460px;
-}
-.setup-card h2 {
-  font-size: 22px;
-  letter-spacing: 4px;
-  color: var(--neon-cyan);
-  text-shadow: 0 0 12px var(--neon-cyan);
-  margin: 0 0 12px;
-  text-transform: uppercase;
-}
-.setup-card p {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.6;
-  margin: 8px 0 18px;
-}
-.setup-card .hint {
-  color: var(--neon-yellow);
-  font-size: 11px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  margin-top: 14px;
-}
-.setup-btn {
-  display: inline-block;
-  margin: 10px 8px;
-  padding: 14px 28px;
-  font-family: inherit;
-  font-size: 13px;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  background: transparent;
-  color: var(--neon-cyan);
-  border: 1px solid var(--neon-cyan);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all .2s;
-  text-shadow: 0 0 6px var(--neon-cyan);
-}
+.setup-card { text-align: center; padding: 36px 44px; border: 1px solid var(--neon-cyan); border-radius: 14px; background: rgba(10,16,36,0.85); box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05); max-width: 460px; }
+.setup-card h2 { font-size: 22px; letter-spacing: 4px; color: var(--neon-cyan); text-shadow: 0 0 12px var(--neon-cyan); margin: 0 0 12px; text-transform: uppercase; }
+.setup-card p { color: var(--text); font-size: 13px; line-height: 1.6; margin: 8px 0 18px; }
+.setup-card .hint { color: var(--neon-yellow); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-top: 14px; }
+.setup-btn { display: inline-block; margin: 10px 8px; padding: 14px 28px; font-family: inherit; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; background: transparent; color: var(--neon-cyan); border: 1px solid var(--neon-cyan); border-radius: 4px; cursor: pointer; transition: all .2s; text-shadow: 0 0 6px var(--neon-cyan); }
 .setup-btn:hover { background: rgba(0,240,255,0.12); box-shadow: 0 0 18px var(--neon-cyan); }
 .setup-btn:active { transform: scale(0.97); }
 .setup-btn.skip { color: var(--text-dim); border-color: var(--panel-border); text-shadow: none; }
 .setup-btn.skip:hover { color: var(--neon-pink); border-color: var(--neon-pink); }
-.setup-btn[disabled] { opacity: 0.4; pointer-events: none; }
-
-/* circular countdown timer */
 .timer-svg { display: block; margin: 18px auto 6px; }
 .timer-svg .track { fill: none; stroke: rgba(0,240,255,0.15); stroke-width: 6; }
-.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round;
-                    transform: rotate(-90deg); transform-origin: 50% 50%;
-                    transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
+.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
 .timer-svg .ring.warn { stroke: var(--neon-pink); }
-.timer-svg text {
-  fill: var(--neon-cyan);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 28px;
-  text-anchor: middle;
-  dominant-baseline: central;
-  font-weight: 600;
-}
-.setup-state-searching h2 { animation: pulse 1.2s infinite; }
-.spinner { width: 40px; height: 40px; margin: 10px auto;
-           border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan);
-           border-radius: 50%; animation: spin 0.8s linear infinite; }
+.timer-svg text { fill: var(--neon-cyan); font-family: 'JetBrains Mono', monospace; font-size: 28px; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
+.spinner { width: 40px; height: 40px; margin: 10px auto; border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ---- sensor status grid on the calibration overlay ---- */
-.sensor-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin: 14px 0 16px;
-  width: 100%;
-  max-width: 420px;
-}
-.sensor {
-  position: relative;
-  background: rgba(0,0,0,0.35);
-  border: 1px solid rgba(0,240,255,0.12);
-  border-radius: 6px;
-  padding: 8px 8px 7px 22px;
-  text-align: left;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text-dim);
-  line-height: 1.25;
-  min-height: 44px;
-  transition: border-color 0.25s, background 0.25s;
-}
-.sensor::before {
-  content: '';
-  position: absolute;
-  left: 9px; top: 50%;
-  width: 8px; height: 8px;
-  margin-top: -4px;
-  border-radius: 50%;
-  background: #555;
-  box-shadow: 0 0 0 0 transparent;
-  transition: background 0.25s, box-shadow 0.25s;
-}
-.sensor.state-ok {
-  border-color: rgba(0,255,170,0.35);
-  background: rgba(0,255,170,0.05);
-}
-.sensor.state-ok::before {
-  background: var(--good);
-  box-shadow: 0 0 8px var(--good);
-}
-.sensor.state-warn {
-  border-color: rgba(255,210,0,0.35);
-  background: rgba(255,210,0,0.04);
-}
-.sensor.state-warn::before {
-  background: #ffd200;
-  box-shadow: 0 0 8px #ffd200;
-}
-.sensor.state-error {
-  border-color: rgba(255,80,120,0.5);
-  background: rgba(255,80,120,0.05);
-}
-.sensor.state-error::before {
-  background: var(--bad);
-  box-shadow: 0 0 8px var(--bad);
-}
-.sensor.state-none {
-  opacity: 0.6;
-}
-.sensor .name {
-  display: block;
-  color: var(--neon-cyan);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-  margin-bottom: 1px;
-  text-transform: uppercase;
-}
+.sensor-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 16px; width: 100%; max-width: 420px; }
+.sensor { position: relative; background: rgba(0,0,0,0.35); border: 1px solid rgba(0,240,255,0.12); border-radius: 6px; padding: 8px 8px 7px 22px; text-align: left; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); line-height: 1.25; min-height: 44px; transition: border-color 0.25s, background 0.25s; }
+.sensor::before { content: ''; position: absolute; left: 9px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; background: #555; transition: background 0.25s, box-shadow 0.25s; }
+.sensor.state-ok { border-color: rgba(0,255,170,0.35); background: rgba(0,255,170,0.05); }
+.sensor.state-ok::before { background: var(--good); box-shadow: 0 0 8px var(--good); }
+.sensor.state-warn { border-color: rgba(255,210,0,0.35); background: rgba(255,210,0,0.04); }
+.sensor.state-warn::before { background: #ffd200; box-shadow: 0 0 8px #ffd200; }
+.sensor.state-error { border-color: rgba(255,80,120,0.5); background: rgba(255,80,120,0.05); }
+.sensor.state-error::before { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+.sensor.state-none { opacity: 0.6; }
+.sensor .name { display: block; color: var(--neon-cyan); font-size: 10px; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 1px; text-transform: uppercase; }
 .sensor.state-ok .name  { color: var(--good); }
 .sensor.state-warn .name { color: #ffd200; }
 .sensor.state-error .name { color: var(--bad); }
-.sensor .value {
-  display: block;
-  color: var(--text-dim);
-  font-size: 10px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-  vertical-align: middle;
-  animation: heartbeat 1s infinite;
-}
-@keyframes heartbeat {
-  0%, 100% { transform: scale(1); }
-  20% { transform: scale(1.4); box-shadow: 0 0 24px var(--neon-pink); }
-  40% { transform: scale(1); }
-}
-.footer-info {
-  font-size: 10px; color: var(--text-dim);
-  margin-top: 8px; line-height: 1.5;
-  font-family: monospace;
-}
+.sensor .value { display: block; color: var(--text-dim); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
 
-<!-- ====== SETUP OVERLAY ====== -->
 <div id="setup-overlay" class="setup-state-searching">
-  <!-- state: searching (no headband) -->
   <div class="setup-card" data-state="searching">
     <h2>⚡ NEIRY · Headband</h2>
     <div class="spinner"></div>
     <p>Searching for the headband…<br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode and bring it close</span></p>
   </div>
-  <!-- state: ready (headband connected, not calibrated) -->
   <div class="setup-card" data-state="ready" style="display:none">
     <h2>⚙ Calibration</h2>
-    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br>
-       Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
+    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br> Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
     <div class="sensor-grid" id="sensor-grid">
       <div class="sensor state-none" data-sensor="eeg"><span class="name">EEG</span><span class="value">—</span></div>
       <div class="sensor state-none" data-sensor="skin"><span class="name">SKIN</span><span class="value">—</span></div>
@@ -508,25 +132,20 @@ main {
     <button class="setup-btn skip" id="btn-skip-cal">SKIP</button>
     <div class="hint">You can recalibrate later from the main view</div>
   </div>
-  <!-- state: running (30-sec timer) -->
   <div class="setup-card" data-state="running" style="display:none">
     <h2 style="color:var(--neon-pink); text-shadow:0 0 14px var(--neon-pink)">👁 Close your eyes</h2>
     <svg class="timer-svg" width="180" height="180" viewBox="0 0 180 180">
       <circle class="track" cx="90" cy="90" r="78" />
-      <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring"
-              stroke-dasharray="490" stroke-dashoffset="0" />
+      <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring" stroke-dasharray="490" stroke-dashoffset="0" />
       <text x="90" y="90" id="timer-text">30</text>
     </svg>
-    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br>
-       <span style="font-size:11px; color:var(--text-dim)" id="timer-hint">measuring your individual α-rhythm…</span></p>
+    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br> <span style="font-size:11px; color:var(--text-dim)" id="timer-hint">measuring your individual α-rhythm…</span></p>
   </div>
-  <!-- state: complete -->
   <div class="setup-card" data-state="complete" style="display:none">
     <h2 style="color:var(--good); text-shadow:0 0 14px var(--good)">✓ CALIBRATED</h2>
     <p id="cal-result-line">individual α-frequency: <b style="color:var(--neon-cyan)">— Hz</b></p>
     <p style="color:var(--text-dim); font-size:11px">Entering dashboard…</p>
   </div>
-  <!-- state: failed -->
   <div class="setup-card" data-state="failed" style="display:none">
     <h2 style="color:var(--bad); text-shadow:0 0 14px var(--bad)">✗ CALIBRATION FAILED</h2>
     <p id="cal-fail-msg">Could not measure individual α-rhythm.</p>
@@ -542,18 +161,19 @@ main {
   <span class="chip" id="battery">🔋 <span class="lvl">—</span>%</span>
   <span class="chip" id="chip-mode"><span class="dot"></span>mode <span id="mode-val">—</span></span>
   <span class="chip" id="chip-cal">⚙ <span id="cal-val">not calibrated</span></span>
-  <a href="/charts" style="margin-left:auto; color:var(--neon-cyan); text-decoration:none; font-size:11px; letter-spacing:2px; padding:5px 12px; border:1px solid var(--neon-cyan); border-radius:3px;">📈 FULL CHARTS →</a>
+  <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
+    <button id="lang-toggle" class="chip" style="cursor:pointer; border-color:var(--neon-cyan); color:var(--neon-cyan); background:transparent; font-weight:bold;">RU</button>
+    <a href="/charts" style="color:var(--neon-cyan); text-decoration:none; font-size:11px; letter-spacing:2px; padding:5px 12px; border:1px solid var(--neon-cyan); border-radius:3px;">📈 FULL CHARTS →</a>
+  </div>
 </header>
 
 <main>
-  <!-- EEG -->
   <section class="panel col-7">
     <h3><span class="accent"></span>EEG Signal<span class="live">LIVE</span></h3>
     <div class="chart-wrap tall"><canvas id="eeg-chart"></canvas></div>
     <div class="footer-info">ch: <span id="eeg-channels">—</span> · sr: <span id="eeg-sr">—</span> Hz</div>
   </section>
 
-  <!-- Cardio -->
   <section class="panel col-5">
     <h3><span class="accent"></span>Cardio<span class="live">LIVE</span></h3>
     <div style="display:flex; align-items:baseline; gap:14px;">
@@ -577,60 +197,47 @@ main {
     </div>
   </section>
 
-  <!-- PPG -->
   <section class="panel col-6">
     <h3><span class="accent"></span>PPG (Photoplethysmogram)<span class="live">LIVE</span></h3>
     <div class="chart-wrap"><canvas id="ppg-chart"></canvas></div>
   </section>
 
-  <!-- MEMS -->
   <section class="panel col-6">
-    <h3><span class="accent"></span>Head motion · Accel (m/s²) + Gyro (°/s)<span class="live">LIVE</span>
-      <span class="help" data-help="mems">?</span>
-    </h3>
+    <h3><span class="accent"></span>Head motion · Accel (m/s²) + Gyro (°/s)<span class="live">LIVE</span> <span class="help" data-help="mems">?</span></h3>
     <div class="help-popup" id="help-mems">
       <div class="help-row"><b>3-axis accelerometer</b> — measures head <u>linear</u> acceleration (m/s²)</div>
-      <div class="help-row"><span style="color:#00f0ff">━ accX</span> tilt left/right (ear → ear)</div>
-      <div class="help-row"><span style="color:#ff2bd6">━ accY</span> nod forward/back (chin → chest)</div>
-      <div class="help-row"><span style="color:#aaff00">━ accZ</span> lean up/down (face up vs down)</div>
-      <div class="help-row" style="margin-top:6px"><span style="color:#ffffff">━ |a|</span> total acceleration magnitude (1g ≈ 9.81 at rest)</div>
+      <div class="help-row"><span style="color:#00f0ff">━ accX</span> tilt left/right</div>
+      <div class="help-row"><span style="color:#ff2bd6">━ accY</span> nod forward/back</div>
+      <div class="help-row"><span style="color:#aaff00">━ accZ</span> lean up/down</div>
       <div class="help-row" style="margin-top:6px"><b>3-axis gyroscope</b> — measures <u>angular</u> velocity (°/s, dashed)</div>
-      <div class="help-row"><span style="color:#ff8a00">┄ gyrX</span> roll (rotate head side to side)</div>
-      <div class="help-row"><span style="color:#b66bff">┄ gyrY</span> pitch (nod speed)</div>
-      <div class="help-row"><span style="color:#ffea00">┄ gyrZ</span> yaw (shake head "no")</div>
-      <div class="help-row" style="margin-top:6px"><span style="color:#ffffff">┄ |ω|</span> total rotation speed — spikes when you move</div>
     </div>
     <div class="chart-wrap"><canvas id="mems-chart"></canvas></div>
   </section>
 
-  <!-- Emotions -->
   <section class="panel col-4 panel-magenta">
-    <h3><span class="accent"></span>Emotions<span class="live">LIVE</span></h3>
+    <h3 id="title-emotions"><span class="accent"></span>Эмоции<span class="live">LIVE</span></h3>
     <div id="emotions-bars">
-      <div class="bar-row"><span class="bar-label">Attention</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Relaxation</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Cognitive load</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Cognitive control</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Self-control</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-focus">Фокус</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-chill">Азарт</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-stress">Когнитивная нагрузка</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-anger">Волнение</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-sc">Самоконтроль</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
     </div>
   </section>
 
-  <!-- NFB -->
   <section class="panel col-4">
     <h3><span class="accent"></span>NFB (α/β/θ)<span class="live">LIVE</span></h3>
     <div class="chart-wrap short"><canvas id="nfb-chart"></canvas></div>
   </section>
 
-  <!-- Resistances -->
   <section class="panel col-4 panel-lime">
     <h3><span class="accent"></span>Electrode Resistance<span class="live">LIVE</span></h3>
     <div class="res-grid" id="res-grid">
       <div class="res-cell bad"><div class="name">—</div><div class="val">—</div></div>
     </div>
-    <div class="footer-info">good: &lt; 500 kΩ · bad: &gt; 1000 kΩ (∞)</div>
+    <div class="footer-info">good: &lt; 500 kΩ · bad: &gt; 1000 kΩ</div>
   </section>
 
-  <!-- Productivity -->
   <section class="panel col-6 panel-pink">
     <h3><span class="accent"></span>Productivity<span class="live">LIVE</span></h3>
     <div id="prod-rows">
@@ -642,7 +249,6 @@ main {
     </div>
   </section>
 
-  <!-- Physiological States -->
   <section class="panel col-6 panel-purple">
     <h3><span class="accent"></span>Physiological States<span class="live">LIVE</span></h3>
     <div id="phy-rows">
@@ -654,7 +260,6 @@ main {
     </div>
   </section>
 
-  <!-- Calibration info -->
   <section class="panel col-12 panel-yellow">
     <h3><span class="accent"></span>Calibration / Device</h3>
     <div class="footer-info" id="cal-info">waiting for headband…</div>
@@ -662,7 +267,28 @@ main {
 </main>
 
 <script>
-// =============== Chart.js default styling ===============
+let currentLang = 'ru';
+const langDict = {
+  en: { emotionsTitle: "Emotions", attention: "Focus", relaxation: "Excitement", cogLoad: "Cognitive load", cogControl: "Anxiety", selfControl: "Self-control" },
+  ru: { emotionsTitle: "Эмоции", attention: "Фокус", relaxation: "Азарт", cogLoad: "Когнитивная нагрузка", cogControl: "Волнение", selfControl: "Самоконтроль" }
+};
+
+function applyLang() {
+  const t = langDict[currentLang];
+  document.getElementById('title-emotions').innerHTML = `<span class="accent"></span>${t.emotionsTitle}<span class="live">LIVE</span>`;
+  document.getElementById('lbl-focus').textContent = t.attention;
+  document.getElementById('lbl-chill').textContent = t.relaxation;
+  document.getElementById('lbl-stress').textContent = t.cogLoad;
+  document.getElementById('lbl-anger').textContent = t.cogControl;
+  document.getElementById('lbl-sc').textContent = t.selfControl;
+  document.getElementById('lang-toggle').innerHTML = currentLang === 'ru' ? 'RU' : 'EN';
+}
+
+document.getElementById('lang-toggle').addEventListener('click', () => {
+  currentLang = currentLang === 'ru' ? 'en' : 'ru';
+  applyLang();
+});
+
 Chart.defaults.color = '#6f7bb0';
 Chart.defaults.borderColor = 'rgba(26, 37, 80, 0.6)';
 Chart.defaults.font.family = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace";
@@ -670,208 +296,112 @@ Chart.defaults.font.size = 10;
 const gridColor = 'rgba(26, 37, 80, 0.55)';
 const tickColor = '#3a4a7a';
 
-// Bulletproof gradient helper: never throws. Returns a solid translucent
-// color when chartArea isn't ready (Chart.js v4 calls backgroundColor
-// callbacks at option-resolve time, before layout, and again on every
-// resize — both moments chartArea is undefined).
 function neonGradient(_ctx, area, hex) {
-  if (!area || typeof area.top !== 'number' || typeof area.bottom !== 'number') {
-    return hex + '40';   // 25% solid
-  }
+  if (!area || typeof area.top !== 'number' || typeof area.bottom !== 'number') return hex + '40';
   try {
     const g = _ctx.createLinearGradient(0, area.top, 0, area.bottom);
-    g.addColorStop(0, hex + 'cc');
-    g.addColorStop(1, hex + '00');
-    return g;
-  } catch (e) {
-    return hex + '40';
-  }
+    g.addColorStop(0, hex + 'cc'); g.addColorStop(1, hex + '00'); return g;
+  } catch (e) { return hex + '40'; }
 }
 
-// =============== EEG chart ===============
 const eegCtx = document.getElementById('eeg-chart').getContext('2d');
 const eegChart = new Chart(eegCtx, {
   type: 'line',
   data: {
     labels: [],
     datasets: [
-      { label: 'Ch1', data: [], borderColor: '#00f0ff', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#00f0ff'), borderWidth: 1.5, pointRadius: 0, tension: 0, fill: false },
-      { label: 'Ch2', data: [], borderColor: '#ff2bd6', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#ff2bd6'), borderWidth: 1.5, pointRadius: 0, tension: 0, fill: false },
+      { label: 'Ch1', data: [], borderColor: '#00f0ff', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#00f0ff'), borderWidth: 1.5, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
+      { label: 'Ch2', data: [], borderColor: '#ff2bd6', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#ff2bd6'), borderWidth: 1.5, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
     ],
   },
-  options: {
-    responsive: true, maintainAspectRatio: false, animation: false,
-    plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 12 } } },
-    scales: {
-      x: { display: false },
-      y: { grid: { color: gridColor, drawBorder: false }, ticks: { color: tickColor, maxTicksLimit: 4 } },
-    },
-  },
+  options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 12 } } }, scales: { x: { display: false }, y: { grid: { color: gridColor, drawBorder: false }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
 });
 
-// =============== PPG chart ===============
 const ppgCtx = document.getElementById('ppg-chart').getContext('2d');
 const ppgChart = new Chart(ppgCtx, {
   type: 'line',
-  data: { labels: [], datasets: [{ label: 'PPG', data: [], borderColor: '#aaff00', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#aaff00'), borderWidth: 1.6, pointRadius: 0, tension: 0, fill: true }] },
-  options: { responsive: true, maintainAspectRatio: false, animation: false,
-    plugins: { legend: { display: false } },
-    scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
+  data: { labels: [], datasets: [{ label: 'PPG', data: [], borderColor: '#aaff00', backgroundColor: ctx => neonGradient(ctx.chart.ctx, ctx.chart.chartArea, '#aaff00'), borderWidth: 1.6, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: true }] },
+  options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
 });
 
-// =============== MEMS chart ===============
 const memsCtx = document.getElementById('mems-chart').getContext('2d');
 const memsChart = new Chart(memsCtx, {
   type: 'line',
   data: { labels: [], datasets: [
-    { label: 'acc · X (left/right)', data: [], borderColor: '#00f0ff', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
-    { label: 'acc · Y (fwd/back)',   data: [], borderColor: '#ff2bd6', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
-    { label: 'acc · Z (up/down)',    data: [], borderColor: '#aaff00', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false },
-    { label: '|a| total (m/s²)',     data: [], borderColor: '#ffffff', borderWidth: 1.4, pointRadius: 0, tension: 0, fill: false },
-    { label: 'gyro · X (roll)',      data: [], borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
-    { label: 'gyro · Y (pitch)',     data: [], borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
-    { label: 'gyro · Z (yaw)',       data: [], borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
-    { label: '|ω| total (°/s)',      data: [], borderColor: '#ffffff', borderWidth: 1.2, pointRadius: 0, tension: 0, fill: false, borderDash: [3,3] },
+    { label: 'acc · X', data: [], borderColor: '#00f0ff', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
+    { label: 'acc · Y', data: [], borderColor: '#ff2bd6', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
+    { label: 'acc · Z', data: [], borderColor: '#aaff00', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
+    { label: '|a| total', data: [], borderColor: '#ffffff', borderWidth: 1.4, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
+    { label: 'gyro · X', data: [], borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: 'gyro · Y', data: [], borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: 'gyro · Z', data: [], borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: '|ω| total', data: [], borderColor: '#ffffff', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
   ] },
-  options: { responsive: true, maintainAspectRatio: false, animation: false,
-    plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } } },
-    scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
+  options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } } }, scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
 });
 
-// =============== NFB chart ===============
-const nfbCtx = document.getElementById('nfb-chart').getContext('2d');
-const nfbChart = new Chart(nfbCtx, {
+const nfbChart = new Chart(document.getElementById('nfb-chart').getContext('2d'), {
   type: 'line',
   data: { labels: [], datasets: [
-    { label: 'α', data: [], borderColor: '#00f0ff', borderWidth: 1.4, pointRadius: 0, tension: 0.2, fill: false },
-    { label: 'β', data: [], borderColor: '#ff2bd6', borderWidth: 1.4, pointRadius: 0, tension: 0.2, fill: false },
-    { label: 'θ', data: [], borderColor: '#ffea00', borderWidth: 1.4, pointRadius: 0, tension: 0.2, fill: false },
+    { label: 'α', data: [], borderColor: '#00f0ff', borderWidth: 1.4, pointRadius: 0, tension: 0.4, cubicInterpolationMode: 'monotone', fill: false },
+    { label: 'β', data: [], borderColor: '#ff2bd6', borderWidth: 1.4, pointRadius: 0, tension: 0.4, cubicInterpolationMode: 'monotone', fill: false },
+    { label: 'θ', data: [], borderColor: '#ffea00', borderWidth: 1.4, pointRadius: 0, tension: 0.4, cubicInterpolationMode: 'monotone', fill: false },
   ] },
-  options: { responsive: true, maintainAspectRatio: false, animation: false,
-    plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10 } } },
-    scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 3 } } } },
+  options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10 } } }, scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 3 } } } },
 });
 
-// =============== Update helpers ===============
-function setBar(id, value) {
-  const v = Math.max(0, Math.min(100, value || 0));
-  document.getElementById(id).style.width = v + '%';
-}
-function setVal(id, value, digits = 1) {
-  document.getElementById(id).textContent = (value === null || value === undefined) ? '—' : Number(value).toFixed(digits);
-}
+function setBar(id, value) { document.getElementById(id).style.width = Math.max(0, Math.min(100, value || 0)) + '%'; }
+function setVal(id, value, digits = 1) { document.getElementById(id).textContent = (value === null || value === undefined) ? '—' : Number(value).toFixed(digits); }
+function setStatus(s) { document.getElementById('chip-status').className = 'chip ' + s; document.getElementById('status-text').textContent = s; }
 
-function setStatus(s) {
-  const chip = document.getElementById('chip-status');
-  chip.className = 'chip ' + s;
-  document.getElementById('status-text').textContent = s;
-}
-
-// =============== WebSocket ===============
+let lastTickData = null;
+let lastRenderTime = 0;
 let ws;
+
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => setStatus('connecting');
-  ws.onmessage = (ev) => {
-    const d = JSON.parse(ev.data);
-    handleTick(d);
-  };
-  ws.onclose = () => {
-    setStatus('error');
-    setTimeout(connect, 1500);
-  };
+  ws.onmessage = (ev) => { lastTickData = JSON.parse(ev.data); };
+  ws.onclose = () => { setStatus('error'); setTimeout(connect, 1500); };
   ws.onerror = () => ws.close();
 }
 
-
+function renderLoop(now) {
+  if (lastTickData && (now - lastRenderTime > 66)) {
+    handleTick(lastTickData);
+    lastTickData = null;
+    lastRenderTime = now;
+  }
+  requestAnimationFrame(renderLoop);
+}
+requestAnimationFrame(renderLoop);
 
 function renderSensorStatus(s) {
-  // s: {eeg, ppg, mems, skin, cardio, emotions, phy, prod, nfb}
-  // Each: {state: 'ok'|'warn'|'error'|'none', ...extras}
   if (!s) return;
-  const fmtHz = sr => sr ? `${sr} Hz` : '';
   const setEl = (key, name, value) => {
-    const el = document.querySelector(`.sensor[data-sensor="${key}"]`);
-    if (!el) return;
-    const v = s[key];
-    el.classList.remove('state-ok', 'state-warn', 'state-error', 'state-none');
-    el.classList.add('state-' + (v?.state || 'none'));
+    const el = document.querySelector(`.sensor[data-sensor="${key}"]`); if (!el) return;
+    el.className = 'sensor state-' + (s[key]?.state || 'none');
     el.querySelector('.name').textContent = name;
     el.querySelector('.value').textContent = value;
   };
-
-  // EEG
-  let eegVal = '—';
-  if (s.eeg) {
-    if (s.eeg.state === 'ok') {
-      const ch = (s.eeg.channels || []).join(' · ') || '—';
-      eegVal = `${s.eeg.sr || '?'} Hz · ${ch}`;
-    } else {
-      eegVal = 'no data';
-    }
-  }
+  let eegVal = s.eeg?.state === 'ok' ? `${s.eeg.sr || '?'} Hz · ${(s.eeg.channels || []).join(' · ')}` : 'no data';
   setEl('eeg', 'EEG', eegVal);
-
-  // SKIN (electrode contact)
+  
   let skinVal = '—';
   if (s.skin) {
-    if (s.skin.state === 'ok') {
-      const r = s.skin.max_r;
-      skinVal = `good · ${r < 1000 ? Math.round(r) + ' Ω' : (r/1000).toFixed(1) + ' kΩ'}`;
-    } else if (s.skin.state === 'warn') {
-      skinVal = `${s.skin.n_good}/${s.skin.n_ch} ok · wet electrodes`;
-    } else if (s.skin.state === 'error') {
-      skinVal = 'no contact · put on head';
-    } else {
-      skinVal = '—';
-    }
+    if (s.skin.state === 'ok') skinVal = `good · ${(s.skin.max_r/1000).toFixed(1)} kΩ`; // ИСПРАВЛЕНО: S.skin изменен на s.skin
+    else if (s.skin.state === 'warn') skinVal = `${s.skin.n_good}/${s.skin.n_ch} ok`;
+    else if (s.skin.state === 'error') skinVal = 'no contact';
   }
   setEl('skin', 'SKIN', skinVal);
-
-  // PPG
-  let ppgVal = '—';
-  if (s.ppg) {
-    ppgVal = s.ppg.state === 'ok' ? `${s.ppg.sr || '?'} Hz` : 'no data';
-  }
-  setEl('ppg', 'PPG', ppgVal);
-
-  // CARDIO
-  let cardioVal = '—';
-  if (s.cardio) {
-    if (s.cardio.state === 'ok') {
-      cardioVal = `${s.cardio.hr?.toFixed(0) || '—'} bpm`;
-    } else if (s.cardio.state === 'warn') {
-      cardioVal = s.cardio.reason || 'weak';
-    } else {
-      cardioVal = '—';
-    }
-  }
-  setEl('cardio', 'HEART', cardioVal);
-
-  // MEMS
-  let memsVal = '—';
-  if (s.mems) {
-    memsVal = s.mems.state === 'ok' ? `${s.mems.sr || '?'} Hz` : 'no data';
-  }
-  setEl('mems', 'MOTION', memsVal);
-
-  // NFB
-  let nfbVal = '—';
-  if (s.nfb) {
-    if (s.nfb.state === 'ok') {
-      nfbVal = `${s.nfb.n} pts`;
-    } else if (s.nfb.state === 'warn') {
-      nfbVal = 'after cal';
-    } else {
-      nfbVal = '—';
-    }
-  }
-  setEl('nfb', 'NFB', nfbVal);
+  setEl('ppg', 'PPG', s.ppg?.state === 'ok' ? `${s.ppg.sr || '?'} Hz` : 'no data');
+  setEl('cardio', 'HEART', s.cardio?.state === 'ok' ? `${s.cardio.hr?.toFixed(0)} bpm` : '—');
+  setEl('mems', 'MOTION', s.mems?.state === 'ok' ? `${s.mems.sr || '?'} Hz` : 'no data');
+  setEl('nfb', 'NFB', s.nfb?.state === 'ok' ? `${s.nfb.n} pts` : s.nfb?.state === 'warn' ? 'after cal' : '—');
 }
 
 function handleTick(d) {
-  // status
   setStatus(d.status || 'idle');
   document.getElementById('device-name').textContent = d.device || '—';
   document.getElementById('mode-val').textContent = d.mode === null ? '—' : d.mode;
@@ -879,80 +409,44 @@ function handleTick(d) {
   document.querySelector('#chip-cal').style.borderColor = d.calibrated ? 'var(--good)' : 'var(--panel-border)';
   document.querySelector('#chip-cal').style.color = d.calibrated ? 'var(--good)' : '';
 
-  // === SETUP OVERLAY orchestration ===
   const phase = d.calibration_phase || 'idle';
   const connected = (d.status === 'connected' || d.status === 'streaming' || d.device);
-  if (phase === 'complete' || phase === 'skipped') {
-    hideSetup();
-  } else if (phase === 'running') {
-    if (!calInterval) startTimer(d.calibration_started_at);
-    showSetupState('running');
-  } else if (connected && (phase === 'ready' || phase === 'idle')) {
-    // Device is connected — show calibration overlay regardless of whether
-    // calibration_phase is "ready" or still "idle" (the latter can happen
-    // if the calibrator init failed before the backend fix was applied).
-    stopTimer();
-    showSetupState('ready');
-  } else if (phase === 'failed') {
-    stopTimer();
-    const m = document.getElementById('cal-fail-msg');
-    if (m) m.textContent = d.message || 'Could not measure individual α-rhythm.';
-    showSetupState('failed');
-  } else {
-    // Headband not connected — show searching overlay
-    stopTimer();
-    const m = document.getElementById('setup-searching-msg');
-    if (m) m.textContent = d.message || 'put it in pairing mode and bring it close';
-    showSetupState('searching');
-  }
+  if (phase === 'complete' || phase === 'skipped') hideSetup();
+  else if (phase === 'running') { if (!calInterval) startTimer(d.calibration_started_at); showSetupState('running'); }
+  else if (connected && (phase === 'ready' || phase === 'idle')) { stopTimer(); showSetupState('ready'); }
+  else if (phase === 'failed') { stopTimer(); document.getElementById('cal-fail-msg').textContent = d.message || 'Calibration failed.'; showSetupState('failed'); }
+  else { stopTimer(); document.getElementById('setup-searching-msg').textContent = d.message || 'put it in pairing mode'; showSetupState('searching'); }
 
-  // sensor status grid (works in all states, updates every tick)
   renderSensorStatus(d.sensor_status);
-
-  // battery
   const lvl = document.querySelector('#battery .lvl');
-  lvl.textContent = (d.battery === null || d.battery === undefined) ? '—' : d.battery;
-  const batChip = document.getElementById('battery');
-  if (d.battery !== null && d.battery !== undefined) {
-    batChip.style.borderColor = d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--good)';
+  lvl.textContent = d.battery ?? '—';
+  if (d.battery != null) {
+    document.getElementById('battery').style.borderColor = d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--good)';
     lvl.style.color = d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--neon-cyan)';
-    lvl.style.textShadow = `0 0 8px ${d.battery < 20 ? 'var(--bad)' : d.battery < 50 ? 'var(--neon-yellow)' : 'var(--neon-cyan)'}`;
   }
 
-  // calibration info
   if (d.calibration) {
     const c = d.calibration;
-    document.getElementById('cal-info').innerHTML =
-      `individual α-frequency: <b style="color:var(--neon-cyan)">${c.individualFrequency?.toFixed(2)} Hz</b> · ` +
-      `bandwidth: <b style="color:var(--neon-cyan)">${c.individualBandwidth?.toFixed(2)}</b> · ` +
-      `peak: <b style="color:var(--neon-cyan)">${c.individualPeakFrequency?.toFixed(2)} Hz</b> · ` +
-      `range: <b style="color:var(--neon-cyan)">${c.lowerFrequency?.toFixed(1)}–${c.upperFrequency?.toFixed(1)} Hz</b> · ` +
-      `device: <b>${d.device || '—'}</b> · serial: <b>${d.serial || '—'}</b> · lib: <b>${d.eeg_sr || ''}Hz</b>`;
+    document.getElementById('cal-info').innerHTML = `α-frequency: <b style="color:var(--neon-cyan)">${c.individualFrequency?.toFixed(2)} Hz</b> · peak: <b style="color:var(--neon-cyan)">${c.individualPeakFrequency?.toFixed(2)} Hz</b> · serial: <b>${d.serial || '—'}</b>`;
   } else if (d.device) {
-    document.getElementById('cal-info').textContent = `${d.device} (${d.serial}) — waiting for closed-eye calibration (30 s)`;
+    document.getElementById('cal-info').textContent = `${d.device} (${d.serial}) — waiting for calibration...`;
   } else {
     document.getElementById('cal-info').textContent = d.message || 'scanning…';
   }
 
-  // EEG channels
   document.getElementById('eeg-channels').textContent = (d.eeg_channels || []).join(', ') || '—';
 
-  // === EEG plot ===
   if (d.eeg && d.eeg.length) {
     eegChart.data.labels = d.eeg.map((_, i) => i);
     eegChart.data.datasets[0].data = d.eeg.map(s => s[0] ?? null);
     eegChart.data.datasets[1].data = d.eeg.map(s => s[1] ?? null);
     eegChart.update('none');
   }
-
-  // === PPG plot ===
   if (d.ppg && d.ppg.length) {
     ppgChart.data.labels = d.ppg.map((_, i) => i);
     ppgChart.data.datasets[0].data = d.ppg;
     ppgChart.update('none');
   }
-
-  // === MEMS plot ===
   if (d.mems_acc && d.mems_acc.length) {
     memsChart.data.labels = d.mems_acc.map((_, i) => i);
     memsChart.data.datasets[0].data = d.mems_acc.map(v => v[0]);
@@ -965,39 +459,21 @@ function handleTick(d) {
     memsChart.data.datasets[7].data = d.mems_gyro.map(v => Math.hypot(v[0], v[1], v[2]));
     memsChart.update('none');
   }
-
-  // === Cardio ===
   if (d.cardio) {
-    const c = d.cardio;
-    document.getElementById('hr-val').textContent = c.heartRate > 0 ? c.heartRate.toFixed(0) : '—';
+    const c = d.cardio; document.getElementById('hr-val').textContent = c.heartRate > 0 ? c.heartRate.toFixed(0) : '—';
     const q = document.getElementById('hr-quality');
-    if (!c.skinContact) q.textContent = '⚠ no skin contact';
-    else if (c.motionArtifacts) q.textContent = '⚠ motion artifact';
-    else if (!c.metricsAvailable) q.textContent = 'acquiring signal…';
-    else q.textContent = `♡ good signal · HRV ${c.kaplanIndex.toFixed(0)}`;
+    q.textContent = !c.skinContact ? '⚠ no skin contact' : c.motionArtifacts ? '⚠ motion artifact' : `♡ good signal · HRV ${c.kaplanIndex.toFixed(0)}`;
     q.style.color = !c.skinContact ? 'var(--bad)' : c.motionArtifacts ? 'var(--neon-yellow)' : 'var(--good)';
-    setBar('stress-bar', c.stressIndex);
-    setVal('stress-val', c.stressIndex, 1);
-    setBar('kaplan-bar', c.kaplanIndex);
-    setVal('kaplan-val', c.kaplanIndex, 1);
+    setBar('stress-bar', c.stressIndex); setVal('stress-val', c.stressIndex, 1);
+    setBar('kaplan-bar', c.kaplanIndex); setVal('kaplan-val', c.kaplanIndex, 1);
   }
-
-  // === Emotions ===
   if (d.emotions) {
-    const e = d.emotions;
-    setBar('em-focus', e.attention);
-    setVal('em-focus-v', e.attention, 1);
-    setBar('em-chill', e.relaxation);
-    setVal('em-chill-v', e.relaxation, 1);
-    setBar('em-stress', e.cognitiveLoad);
-    setVal('em-stress-v', e.cognitiveLoad, 1);
-    setBar('em-anger', e.cognitiveControl);
-    setVal('em-anger-v', e.cognitiveControl, 1);
-    setBar('em-sc', e.selfControl);
-    setVal('em-sc-v', e.selfControl, 1);
+    const e = d.emotions; setBar('em-focus', e.attention); setVal('em-focus-v', e.attention, 1);
+    setBar('em-chill', e.relaxation); setVal('em-chill-v', e.relaxation, 1);
+    setBar('em-stress', e.cognitiveLoad); setVal('em-stress-v', e.cognitiveLoad, 1);
+    setBar('em-anger', e.cognitiveControl); setVal('em-anger-v', e.cognitiveControl, 1);
+    setBar('em-sc', e.selfControl); setVal('em-sc-v', e.selfControl, 1);
   }
-
-  // === NFB ===
   if (d.nfb && d.nfb.length) {
     nfbChart.data.labels = d.nfb.map((_, i) => i);
     nfbChart.data.datasets[0].data = d.nfb.map(v => v.alpha);
@@ -1005,146 +481,57 @@ function handleTick(d) {
     nfbChart.data.datasets[2].data = d.nfb.map(v => v.theta);
     nfbChart.update('none');
   }
-
-  // === Resistances ===
   if (d.resistances && d.resistances.length) {
-    const grid = document.getElementById('res-grid');
-    grid.innerHTML = '';
+    const grid = document.getElementById('res-grid'); grid.innerHTML = '';
     d.resistances.forEach(r => {
-      const cell = document.createElement('div');
-      const cls = r.is_inf || r.value > 1000 ? 'bad' : r.value < 500 ? 'good' : '';
-      cell.className = 'res-cell ' + cls;
-      const v = r.is_inf ? '∞' : (r.value >= 1000 ? '>1MΩ' : r.value < 1 ? r.value.toFixed(2) : r.value.toFixed(0));
-      const unit = r.is_inf ? '' : r.value < 1 ? 'kΩ' : 'kΩ';
-      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${v}${unit && !r.is_inf ? ' '+unit : ''}</div>`;
+      const cell = document.createElement('div'); cell.className = 'res-cell ' + (r.is_inf || r.value > 1000 ? 'bad' : r.value < 500 ? 'good' : '');
+      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${r.is_inf ? '∞' : (r.value >= 1000 ? '>1MΩ' : r.value.toFixed(0)) + ' kΩ'}</div>`;
       grid.appendChild(cell);
     });
   }
-
-  // === Productivity ===
-  if (d.prod) {
-    const p = d.prod;
-    setBar('pr-prod', p.productivityScore);
-    setVal('pr-prod-v', p.productivityScore, 1);
-    setBar('pr-conc', p.concentrationScore);
-    setVal('pr-conc-v', p.concentrationScore, 1);
-    setBar('pr-rel', p.relaxationScore);
-    setVal('pr-rel-v', p.relaxationScore, 1);
-    setBar('pr-fat', p.fatigueScore);
-    setVal('pr-fat-v', p.fatigueScore, 1);
-    setBar('pr-grv', p.gravityScore);
-    setVal('pr-grv-v', p.gravityScore, 1);
-  }
-
-  // === Physiological States ===
-  if (d.phy) {
-    const p = d.phy;
-    setBar('ph-rel', p.relaxation);
-    setVal('ph-rel-v', p.relaxation, 1);
-    setBar('ph-conc', p.concentration);
-    setVal('ph-conc-v', p.concentration, 1);
-    setBar('ph-fat', p.fatigue);
-    setVal('ph-fat-v', p.fatigue, 1);
-    setBar('ph-str', p.stress);
-    setVal('ph-str-v', p.stress, 1);
-    setBar('ph-inv', p.involvement);
-    setVal('ph-inv-v', p.involvement, 1);
-  }
+  if (d.prod) { const p = d.prod; setBar('pr-prod', p.productivityScore); setVal('pr-prod-v', p.productivityScore, 1); setBar('pr-conc', p.concentrationScore); setVal('pr-conc-v', p.concentrationScore, 1); setBar('pr-rel', p.relaxationScore); setVal('pr-rel-v', p.relaxationScore, 1); setBar('pr-fat', p.fatigueScore); setVal('pr-fat-v', p.fatigueScore, 1); setBar('pr-grv', p.gravityScore); setVal('pr-grv-v', p.gravityScore, 1); }
+  if (d.phy) { const p = d.phy; setBar('ph-rel', p.relaxation); setVal('ph-rel-v', p.relaxation, 1); setBar('ph-conc', p.concentration); setVal('ph-conc-v', p.concentration, 1); setBar('ph-fat', p.fatigue); setVal('ph-fat-v', p.fatigue, 1); setBar('ph-str', p.stress); setVal('ph-str-v', p.stress, 1); setBar('ph-inv', p.involvement); setVal('ph-inv-v', p.involvement, 1); }
 }
 
-// Fetch initial state from server BEFORE showing overlay, so that
-// on page reload we instantly show the correct state (calibration ready,
-// device connected, etc.) instead of flashing "Searching…".
 (async function initOverlay() {
   try {
     const r = await fetch('/api/status');
-    if (r.ok) {
-      const st = await r.json();
-      handleTick({
-        status: st.status,
-        message: st.message,
-        battery: st.battery,
-        device: st.device,
-        serial: st.serial,
-        mode: st.mode,
-        calibrated: st.calibrated,
-        calibration: st.calibration,
-        calibration_phase: st.calibration_phase,
-        calibration_started_at: st.calibration_started_at || 0,
-        eeg_channels: st.channels,
-        eeg_sr: st.eeg_sr,
-        ppg_sr: st.ppg_sr,
-        mems_sr: st.mems_sr,
-      });
-    }
-  } catch (e) { /* ignore — WS will catch up */ }
+    if (r.ok) { const st = await r.json(); handleTick({ ...st, eeg_channels: st.channels }); }
+  } catch (e) {}
+  applyLang();
   connect();
 })();
 
-// === SETUP OVERLAY — show only when calibrated/skipped, hide during searching/cal ===
 const overlay = document.getElementById('setup-overlay');
-function showSetupState(name) {
-  overlay.classList.add('show');
-  overlay.className = 'show setup-state-' + name;
-  for (const el of overlay.querySelectorAll('[data-state]')) {
-    el.style.display = (el.dataset.state === name) ? '' : 'none';
-  }
-}
+function showSetupState(name) { overlay.className = 'show setup-state-' + name; for (const el of overlay.querySelectorAll('[data-state]')) { el.style.display = (el.dataset.state === name) ? '' : 'none'; } }
 function hideSetup() { overlay.classList.remove('show'); }
+function sendCmd(action) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action })); }
 
-function sendCmd(action) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action }));
-}
 document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
 document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
 
-// Circular timer state
-let calStartedAt = 0;
-let calInterval = null;
-const CAL_DURATION = 30;
-const RING_CIRC = 2 * Math.PI * 78;   // 490.088...
+let calStartedAt = 0, calInterval = null;
+const CAL_DURATION = 30, RING_CIRC = 2 * Math.PI * 78;
 function tickTimer() {
-  const elapsed = (Date.now()/1000) - calStartedAt;
-  const remaining = Math.max(0, CAL_DURATION - elapsed);
-  const ring = document.getElementById('timer-ring');
-  const text = document.getElementById('timer-text');
-  if (!ring || !text) return;
-  const frac = remaining / CAL_DURATION;
-  ring.setAttribute('stroke-dashoffset', (1 - frac) * RING_CIRC);
-  text.textContent = Math.ceil(remaining);
+  const remaining = Math.max(0, CAL_DURATION - ((Date.now()/1000) - calStartedAt));
+  const ring = document.getElementById('timer-ring'), text = document.getElementById('timer-text'); if (!ring || !text) return;
+  ring.setAttribute('stroke-dashoffset', (1 - (remaining / CAL_DURATION)) * RING_CIRC); text.textContent = Math.ceil(remaining);
   if (remaining < 5) ring.classList.add('warn'); else ring.classList.remove('warn');
   if (remaining <= 0 && calInterval) { clearInterval(calInterval); calInterval = null; }
 }
-function startTimer(fromServerTs) {
-  // If server gave us a t, use it; else use now
-  calStartedAt = fromServerTs || (Date.now()/1000);
-  if (calInterval) clearInterval(calInterval);
-  tickTimer();
-  calInterval = setInterval(tickTimer, 100);
-}
+function startTimer(f) { calStartedAt = f || (Date.now()/1000); if (calInterval) clearInterval(calInterval); tickTimer(); calInterval = setInterval(tickTimer, 100); }
 function stopTimer() { if (calInterval) { clearInterval(calInterval); calInterval = null; } }
 
-// === Help-popup wiring (click ? icon to show, click anywhere to hide) ===
 document.querySelectorAll('.help').forEach(el => {
   el.addEventListener('click', e => {
-    e.stopPropagation();
-    const id = 'help-' + el.dataset.help;
-    const popup = document.getElementById(id);
-    if (!popup) return;
-    // close all others, toggle this one
-    document.querySelectorAll('.help-popup.open').forEach(p => { if (p !== popup) p.classList.remove('open'); });
-    popup.classList.toggle('open');
-    // position next to the ? icon
-    const r = el.getBoundingClientRect();
-    popup.style.top  = (r.bottom + window.scrollY + 6) + 'px';
-    popup.style.left = (r.left + window.scrollX - 320) + 'px';
+    e.stopPropagation(); const id = 'help-' + el.dataset.help; const popup = document.getElementById(id); if (!popup) return;
+    document.querySelectorAll('.help-popup.open').forEach(p => { if (p !== popup) p.classList.remove('open'); }); popup.classList.toggle('open');
+    const r = el.getBoundingClientRect(); popup.style.top  = (r.bottom + window.scrollY + 6) + 'px'; popup.style.left = (r.left + window.scrollX - 320) + 'px';
   });
 });
-document.addEventListener('click', () => {
-  document.querySelectorAll('.help-popup.open').forEach(p => p.classList.remove('open'));
-});
+document.addEventListener('click', () => document.querySelectorAll('.help-popup.open').forEach(p => p.classList.remove('open')));
 </script>
 </body>
 </html>
