@@ -68,6 +68,16 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
 .res-cell.good .val { color: var(--good); text-shadow: 0 0 6px var(--good); }
 .res-cell.bad { border-color: var(--bad); box-shadow: 0 0 10px rgba(255,51,85,0.2); }
 .res-cell.bad .val { color: var(--bad); text-shadow: 0 0 6px var(--bad); }
+.res-cell.warn { border-color: var(--neon-yellow); box-shadow: 0 0 10px rgba(255,234,0,0.2); }
+.res-cell.warn .val { color: var(--neon-yellow); text-shadow: 0 0 6px var(--neon-yellow); }
+.res-status { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; padding: 4px 8px; border-radius: 4px; text-align: center; }
+.res-status.good { color: var(--good); border: 1px solid var(--good); background: rgba(0,255,136,0.08); }
+.res-status.bad { color: var(--bad); border: 1px solid var(--bad); background: rgba(255,51,85,0.08); }
+.res-status.warn { color: var(--neon-yellow); border: 1px solid var(--neon-yellow); background: rgba(255,234,0,0.08); }
+.res-status.none { color: var(--text-dim); border: 1px solid var(--panel-border); }
+.panel.good { border-color: var(--good); box-shadow: 0 0 15px rgba(0,255,136,0.15); }
+.panel.bad { border-color: var(--bad); box-shadow: 0 0 15px rgba(255,51,85,0.15); }
+.panel.warn { border-color: var(--neon-yellow); box-shadow: 0 0 15px rgba(255,234,0,0.1); }
 .status-text { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-top: 4px; }
 .heart-pulse { display: inline-block; width: 14px; height: 14px; background: var(--neon-pink); border-radius: 50%; box-shadow: 0 0 16px var(--neon-pink); margin-right: 8px; animation: heartbeat 1s infinite; }
 @keyframes heartbeat { 0%, 100% { transform: scale(1); } 20% { transform: scale(1.4); box-shadow: 0 0 24px var(--neon-pink); } 40% { transform: scale(1); } }
@@ -236,6 +246,7 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
     <div class="res-grid" id="res-grid">
       <div class="res-cell bad"><div class="name">—</div><div class="val">—</div></div>
     </div>
+    <div class="res-status none" id="res-status">—</div>
     <div class="footer-info">good: &lt; 500 kΩ · bad: &gt; 1000 kΩ</div>
   </section>
 
@@ -484,11 +495,29 @@ function handleTick(d) {
   }
   if (d.resistances && d.resistances.length) {
     const grid = document.getElementById('res-grid'); grid.innerHTML = '';
+    let nGood = 0, nWarn = 0, nBad = 0;
     d.resistances.forEach(r => {
-      const cell = document.createElement('div'); cell.className = 'res-cell ' + (r.is_inf || r.value > 1000 ? 'bad' : r.value < 500 ? 'good' : '');
-      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${r.is_inf ? '∞' : (r.value >= 1000 ? '>1MΩ' : r.value.toFixed(0)) + ' kΩ'}</div>`;
+      const isBad = r.is_inf || r.value > 1000;
+      const isGood = !r.is_inf && r.value != null && r.value < 500;
+      const cellCls = isBad ? 'bad' : isGood ? 'good' : 'warn';
+      if (isBad) nBad++; else if (isGood) nGood++; else nWarn++;
+      const cell = document.createElement('div'); cell.className = 'res-cell ' + cellCls;
+      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${r.is_inf ? '∞' : r.value.toFixed(0) + ' kΩ'}</div>`;
       grid.appendChild(cell);
     });
+    const panel = grid.closest('.panel');
+    panel.classList.remove('good', 'bad', 'warn');
+    const st = document.getElementById('res-status');
+    if (nBad > 0) {
+      st.className = 'res-status bad'; st.textContent = '✗ bad contact — ' + nBad + '/' + d.resistances.length;
+      panel.classList.add('bad');
+    } else if (nWarn > 0) {
+      st.className = 'res-status warn'; st.textContent = '⚠ some channels elevated — ' + nWarn + '/' + d.resistances.length;
+      panel.classList.add('warn');
+    } else {
+      st.className = 'res-status good'; st.textContent = '✓ good — all ' + d.resistances.length + ' channels';
+      panel.classList.add('good');
+    }
   }
   if (d.prod) { const p = d.prod; setBar('pr-prod', p.productivityScore); setVal('pr-prod-v', p.productivityScore, 1); setBar('pr-conc', p.concentrationScore); setVal('pr-conc-v', p.concentrationScore, 1); setBar('pr-rel', p.relaxationScore); setVal('pr-rel-v', p.relaxationScore, 1); setBar('pr-fat', p.fatigueScore); setVal('pr-fat-v', p.fatigueScore, 1); setBar('pr-grv', p.gravityScore); setVal('pr-grv-v', p.gravityScore, 1); }
   if (d.phy) { const p = d.phy; setBar('ph-rel', p.relaxation); setVal('ph-rel-v', p.relaxation, 1); setBar('ph-conc', p.concentration); setVal('ph-conc-v', p.concentration, 1); setBar('ph-fat', p.fatigue); setVal('ph-fat-v', p.fatigue, 1); setBar('ph-str', p.stress); setVal('ph-str-v', p.stress, 1); setBar('ph-inv', p.involvement); setVal('ph-inv-v', p.involvement, 1); }
