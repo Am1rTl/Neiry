@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>NEIRY · Advanced Cognitive Analytics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550;
+      --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00; --neon-pink: #ff3e7f;
+      --neon-yellow: #ffea00; --neon-purple: #b66bff;
+      --text: #d8e1ff; --text-dim: #6f7bb0;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace; min-height: 100vh; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:1; background: radial-gradient(ellipse at 50% 0%, rgba(0,240,255,0.05), transparent 50%); }
+    header { position: relative; z-index: 2; padding: 14px 24px; border-bottom: 1px solid var(--panel-border); display: flex; align-items: center; gap: 18px; background: var(--bg2); }
+    header h1 { margin: 0; font-size: 16px; letter-spacing: 3px; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); -webkit-background-clip: text; color: transparent; }
+    header a { color: var(--text-dim); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 4px; }
+    header a:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); }
+    
+    main { padding: 24px; position: relative; z-index: 2; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    
+    .card { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; }
+    .card h2 { margin: 0 0 16px; font-size: 13px; letter-spacing: 2px; color: var(--text-dim); text-transform: uppercase; text-align: center; border-bottom: 1px solid var(--panel-border); padding-bottom: 10px; }
+    
+    /* 3D Brain Viz */
+    .brain-container { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .brain-3d { perspective: 1000px; width: 160px; height: 180px; position: relative; margin-bottom: 24px; transform: rotateX(20deg); transform-style: preserve-3d; }
+    .hemisphere { position: absolute; top: 0; width: 75px; height: 160px; border: 2px solid rgba(255,255,255,0.1); border-radius: 40px 20px 20px 60px; background: rgba(255,255,255,0.02); transition: all 0.4s ease-out; box-shadow: inset 0 0 20px rgba(0,0,0,0.5); }
+    .hemi-left { left: 0; border-right: 1px dashed rgba(255,255,255,0.2); }
+    .hemi-right { right: 0; border-radius: 20px 40px 60px 20px; border-left: 1px dashed rgba(255,255,255,0.2); }
+    
+    /* Dynamic Glowing States */
+    .brain-3d.st-approach .hemi-left { background: rgba(0, 240, 255, 0.35); border-color: var(--neon-cyan); box-shadow: 0 0 35px var(--neon-cyan), inset 0 0 20px var(--neon-cyan); }
+    .brain-3d.st-engagement .hemi-left { background: rgba(0, 240, 255, 0.15); border-color: var(--neon-cyan); box-shadow: 0 0 20px rgba(0,240,255,0.2); }
+    .brain-3d.st-anxiety .hemi-right { background: rgba(255, 62, 127, 0.25); border-color: var(--neon-pink); box-shadow: 0 0 30px rgba(255,62,127,0.4); }
+    .brain-3d.st-depression .hemi-right { background: rgba(255, 43, 214, 0.3); border-color: var(--neon-magenta); box-shadow: 0 0 35px var(--neon-magenta), inset 0 0 20px var(--neon-magenta); }
+    .brain-3d.st-flow .hemisphere { background: rgba(170, 255, 0, 0.2); border-color: var(--neon-lime); box-shadow: 0 0 25px rgba(170,255,0,0.3); }
+    .brain-3d.st-meditation .hemisphere { background: rgba(182, 107, 255, 0.25); border-color: var(--neon-purple); box-shadow: 0 0 30px rgba(182,107,255,0.4); }
+    .brain-3d.st-fatigue .hemisphere { background: rgba(255, 234, 0, 0.15); border-color: var(--neon-yellow); box-shadow: 0 0 15px rgba(255,234,0,0.2); }
+    .brain-3d.st-neutral .hemisphere { background: rgba(255,255,255,0.03); border-color: var(--panel-border); }
+
+    .state-desc { text-align: center; font-size: 12px; line-height: 1.6; height: 120px; }
+    .state-title { font-size: 16px; font-weight: bold; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+    
+    /* Tabs & Leaderboard */
+    .tabs { display: flex; gap: 6px; justify-content: center; margin-bottom: 20px; }
+    .tab { font-size: 10px; padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 4px; cursor: pointer; color: var(--text-dim); }
+    .tab.active { color: #000; background: var(--neon-cyan); border-color: var(--neon-cyan); font-weight: bold; }
+    
+    .lb-row { display: flex; flex-direction: column; margin-bottom: 12px; }
+    .lb-info { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+    .lb-track { width: 100%; height: 8px; background: rgba(0,0,0,0.4); border-radius: 4px; overflow: hidden; border: 1px solid var(--panel-border); }
+    .lb-fill { height: 100%; transition: width 0.3s ease; }
+    
+    /* Helpers */
+    .c-cyan { color: var(--neon-cyan); } .bg-cyan { background: var(--neon-cyan); box-shadow: 0 0 10px var(--neon-cyan); }
+    .c-pink { color: var(--neon-pink); } .bg-pink { background: var(--neon-pink); box-shadow: 0 0 10px var(--neon-pink); }
+    .c-magenta { color: var(--neon-magenta); } .bg-magenta { background: var(--neon-magenta); box-shadow: 0 0 10px var(--neon-magenta); }
+    .c-lime { color: var(--neon-lime); } .bg-lime { background: var(--neon-lime); box-shadow: 0 0 10px var(--neon-lime); }
+    .c-purple { color: var(--neon-purple); } .bg-purple { background: var(--neon-purple); box-shadow: 0 0 10px var(--neon-purple); }
+    .c-yellow { color: var(--neon-yellow); } .bg-yellow { background: var(--neon-yellow); box-shadow: 0 0 10px var(--neon-yellow); }
+    .c-dim { color: var(--text-dim); } .bg-dim { background: var(--panel-border); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🧠 ADVANCED COGNITIVE PROFILER</h1>
+    <a href="/">ГЛАВНАЯ</a>
+    <a href="/charts">ГРАФИКИ</a>
+    <div style="margin-left:auto; color:var(--text-dim); font-size:11px;" id="conn-status">Синхронизация...</div>
+  </header>
+
+  <main>
+    <div class="card">
+      <h2>Психофизиологический Маркер</h2>
+      <div class="brain-container">
+        <div class="brain-3d st-neutral" id="brain-viz">
+          <div class="hemisphere hemi-left"></div>
+          <div class="hemisphere hemi-right"></div>
+        </div>
+        <div class="state-desc">
+          <div class="state-title c-dim" id="st-title">Калибровка...</div>
+          <div id="st-desc" style="color:var(--text-dim);">Анализ волновой активности мозга в реальном времени.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Динамика Мониторинга (AsI Index)</h2>
+      <div style="flex:1; position:relative;">
+        <canvas id="asi-chart"></canvas>
+      </div>
+      <div style="text-align:center; font-size:10px; color:var(--text-dim); margin-top:10px; display:flex; justify-content:space-between; padding:0 10px;">
+        <span>← Правое доминирование</span>
+        <span>Сбалансировано</span>
+        <span>Левое доминирование →</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Профиль за интервал</h2>
+      <div class="tabs" id="time-tabs">
+        <div class="tab" data-win="5">5 СЕК</div>
+        <div class="tab" data-win="30">30 СЕК</div>
+        <div class="tab active" data-win="60">1 МИН</div>
+        <div class="tab" data-win="300">5 МИН</div>
+        <div class="tab" data-win="900">15 МИН</div>
+      </div>
+      
+      <div id="leaderboard"></div>
+    </div>
+  </main>
+
+<script>
+Chart.defaults.color = '#6f7bb0';
+Chart.defaults.font.family = "'JetBrains Mono', monospace";
+
+const eegBuffer = { ch1: [], ch2: [] };
+let smoothAsI = 0;
+let smoothAlphaTotal = 0;
+let smoothBetaTotal = 0;
+let smoothThetaTotal = 0;
+
+const EMA_ALPHA = 0.04; 
+const history = [];
+let currentWindowSec = 60;
+
+function calcBandPower(samples, fMin, fMax) {
+  const N = 256, sr = 250;
+  const binMin = Math.ceil((fMin * N) / sr);
+  const binMax = Math.floor((fMax * N) / sr);
+  let totalPower = 0;
+  for (let k = binMin; k <= binMax; k++) {
+    let real = 0, imag = 0;
+    const omega = (2 * Math.PI * k) / N;
+    for (let n = 0; n < N; n++) {
+      const w = 0.5 * (1 - Math.cos((2 * Math.PI * n) / 255));
+      const val = samples[n] * w;
+      real += val * Math.cos(omega * n);
+      imag -= val * Math.sin(omega * n);
+    }
+    totalPower += 2 * (real * real + imag * imag);
+  }
+  return totalPower / 24576;
+}
+
+const ctx = document.getElementById('asi-chart').getContext('2d');
+const asiChart = new Chart(ctx, {
+  type: 'line',
+  data: { labels: [], datasets: [{ 
+    data: [], borderColor: '#00f0ff', borderWidth: 2, pointRadius: 0, tension: 0.4, fill: false
+  }]},
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: 'rgba(26,37,80,0.4)' }, min: -1, max: 1, ticks: { maxTicksLimit: 5 } }
+    }
+  }
+});
+
+// --- Расширенная карта состояний (Включая Сближение и Депрессию) ---
+const STATES_META = {
+  approach:   { title: "Сближение / Азарт", colorCls: "c-cyan", bgCls: "bg-cyan", css: "st-approach", desc: "Максимальный левосторонний сдвиг активности. Состояние выраженной мотивации достижения целей, дофаминового подъема, уверенности и воли к действию." },
+  engagement: { title: "Ментальный Фокус", colorCls: "c-cyan", bgCls: "bg-cyan", css: "st-engagement", desc: "Умеренное левое доминирование коры. Спокойная рабочая концентрация, стабильное вовлечение в процесс без лишнего стресса." },
+  anxiety:    { title: "Избегание / Тревога", colorCls: "c-pink", bgCls: "bg-pink", css: "st-anxiety", desc: "Смещение активности в правую долю на фоне высокой Бета. Состояние острого напряжения, ментального сопротивления и панического ухода от задач." },
+  depression: { title: "Депрессивный фон / Апатия", colorCls: "c-magenta", bgCls: "bg-magenta", css: "st-depression", desc: "Глубокое правое доминирование на фоне падения Бета и роста медленной Тета. Маркер выученной беспомощности, апатии, отсутствия сил и выгорания." },
+  flow:       { title: "Поток (Чистый Фокус)", colorCls: "c-lime", bgCls: "bg-lime", css: "st-flow", desc: "Идеально симметричный баланс полушарий с подавленной затылочной Альфой. Мозг полностью поглощен обработкой внешней информации." },
+  meditation: { title: "Медитация / Дзен", colorCls: "c-purple", bgCls: "bg-purple", css: "st-meditation", desc: "Синхронный мощный всплеск Альфа-ритма. Глаза закрыты, сенсорные фильтры заблокированы, мозг находится в режиме восстановления." },
+  fatigue:    { title: "Ментальное Утомление", colorCls: "c-yellow", bgCls: "bg-yellow", css: "st-fatigue", desc: "Глобальный подъем Тета-волн. Префронтальная кора истощена, падает скорость реакции, внимание рассеивается. Срочно нужен отдых." },
+  neutral:    { title: "Спокойное Наблюдение", colorCls: "c-dim", bgCls: "bg-dim", css: "st-neutral", desc: "Базовый фоновый баланс волновой активности без выраженных кренов полушарий или всплесков ритмов." }
+};
+
+const brainViz = document.getElementById('brain-viz');
+const stTitle = document.getElementById('st-title');
+const stDesc = document.getElementById('st-desc');
+const lbContainer = document.getElementById('leaderboard');
+
+function processMetrics(asi, alpha, beta, theta, now) {
+  const totalP = alpha + beta + theta + 1e-30;
+  const alphaRel = alpha / totalP;
+  const betaRel = beta / totalP;
+  const thetaRel = theta / totalP;
+
+  let stateKey = 'neutral';
+  
+  if (alphaRel > 0.55) {
+    stateKey = 'meditation';
+  } else if (thetaRel > 0.40 && betaRel < 0.25) {
+    stateKey = 'fatigue';
+  } else if (asi > 0.08) {
+    stateKey = 'approach';   // Явный, сильный сдвиг влево (Сближение)
+  } else if (asi > 0.02) {
+    stateKey = 'engagement'; // Умеренный сдвиг влево
+  } else if (asi < -0.08) {
+    // Правосторонняя асимметрия разделяется по признаку энергии
+    stateKey = (betaRel < 0.23) ? 'depression' : 'anxiety'; // Мало беты = Депрессивный спад, много беты = Тревога
+  } else if (asi < -0.02) {
+    stateKey = 'anxiety';
+  } else if (betaRel > 0.35 && alphaRel < 0.25) {
+    stateKey = 'flow';
+  }
+
+  // Привязка динамических цветов графика
+  const colorMap = { approach: 'cyan', engagement: 'cyan', anxiety: 'pink', depression: 'magenta', flow: 'lime', meditation: 'purple', fatigue: 'yellow', neutral: 'cyan' };
+  asiChart.data.datasets[0].borderColor = getComputedStyle(document.documentElement).getPropertyValue(`--neon-${colorMap[stateKey]}`).trim();
+
+  const currentMeta = STATES_META[stateKey];
+  if (!brainViz.classList.contains(currentMeta.css)) {
+    brainViz.className = `brain-3d ${currentMeta.css}`;
+    stTitle.className = `state-title ${currentMeta.colorCls}`;
+    stTitle.textContent = currentMeta.title;
+    stDesc.textContent = currentMeta.desc;
+  }
+
+  history.push({ t: now, asi: asi, state: stateKey });
+  while (history.length > 0 && history[0].t < now - 1800) history.shift();
+
+  const chartData = history.filter(h => h.t >= now - 60);
+  asiChart.data.labels = chartData.map(h => h.t);
+  asiChart.data.datasets[0].data = chartData.map(h => h.asi);
+  asiChart.update('none');
+
+  updateLeaderboard(now);
+}
+
+function updateLeaderboard(now) {
+  const windowData = history.filter(h => h.t >= now - currentWindowSec);
+  if (windowData.length === 0) return;
+
+  const counts = { approach: 0, engagement: 0, anxiety: 0, depression: 0, flow: 0, meditation: 0, fatigue: 0, neutral: 0 };
+  windowData.forEach(h => counts[h.state]++);
+  
+  const total = windowData.length;
+  const sorted = Object.keys(counts)
+    .map(key => ({ key, pct: Math.round((counts[key] / total) * 100) }))
+    .sort((a, b) => b.pct - a.pct);
+
+  let html = '';
+  sorted.forEach(item => {
+    if (item.pct === 0 && history.length > 50) return; // Прячем пустые строки, если уже накопились данные
+    const meta = STATES_META[item.key];
+    html += `
+      <div class="lb-row">
+        <div class="lb-info">
+          <span class="${meta.colorCls}" style="font-weight:bold; font-size:11px;">${meta.title}</span>
+          <span>${item.pct}%</span>
+        </div>
+        <div class="lb-track">
+          <div class="lb-fill ${meta.bgCls}" style="width: ${item.pct}%"></div>
+        </div>
+      </div>
+    `;
+  });
+  lbContainer.innerHTML = html;
+}
+
+document.getElementById('time-tabs').addEventListener('click', e => {
+  if (!e.target.classList.contains('tab')) return;
+  document.querySelectorAll('#time-tabs .tab').forEach(t => t.classList.remove('active'));
+  e.target.classList.add('active');
+  currentWindowSec = parseInt(e.target.dataset.win, 10);
+  if (history.length > 0) updateLeaderboard(history[history.length-1].t);
+});
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  
+  ws.onopen = () => document.getElementById('conn-status').textContent = "ONLINE · СТРИМИНГ ЭЭГ";
+  ws.onclose = () => { document.getElementById('conn-status').textContent = "OFFLINE · ПЕРЕПОДКЛЮЧЕНИЕ"; setTimeout(connect, 2000); };
+  
+  ws.onmessage = (ev) => {
+    const d = JSON.parse(ev.data);
+    if (!d.eeg_stream || !d.eeg_stream.n) return;
+
+    const { ch1, ch2, sr, t0 } = d.eeg_stream;
+    const serverT0 = d.t_server - d.t;
+    
+    for (let i = 0; i < d.eeg_stream.n; i++) {
+      eegBuffer.ch1.push(ch1[i]);
+      eegBuffer.ch2.push(ch2[i]);
+    }
+
+    const N = 256;
+    if (eegBuffer.ch1.length > N) {
+      eegBuffer.ch1.splice(0, eegBuffer.ch1.length - N);
+      eegBuffer.ch2.splice(0, eegBuffer.ch2.length - N);
+    }
+
+    if (eegBuffer.ch1.length === N) {
+      const a1 = calcBandPower(eegBuffer.ch1, 8, 12);  
+      const a2 = calcBandPower(eegBuffer.ch2, 8, 12);  
+      const b1 = calcBandPower(eegBuffer.ch1, 14, 30); 
+      const b2 = calcBandPower(eegBuffer.ch2, 14, 30); 
+      const t1 = calcBandPower(eegBuffer.ch1, 4, 7);   
+      const t2 = calcBandPower(eegBuffer.ch2, 4, 7);   
+
+      const alphaTotal = (a1 + a2) / 2;
+      const betaTotal = (b1 + b2) / 2;
+      const thetaTotal = (t1 + t2) / 2;
+
+      // Математический индекс лобной/затылочной асимметрии
+      const rawAsI = (a2 - a1) / (a1 + a2 + 1e-30);
+      
+      smoothAsI = smoothAsI * (1 - EMA_ALPHA) + rawAsI * EMA_ALPHA;
+      smoothAlphaTotal = smoothAlphaTotal * (1 - EMA_ALPHA) + alphaTotal * EMA_ALPHA;
+      smoothBetaTotal = smoothBetaTotal * (1 - EMA_ALPHA) + betaTotal * EMA_ALPHA;
+      smoothThetaTotal = smoothThetaTotal * (1 - EMA_ALPHA) + thetaTotal * EMA_ALPHA;
+      
+      const currentTime = serverT0 + t0 + (d.eeg_stream.n - 1) / sr;
+      processMetrics(smoothAsI, smoothAlphaTotal, smoothBetaTotal, smoothThetaTotal, currentTime);
+    }
+  };
+}
+
+connect();
+</script>
+</body>
+</html>

@@ -785,6 +785,11 @@ async def charts() -> FileResponse:
     return FileResponse(os.path.join(STATIC_DIR, "charts.html"))
 
 
+@app.get("/more")
+async def more() -> FileResponse:
+    return FileResponse(os.path.join(STATIC_DIR, "more.html"))
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     with STATE_LOCK:

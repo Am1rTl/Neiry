@@ -207,20 +207,48 @@ const streams = {
   phy:      new Stream(['relaxation','concentration','fatigue','stress','involvement'],         5400),
   prod:     new Stream(['productivityScore','concentrationScore','relaxationScore','fatigueScore'], 5400),
   nfb:      new Stream(['alpha','beta','theta','delta','smr'],                                 5400),
+  gamma:    new Stream(['ch1_gamma', 'ch2_gamma'],                                             5400),
 };
 
+// Разделили единую конфигурацию cardio на 3 отдельных графика с указанием родительского фида stream: 'cardio'
 const STREAMS_CFG = {
-  eeg:      { fast: true, label: 'EEG (Ch1, Ch2)',  unit: 'µV', ymin: -150, ymax: 150, datasets: [{ key: 'eeg_ch1', label: 'Ch1 · O1–T3', color: '#00f0ff' }, { key: 'eeg_ch2', label: 'Ch2 · O2–T4', color: '#ff2bd6' }] },
-  ppg:      { fast: true, label: 'PPG (photoplethysmogram)', unit: '', datasets: [{ key: 'ppg', label: 'PPG', color: '#aaff00' }] },
-  mems:     { fast: true, label: 'Head motion — Accel (m/s²) + Gyro (°/s)', unit: '', datasets: [{ key: 'accX', label: 'acc · X', color: '#00f0ff' }, { key: 'accY', label: 'acc · Y', color: '#ff2bd6' }, { key: 'accZ', label: 'acc · Z', color: '#aaff00' }, { key: 'accMag', label: '|a| total', color: '#ffffff', width: 1.6 }, { key: 'gyrX', label: 'gyro · X', color: '#ff8a00', dash: [3,3] }, { key: 'gyrY', label: 'gyro · Y', color: '#b66bff', dash: [3,3] }, { key: 'gyrZ', label: 'gyro · Z', color: '#ffea00', dash: [3,3] }, { key: 'gyrMag', label: '|ω| total', color: '#ffffff', dash: [3,3], width: 1.4 }] },
-  cardio:   { label: 'Cardio (HR, stress, HRV)', unit: '', ymin: 0, ymax: 200, datasets: [{ key: 'heartRate', label: 'HR (bpm)', color: '#ff3e7f' }, { key: 'stressIndex', label: 'stress idx', color: '#ffea00' }, { key: 'kaplanIndex', label: 'HRV (Kaplan)', color: '#00f0ff' }] },
-  emotions: { label: 'Эмоции', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'attention', label: 'Фокус', color: '#00f0ff' }, { key: 'relaxation', label: 'Азарт', color: '#aaff00' }, { key: 'cognitiveLoad', label: 'Когнитивная нагрузка', color: '#ff3e7f' }, { key: 'cognitiveControl', label: 'Волнение', color: '#ffea00' }, { key: 'selfControl', label: 'Самоконтроль', color: '#b66bff' }] },
-  phy:      { label: 'Physiological states', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'relaxation', label: 'Relaxation', color: '#aaff00' }, { key: 'concentration', label: 'Concentration', color: '#00f0ff' }, { key: 'fatigue', label: 'Fatigue', color: '#ff8a00' }, { key: 'stress', label: 'Stress', color: '#ff3e7f' }, { key: 'involvement', label: 'Involvement', color: '#b66bff' }] },
-  prod:     { label: 'Productivity', unit: '0–100', ymin: 0, ymax: 100, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
-  nfb:      { label: 'NFB band powers (α, β, θ, δ, SMR)', unit: '', datasets: [{ key: 'alpha', label: 'α alpha', color: '#00f0ff' }, { key: 'beta', label: 'β beta', color: '#ff2bd6' }, { key: 'theta', label: 'θ theta', color: '#ffea00' }, { key: 'delta', label: 'δ delta', color: '#ff8a00' }, { key: 'smr', label: 'SMR', color: '#b66bff' }] },
+  eeg:         { fast: true, label: 'EEG (Ch1, Ch2)',  unit: 'µV', ymin: -150, ymax: 150, datasets: [{ key: 'eeg_ch1', label: 'Ch1 · O1–T3', color: '#00f0ff' }, { key: 'eeg_ch2', label: 'Ch2 · O2–T4', color: '#ff2bd6' }] },
+  ppg:         { fast: true, label: 'PPG (photoplethysmogram)', unit: '', datasets: [{ key: 'ppg', label: 'PPG', color: '#aaff00' }] },
+  mems:        { fast: true, label: 'Head motion — Accel (m/s²) + Gyro (°/s)', unit: '', datasets: [{ key: 'accX', label: 'acc · X', color: '#00f0ff' }, { key: 'accY', label: 'acc · Y', color: '#ff2bd6' }, { key: 'accZ', label: 'acc · Z', color: '#aaff00' }, { key: 'accMag', label: '|a| total', color: '#ffffff', width: 1.6 }, { key: 'gyrX', label: 'gyro · X', color: '#ff8a00', dash: [3,3] }, { key: 'gyrY', label: 'gyro · Y', color: '#b66bff', dash: [3,3] }, { key: 'gyrZ', label: 'gyro · Z', color: '#ffea00', dash: [3,3] }, { key: 'gyrMag', label: '|ω| total', color: '#ffffff', dash: [3,3], width: 1.4 }] },
+  heartRate:   { stream: 'cardio', label: 'Cardio · Heart Rate (Частота пульса)', unit: 'bpm', ymin: 40, ymax: 160, datasets: [{ key: 'heartRate', label: 'ЧСС (bpm)', color: '#ff3e7f' }] },
+  stressIndex: { stream: 'cardio', label: 'Cardio · Stress Index (Индекс стресса)', unit: 'у.е.', ymin: 0, ymax: 100, datasets: [{ key: 'stressIndex', label: 'Индекс стресса', color: '#ffea00' }] },
+  kaplanIndex: { stream: 'cardio', label: 'Cardio · HRV Kaplan Index (Вариабельность ритма)', unit: 'у.е.', ymin: 0, ymax: 100, datasets: [{ key: 'kaplanIndex', label: 'Индекс Каплана', color: '#00f0ff' }] },
+  emotions:    { label: 'Эмоции', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'attention', label: 'Фокус', color: '#00f0ff' }, { key: 'relaxation', label: 'Азарт', color: '#aaff00' }, { key: 'cognitiveLoad', label: 'Когнитивная нагрузка', color: '#ff3e7f' }, { key: 'cognitiveControl', label: 'Волнение', color: '#ffea00' }, { key: 'selfControl', label: 'Самоконтроль', color: '#b66bff' }] },
+  phy:         { label: 'Physiological states', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'relaxation', label: 'Relaxation', color: '#aaff00' }, { key: 'concentration', label: 'Concentration', color: '#00f0ff' }, { key: 'fatigue', label: 'Fatigue', color: '#ff8a00' }, { key: 'stress', label: 'Stress', color: '#ff3e7f' }, { key: 'involvement', label: 'Involvement', color: '#b66bff' }] },
+  prod:        { label: 'Productivity', unit: '0–100', ymin: 0, ymax: 100, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
+  nfb:         { label: 'NFB band powers (α, β, θ, δ, SMR)', unit: '', datasets: [{ key: 'alpha', label: 'α alpha', color: '#00f0ff' }, { key: 'beta', label: 'β beta', color: '#ff2bd6' }, { key: 'theta', label: 'θ theta', color: '#ffea00' }, { key: 'delta', label: 'δ delta', color: '#ff8a00' }, { key: 'smr', label: 'SMR', color: '#b66bff' }] },
+  gamma:       { label: 'Gamma band power (30–100 Hz)', unit: 'µV', ymin: 0, datasets: [{ key: 'ch1_gamma', label: 'Ch1 Gamma · O1–T3', color: '#00f0ff' }, { key: 'ch2_gamma', label: 'Ch2 Gamma · O2–T4', color: '#ff2bd6' }] },
 };
 
 const state = { windowSec: 900, layout: 'allinone', smooth: 3, charts: {}, maxRenderPts: 400 };
+
+const gammaBuffers = { ch1: [], ch2: [] };
+
+function calculateBandPower(samples, fMin, fMax) {
+  const N = 256;
+  const sr = 250;
+  const binMin = Math.ceil((fMin * N) / sr);
+  const binMax = Math.floor((fMax * N) / sr);
+  let totalPower = 0;
+  for (let k = binMin; k <= binMax; k++) {
+    let real = 0;
+    let imag = 0;
+    const omega = (2 * Math.PI * k) / N;
+    for (let n = 0; n < N; n++) {
+      const w = 0.5 * (1 - Math.cos((2 * Math.PI * n) / 255));
+      const val = samples[n] * w;
+      real += val * Math.cos(omega * n);
+      imag -= val * Math.sin(omega * n);
+    }
+    totalPower += 2 * (real * real + imag * imag);
+  }
+  return Math.sqrt(totalPower / 24576);
+}
 
 function ingest(d) {
   if (typeof d.t_server !== 'number' || typeof d.t !== 'number') return;
@@ -228,7 +256,21 @@ function ingest(d) {
 
   if (d.eeg_stream && d.eeg_stream.n) {
     const { t0, sr, n, ch1, ch2 } = d.eeg_stream;
-    for (let i = 0; i < n; i++) streams.eeg.append(serverT0 + t0 + i / sr, { eeg_ch1: ch1[i], eeg_ch2: ch2[i] });
+    for (let i = 0; i < n; i++) {
+      streams.eeg.append(serverT0 + t0 + i / sr, { eeg_ch1: ch1[i], eeg_ch2: ch2[i] });
+      gammaBuffers.ch1.push(ch1[i]);
+      gammaBuffers.ch2.push(ch2[i]);
+    }
+    const WINDOW_SIZE = 256;
+    if (gammaBuffers.ch1.length > WINDOW_SIZE) {
+      gammaBuffers.ch1.splice(0, gammaBuffers.ch1.length - WINDOW_SIZE);
+      gammaBuffers.ch2.splice(0, gammaBuffers.ch2.length - WINDOW_SIZE);
+    }
+    if (gammaBuffers.ch1.length === WINDOW_SIZE) {
+      const p1 = calculateBandPower(gammaBuffers.ch1, 30, 100);
+      const p2 = calculateBandPower(gammaBuffers.ch2, 30, 100);
+      streams.gamma.append(serverT0 + t0 + (n - 1) / sr, { ch1_gamma: p1, ch2_gamma: p2 });
+    }
   }
   if (d.ppg_stream && d.ppg_stream.n) {
     const { t0, sr, n, samples } = d.ppg_stream;
@@ -291,9 +333,12 @@ function fastSmooth(tArr, yArr, n, w) {
   return out;
 }
 
-function refreshChart(streamKey) {
-  const ch = state.charts[streamKey]; if (!ch) return;
-  const cfg = STREAMS_CFG[streamKey], s = streams[streamKey]; if (s.length === 0) return;
+function refreshChart(chartKey) {
+  const ch = state.charts[chartKey]; if (!ch) return;
+  const cfg = STREAMS_CFG[chartKey];
+  // Если у графика кастомный фид (например 'cardio'), берем его, иначе совпадает с ключом
+  const streamKey = cfg.stream || chartKey;
+  const s = streams[streamKey]; if (!s || s.length === 0) return;
   const tMin = state.windowSec > 0 ? s.lastT - state.windowSec : -Infinity;
   const sliced = s.sliceFlat(tMin); if (!sliced) return;
 
@@ -335,12 +380,68 @@ function makeChart(canvasId, streamKey) {
 }
 
 function buildGrid() {
-  const grid = document.getElementById('grid'); grid.innerHTML = '';
-  const keys = ['eeg', 'ppg', 'mems', 'cardio', 'emotions', 'phy', 'prod', 'nfb'];
+  // Перед перестроением уничтожаем старые графики, чтобы освободить canvas
+  if (state.charts) {
+    for (const k of Object.keys(state.charts)) {
+      if (state.charts[k]) state.charts[k].destroy();
+    }
+  }
+  state.charts = {};
+
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+
+  // Базовые графики, которые отображаются всегда
+  let keys = ['eeg', 'ppg', 'mems', 'heartRate', 'stressIndex', 'kaplanIndex'];
+
+  // Обработка Эмоций
+  if (state.layout === 'split') {
+    // Разделяем каждую эмоцию в отдельный график
+    STREAMS_CFG.emotions.datasets.forEach(d => {
+      const subKey = 'emotions_' + d.key;
+      STREAMS_CFG[subKey] = {
+        stream: 'emotions',
+        label: `Эмоции · ${d.label}`,
+        unit: '0–1',
+        ymin: 0,
+        ymax: 1,
+        datasets: [{ key: d.key, label: d.label, color: d.color }]
+      };
+      keys.push(subKey);
+    });
+  } else {
+    keys.push('emotions');
+  }
+
+  // Добавляем промежуточные графики
+  keys.push('phy', 'prod');
+
+  // Обработка NFB band powers
+  if (state.layout === 'split') {
+    // Разделяем каждый диапазон NFB в отдельный график
+    STREAMS_CFG.nfb.datasets.forEach(d => {
+      const subKey = 'nfb_' + d.key;
+      STREAMS_CFG[subKey] = {
+        stream: 'nfb',
+        label: `NFB · ${d.label}`,
+        unit: '',
+        datasets: [{ key: d.key, label: d.label, color: d.color }]
+      };
+      keys.push(subKey);
+    });
+  } else {
+    keys.push('nfb');
+  }
+
+  keys.push('gamma');
+
+  // Отрендерить получившийся массив графиков в сетку
   for (const k of keys) {
-    const cfg = STREAMS_CFG[k], card = document.createElement('div'); card.className = 'chart-card';
+    const cfg = STREAMS_CFG[k], card = document.createElement('div');
+    card.className = 'chart-card';
     card.innerHTML = `<h3><span>${cfg.label} <span style="color:var(--text-dim)">${cfg.unit ? '· ' + cfg.unit : ''}</span></span><span class="legend-chips">${cfg.datasets.map(d => `<span class="legend-chip"><span class="dot" style="background:${d.color}"></span>${d.label}</span>`).join('')}</span></h3><div class="chart-wrap"><canvas id="chart-${k}"></canvas></div>`;
-    grid.appendChild(card); state.charts[k] = makeChart(`chart-${k}`, k);
+    grid.appendChild(card);
+    state.charts[k] = makeChart(`chart-${k}`, k);
   }
 }
 
@@ -386,7 +487,13 @@ function bindTabs(groupId, attr, onChange) {
   });
 }
 bindTabs('window-tabs', 'data-window', v => { state.windowSec = v === '0' ? 0 : parseInt(v, 10); document.getElementById('foot-window').textContent = state.windowSec === 0 ? 'all' : (state.windowSec/60) + ' min'; refreshAll(); });
-bindTabs('layout-tabs', 'data-layout', v => { state.layout = v; document.body.className = v; document.getElementById('foot-layout').textContent = v; setTimeout(() => { for (const k of Object.keys(state.charts)) state.charts[k].resize(); }, 50); });
+bindTabs('layout-tabs', 'data-layout', v => {
+  state.layout = v;
+  document.body.className = v;
+  document.getElementById('foot-layout').textContent = v;
+  buildGrid(); // Перестраиваем сетку (разделяем или объединяем графики)
+  refreshAll(); // Заполняем новые графики накопленными в буфере данными
+});
 bindTabs('smooth-tabs', 'data-smooth', v => { state.smooth = parseInt(v, 10); document.getElementById('foot-smooth').textContent = '×' + state.smooth; refreshAll(); });
 
 setInterval(() => { document.getElementById('foot-clock').textContent = new Date().toLocaleTimeString(); }, 1000);
