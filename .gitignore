@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+records/
+state_snapshot.json
+Logs/
+logs/
+*.pyc

@@ -4,10 +4,12 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>📈 NEIRY · Charts (full)</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<link rel="stylesheet" href="/static/common.css" />
+<script src="/static/common.js"></script>
+<script src="/static/vendor/chart.umd.min.js" onerror="Capsule.vendorFallback('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js')"></script>
+<script src="/static/vendor/chartjs-adapter-date-fns.bundle.min.js" onerror="Capsule.vendorFallback('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js')"></script>
 <style>
-:root { --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550; --grid: #1b2750; --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00; --neon-pink: #ff3e7f; --neon-yellow: #ffea00; --neon-purple: #b66bff; --neon-orange: #ff8a00; --neon-red: #ff3355; --text: #d8e1ff; --text-dim: #6f7bb0; --good: #00ff88; --bad: #ff3355; }
+/* Общие переменные, чипы, оверлей — в /static/common.css; здесь только специфика страницы. */
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono','Fira Code','Courier New',monospace; min-height: 100vh; }
 body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:1; background: radial-gradient(ellipse at 20% 0%, rgba(0,240,255,0.06), transparent 50%), radial-gradient(ellipse at 80% 100%, rgba(255,43,214,0.06), transparent 50%); }
@@ -15,11 +17,7 @@ header { position: relative; z-index: 2; padding: 14px 24px; border-bottom: 1px 
 header h1 { margin: 0; font-size: 18px; letter-spacing: 3px; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 header a { color: var(--text-dim); text-decoration: none; font-size: 12px; padding: 4px 10px; border: 1px solid var(--panel-border); border-radius: 4px; }
 header a:hover { color: var(--neon-cyan); border-color: var(--neon-cyan); }
-.status-chip { padding: 4px 10px; border-radius: 4px; font-size: 11px; border: 1px solid var(--panel-border); }
-.status-chip.connected { border-color: var(--good); color: var(--good); }
-.status-chip.connecting { border-color: var(--neon-yellow); color: var(--neon-yellow); }
-.status-chip.searching { border-color: var(--neon-cyan); color: var(--neon-cyan); }
-.status-chip.error { border-color: var(--bad); color: var(--bad); }
+/* .status-chip — в common.css. */
 .tabs { display: flex; gap: 6px; padding: 12px 24px 0; flex-wrap: wrap; align-items: center; position: relative; z-index: 2; }
 .tab-group { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--panel-border); border-radius: 6px; background: var(--bg2); }
 .tab-group .tab { padding: 6px 12px; font-size: 11px; letter-spacing: 1px; border-radius: 3px; cursor: pointer; color: var(--text-dim); user-select: none; }
@@ -38,21 +36,7 @@ main { padding: 18px 24px 32px; position: relative; z-index: 2; }
 .legend-chip { display: inline-flex; gap: 4px; align-items: center; font-size: 10px; padding: 2px 6px; border-radius: 3px; background: var(--bg2); border: 1px solid var(--panel-border); }
 .legend-chip .dot { width: 8px; height: 8px; border-radius: 50%; }
 footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px; border-top: 1px solid var(--panel-border); position: relative; z-index: 2; }
-#setup-overlay { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%); backdrop-filter: blur(6px); }
-#setup-overlay.show { display: flex; }
-.setup-card { text-align: center; padding: 36px 44px; border: 1px solid var(--neon-cyan); border-radius: 14px; background: rgba(10,16,36,0.85); box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05); max-width: 460px; }
-.setup-card h2 { font-size: 22px; letter-spacing: 4px; color: var(--neon-cyan); text-shadow: 0 0 12px var(--neon-cyan); margin: 0 0 12px; text-transform: uppercase; }
-.setup-card p { color: var(--text); font-size: 13px; line-height: 1.6; margin: 8px 0 18px; }
-.setup-card .hint { color: var(--neon-yellow); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-top: 14px; }
-.setup-btn { display: inline-block; margin: 10px 8px; padding: 14px 28px; font-family: inherit; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; background: transparent; color: var(--neon-cyan); border: 1px solid var(--neon-cyan); border-radius: 4px; cursor: pointer; transition: all .2s; text-shadow: 0 0 6px var(--neon-cyan); }
-.setup-btn:hover { background: rgba(0,240,255,0.12); box-shadow: 0 0 18px var(--neon-cyan); }
-.timer-svg { display: block; margin: 18px auto 6px; }
-.timer-svg .track { fill: none; stroke: rgba(0,240,255,0.15); stroke-width: 6; }
-.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
-.timer-svg .ring.warn { stroke: var(--neon-pink); }
-.timer-svg text { fill: var(--neon-cyan); font-family: 'JetBrains Mono', monospace; font-size: 28px; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
-.spinner { width: 40px; height: 40px; margin: 10px auto; border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan); border-radius: 50%; animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+/* Оверлей, setup-card, спиннер, таймер — в common.css. */
 </style>
 </head>
 <body class="allinone">
@@ -61,61 +45,64 @@ footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px; border
   <div class="setup-card" data-state="searching">
     <h2>📈 CHARTS · Headband</h2>
     <div class="spinner"></div>
-    <p>Searching for the headband…<br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode</span></p>
+    <p><span data-i18n="ovSearching">Searching for the headband…</span><br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode</span></p>
   </div>
   <div class="setup-card" data-state="ready" style="display:none">
-    <h2>⚙ Calibration</h2>
-    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br> Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
-    <button class="setup-btn" id="btn-start-cal">▶ START CALIBRATION</button>
-    <button class="setup-btn skip" id="btn-skip-cal">SKIP</button>
+    <h2 data-i18n="ovCalTitle">⚙ Calibration</h2>
+    <p data-i18n-html="ovCalTextHtml">For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br> Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
+    <button class="setup-btn" id="btn-start-cal" data-i18n="ovStart">▶ START CALIBRATION</button>
+    <button class="setup-btn skip" id="btn-skip-cal" data-i18n="ovSkip">SKIP</button>
   </div>
   <div class="setup-card" data-state="running" style="display:none">
-    <h2>👁 Close your eyes</h2>
+    <h2 data-i18n="ovCloseEyes">👁 Close your eyes</h2>
     <svg class="timer-svg" width="180" height="180" viewBox="0 0 180 180">
       <circle class="track" cx="90" cy="90" r="78" />
       <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring" stroke-dasharray="490" stroke-dashoffset="0" />
       <text x="90" y="90" id="timer-text">30</text>
     </svg>
-    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br> <span style="font-size:11px; color:var(--text-dim)">measuring your individual α-rhythm…</span></p>
+    <p style="color:var(--text-dim)"><span data-i18n="ovStill">Sit still · relax · don't blink too hard</span><br> <span style="font-size:11px; color:var(--text-dim)" data-i18n="ovMeasuring">measuring your individual α-rhythm…</span></p>
   </div>
   <div class="setup-card" data-state="complete" style="display:none">
-    <h2>✓ CALIBRATED</h2>
+    <h2 style="color:var(--good); text-shadow:0 0 14px var(--good)" data-i18n="ovCalibrated">✓ CALIBRATED</h2>
     <p id="cal-result-line">individual α-frequency: <b style="color:var(--neon-cyan)">— Hz</b></p>
-    <p style="color:var(--text-dim); font-size:11px">Entering charts…</p>
+    <p style="color:var(--text-dim); font-size:11px" data-i18n="ovEnteringCharts">Entering charts…</p>
   </div>
   <div class="setup-card" data-state="failed" style="display:none">
-    <h2>✗ CALIBRATION FAILED</h2>
+    <h2 style="color:var(--bad); text-shadow:0 0 14px var(--bad)" data-i18n="ovFailed">✗ CALIBRATION FAILED</h2>
     <p id="cal-fail-msg">Could not measure individual α-rhythm.</p>
-    <button class="setup-btn" id="btn-retry-cal">↻ RETRY</button>
-    <button class="setup-btn skip" id="btn-skip-cal-2">SKIP</button>
+    <button class="setup-btn" id="btn-retry-cal" data-i18n="ovRetry">↻ RETRY</button>
+    <button class="setup-btn skip" id="btn-skip-cal-2" data-i18n="ovSkip">SKIP</button>
   </div>
 </div>
 
 <header>
   <h1>📈 NEIRY · CHARTS</h1>
-  <a href="/">← back to dashboard</a>
+  <a href="/" data-i18n="chartsBack">← back to dashboard</a>
+  <a href="/sessions" data-i18n="navSessions">🗂 SESSIONS</a>
   <div id="status-chip" class="status-chip searching">…</div>
   <div id="battery" class="status-chip">batt: —</div>
+  <span class="chip" id="chip-stale" title="Возраст данных (t_server в тике)"><span class="dot"></span><span class="stale-val">—</span></span>
   <div style="flex:1"></div>
   <div id="info" style="color:var(--text-dim); font-size:11px;"></div>
+  <button id="lang-toggle" class="chip">RU</button>
 </header>
 
 <div class="tabs">
-  <span class="tab-label">WINDOW</span>
+  <span class="tab-label" data-i18n="tabWindow">WINDOW</span>
   <div class="tab-group" id="window-tabs">
-    <div class="tab" data-window="60">1 MIN</div>
-    <div class="tab" data-window="300">5 MIN</div>
-    <div class="tab active" data-window="900">15 MIN</div>
-    <div class="tab" data-window="0">ALL</div>
+    <div class="tab" data-window="60" data-i18n="win1">1 MIN</div>
+    <div class="tab" data-window="300" data-i18n="win5">5 MIN</div>
+    <div class="tab active" data-window="900" data-i18n="win15">15 MIN</div>
+    <div class="tab" data-window="0" data-i18n="winAll">ALL</div>
   </div>
-  <span class="tab-label" style="margin-left:18px;">LAYOUT</span>
+  <span class="tab-label" style="margin-left:18px;" data-i18n="tabLayout">LAYOUT</span>
   <div class="tab-group" id="layout-tabs">
-    <div class="tab active" data-layout="allinone">ALL IN ONE</div>
-    <div class="tab" data-layout="split">SPLIT</div>
+    <div class="tab active" data-layout="allinone" data-i18n="layOne">ALL IN ONE</div>
+    <div class="tab" data-layout="split" data-i18n="laySplit">SPLIT</div>
   </div>
-  <span class="tab-label" style="margin-left:18px;">SMOOTHING</span>
+  <span class="tab-label" style="margin-left:18px;" data-i18n="tabSmooth">SMOOTHING</span>
   <div class="tab-group" id="smooth-tabs">
-    <div class="tab" data-smooth="0">RAW</div>
+    <div class="tab" data-smooth="0" data-i18n="smRaw">RAW</div>
     <div class="tab active" data-smooth="3">×3</div>
     <div class="tab" data-smooth="7">×7</div>
     <div class="tab" data-smooth="15">×15</div>
@@ -127,24 +114,48 @@ footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px; border
 </main>
 
 <footer>
-  <div>window: <b id="foot-window">15 min</b> · layout: <b id="foot-layout">all-in-one</b> · smoothing: <b id="foot-smooth">×3</b> · server time: <b id="foot-clock">—</b></div>
+  <div><span data-i18n="footWindow">window</span>: <b id="foot-window">15 min</b> · <span data-i18n="footLayout">layout</span>: <b id="foot-layout">all-in-one</b> · <span data-i18n="footSmooth">smoothing</span>: <b id="foot-smooth">×3</b> · <span data-i18n="footServer">server time</span>: <b id="foot-clock">—</b></div>
 </footer>
 
 <script>
-Chart.defaults.color = '#6f7bb0';
-Chart.defaults.borderColor = 'rgba(26, 37, 80, 0.6)';
-Chart.defaults.font.family = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace";
-Chart.defaults.font.size = 10;
-const gridColor = 'rgba(26, 37, 80, 0.55)';
-const tickColor = '#3a4a7a';
+// RU/EN через общий словарь Capsule (common.js); здесь только строки страницы.
+const lang = Capsule.createLang({
+  en: {
+    chartsBack: "← back to dashboard",
+    tabWindow: "WINDOW", win1: "1 MIN", win5: "5 MIN", win15: "15 MIN", winAll: "ALL",
+    tabLayout: "LAYOUT", layOne: "ALL IN ONE", laySplit: "SPLIT",
+    tabSmooth: "SMOOTHING", smRaw: "RAW",
+    footWindow: "window", footLayout: "layout", footSmooth: "smoothing", footServer: "server time",
+    footAll: "all", footMin: (m) => m + " min", footLayoutOne: "all-in-one", footLayoutSplit: "split",
+    batt: (v) => "batt: " + v + "%",
+    ovEnteringCharts: "Entering charts…",
+    ovResultChartsHtml: (f) => `individual α-frequency: <b style="color:var(--neon-cyan)">${f} Hz</b>`,
+    ovFailedMsg: "Could not measure α-rhythm.",
+  },
+  ru: {
+    chartsBack: "← назад на дашборд",
+    tabWindow: "ОКНО", win1: "1 МИН", win5: "5 МИН", win15: "15 МИН", winAll: "ВСЁ",
+    tabLayout: "СЕТКА", layOne: "ВСЕ ВМЕСТЕ", laySplit: "РАЗДЕЛЬНО",
+    tabSmooth: "СГЛАЖИВАНИЕ", smRaw: "СЫРОЕ",
+    footWindow: "окно", footLayout: "сетка", footSmooth: "сглаживание", footServer: "время сервера",
+    footAll: "всё", footMin: (m) => m + " мин", footLayoutOne: "вместе", footLayoutSplit: "раздельно",
+    batt: (v) => "бат: " + v + "%",
+    ovEnteringCharts: "Открываю графики…",
+    ovResultChartsHtml: (f) => `индивидуальная α-частота: <b style="color:var(--neon-cyan)">${f} Гц</b>`,
+    ovFailedMsg: "Не удалось измерить α-ритм.",
+  },
+});
+function t(key) { return lang.t(key); }
+lang.apply();
+lang.bindToggle(() => { refreshFooter(); if (lastTick) updateSetupOverlay(lastTick, true); });
+const stale = Capsule.stale('chip-stale', t);
+const ov = Capsule.overlay();
 
-function neonGradient(_ctx, area, hex) {
-  if (!area || typeof area.top !== 'number' || typeof area.bottom !== 'number') return hex + '40';
-  try {
-    const g = _ctx.createLinearGradient(0, area.top, 0, area.bottom);
-    g.addColorStop(0, hex + 'cc'); g.addColorStop(1, hex + '00'); return g;
-  } catch (e) { return hex + '40'; }
-}
+Capsule.setupCharts();
+const gridColor = Capsule.GRID_COLOR;
+const tickColor = Capsule.TICK_COLOR;
+const neonGradient = Capsule.neonGradient;
+let lastTick = null;
 
 class Stream {
   constructor(fields, maxPts) {
@@ -220,7 +231,7 @@ const STREAMS_CFG = {
   kaplanIndex: { stream: 'cardio', label: 'Cardio · HRV Kaplan Index (Вариабельность ритма)', unit: 'у.е.', ymin: 0, ymax: 100, datasets: [{ key: 'kaplanIndex', label: 'Индекс Каплана', color: '#00f0ff' }] },
   emotions:    { label: 'Эмоции', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'attention', label: 'Фокус', color: '#00f0ff' }, { key: 'relaxation', label: 'Азарт', color: '#aaff00' }, { key: 'cognitiveLoad', label: 'Когнитивная нагрузка', color: '#ff3e7f' }, { key: 'cognitiveControl', label: 'Волнение', color: '#ffea00' }, { key: 'selfControl', label: 'Самоконтроль', color: '#b66bff' }] },
   phy:         { label: 'Physiological states', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'relaxation', label: 'Relaxation', color: '#aaff00' }, { key: 'concentration', label: 'Concentration', color: '#00f0ff' }, { key: 'fatigue', label: 'Fatigue', color: '#ff8a00' }, { key: 'stress', label: 'Stress', color: '#ff3e7f' }, { key: 'involvement', label: 'Involvement', color: '#b66bff' }] },
-  prod:        { label: 'Productivity', unit: '0–100', ymin: 0, ymax: 100, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
+  prod:        { label: 'Productivity', unit: 'score', ymin: 0, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
   nfb:         { label: 'NFB band powers (α, β, θ, δ, SMR)', unit: '', datasets: [{ key: 'alpha', label: 'α alpha', color: '#00f0ff' }, { key: 'beta', label: 'β beta', color: '#ff2bd6' }, { key: 'theta', label: 'θ theta', color: '#ffea00' }, { key: 'delta', label: 'δ delta', color: '#ff8a00' }, { key: 'smr', label: 'SMR', color: '#b66bff' }] },
   gamma:       { label: 'Gamma band power (30–100 Hz)', unit: 'µV', ymin: 0, datasets: [{ key: 'ch1_gamma', label: 'Ch1 Gamma · O1–T3', color: '#00f0ff' }, { key: 'ch2_gamma', label: 'Ch2 Gamma · O2–T4', color: '#ff2bd6' }] },
 };
@@ -413,8 +424,35 @@ function buildGrid() {
     keys.push('emotions');
   }
 
-  // Добавляем промежуточные графики
-  keys.push('phy', 'prod');
+  // Phy и prod в split-режиме тоже разделяем: метрики многомасштабные
+  // (phy 0.02–0.8, prod 0–800+), на общем графике мелкие тонут. Каждый
+  // подграфик автомасштабируется от нуля — динамика видна, ноль честный.
+  if (state.layout === 'split') {
+    STREAMS_CFG.phy.datasets.forEach(d => {
+      const subKey = 'phy_' + d.key;
+      STREAMS_CFG[subKey] = {
+        stream: 'phy',
+        label: `Physiological · ${d.label}`,
+        unit: '',
+        ymin: 0,
+        datasets: [{ key: d.key, label: d.label, color: d.color }]
+      };
+      keys.push(subKey);
+    });
+    STREAMS_CFG.prod.datasets.forEach(d => {
+      const subKey = 'prod_' + d.key;
+      STREAMS_CFG[subKey] = {
+        stream: 'prod',
+        label: `Productivity · ${d.label}`,
+        unit: '',
+        ymin: 0,
+        datasets: [{ key: d.key, label: d.label, color: d.color }]
+      };
+      keys.push(subKey);
+    });
+  } else {
+    keys.push('phy', 'prod');
+  }
 
   // Обработка NFB band powers
   if (state.layout === 'split') {
@@ -445,28 +483,23 @@ function buildGrid() {
   }
 }
 
-let ws;
 let dataDirty = false;
 let lastRenderTime = 0;
 
-function setStatus(s) { const c = document.getElementById('status-chip'); c.className = 'status-chip ' + s; c.textContent = s; }
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => setStatus('connecting');
-  ws.onmessage = (ev) => {
-    try {
-      const d = JSON.parse(ev.data); if (d.status) setStatus(d.status);
-      if (d.battery !== null && d.battery !== undefined) document.getElementById('battery').textContent = 'batt: ' + d.battery + '%';
-      document.getElementById('info').textContent = d.device ? `${d.device} (${d.serial}) · ${(d.eeg_sr || '')}Hz` : '';
-      ingest(d);
-      updateSetupOverlay(d);
-      dataDirty = true;
-    } catch (e) { console.error('WS parse error', e); }
-  };
-  ws.onclose = () => { setStatus('error'); setTimeout(connect, 1500); };
-  ws.onerror = () => ws.close();
-}
+function setStatus(s) { const c = document.getElementById('status-chip'); c.className = 'status-chip ' + s; c.textContent = t('status_' + s) ?? s; }
+// Общий WS-клиент с экспоненциальным бэкоффом (common.js), подключается сам.
+const wsHandle = Capsule.connectWS('/ws', {
+  onStatus: setStatus,
+  onTick: (d) => {
+    lastTick = d;
+    if (d.battery !== null && d.battery !== undefined) document.getElementById('battery').textContent = t('batt')(d.battery);
+    document.getElementById('info').textContent = d.device ? `${d.device} (${d.serial}) · ${(d.eeg_sr || '')}Hz` : '';
+    ingest(d);
+    updateSetupOverlay(d);
+    stale.update(d.t_server);
+    dataDirty = true;
+  },
+});
 
 function renderLoop(now) {
   if (dataDirty && (now - lastRenderTime > 66)) {
@@ -486,57 +519,45 @@ function bindTabs(groupId, attr, onChange) {
     onChange(t.getAttribute(attr));
   });
 }
-bindTabs('window-tabs', 'data-window', v => { state.windowSec = v === '0' ? 0 : parseInt(v, 10); document.getElementById('foot-window').textContent = state.windowSec === 0 ? 'all' : (state.windowSec/60) + ' min'; refreshAll(); });
+function refreshFooter() {
+  document.getElementById('foot-window').textContent = state.windowSec === 0 ? t('footAll') : t('footMin')(state.windowSec / 60);
+  document.getElementById('foot-layout').textContent = state.layout === 'split' ? t('footLayoutSplit') : t('footLayoutOne');
+  document.getElementById('foot-smooth').textContent = '×' + state.smooth;
+}
+bindTabs('window-tabs', 'data-window', v => { state.windowSec = v === '0' ? 0 : parseInt(v, 10); refreshFooter(); refreshAll(); });
 bindTabs('layout-tabs', 'data-layout', v => {
   state.layout = v;
   document.body.className = v;
-  document.getElementById('foot-layout').textContent = v;
+  refreshFooter();
   buildGrid(); // Перестраиваем сетку (разделяем или объединяем графики)
   refreshAll(); // Заполняем новые графики накопленными в буфере данными
 });
-bindTabs('smooth-tabs', 'data-smooth', v => { state.smooth = parseInt(v, 10); document.getElementById('foot-smooth').textContent = '×' + state.smooth; refreshAll(); });
+bindTabs('smooth-tabs', 'data-smooth', v => { state.smooth = parseInt(v, 10); refreshFooter(); refreshAll(); });
 
 setInterval(() => { document.getElementById('foot-clock').textContent = new Date().toLocaleTimeString(); }, 1000);
 
 buildGrid();
-connect();
-
-const overlay = document.getElementById('setup-overlay');
-function showSetupState(name) { overlay.className = 'show setup-state-' + name; for (const el of overlay.querySelectorAll('[data-state]')) { el.style.display = (el.dataset.state === name) ? '' : 'none'; } }
-function hideSetup() { overlay.classList.remove('show'); }
+refreshFooter();
 
 let _lastSetupPhase = null;
-function updateSetupOverlay(d) {
-  const phase = d.calibration_phase || 'idle', connected = (d.status === 'connected' || d.status === 'streaming' || d.device);
-  let state = (phase === 'complete' || phase === 'skipped') ? 'complete' : phase === 'running' ? 'running' : (connected && (phase === 'ready' || phase === 'idle')) ? 'ready' : phase === 'failed' ? 'failed' : 'searching';
-  if (state === 'running' && !calInterval) startTimer(d.calibration_started_at);
-  if (state === 'searching') { const m = document.getElementById('setup-searching-msg'); if (m) m.textContent = d.message || 'put it in pairing mode'; }
-  if (state === 'failed') { const m = document.getElementById('cal-fail-msg'); if (m) m.textContent = d.message || 'Could not measure α-rhythm.'; }
-  if (state === _lastSetupPhase) return; _lastSetupPhase = state;
-  if (state === 'complete') { stopTimer(); if (phase === 'complete' && d.calibration && d.calibration.individualFrequency) { const el = document.getElementById('cal-result-line'); if (el) el.innerHTML = `individual α-frequency: <b style="color:var(--neon-cyan)">${d.calibration.individualFrequency.toFixed(2)} Hz</b>`; } showSetupState('complete'); setTimeout(hideSetup, 1500); }
-  else if (state === 'running') showSetupState('running');
-  else if (state === 'ready') { stopTimer(); showSetupState('ready'); }
-  else if (state === 'failed') { stopTimer(); showSetupState('failed'); }
-  else { stopTimer(); showSetupState('searching'); }
+function updateSetupOverlay(d, force) {
+  const st = ov.stateForTick(d);
+  if (st === 'running' && _lastSetupPhase !== 'running') ov.startTimer(d.calibration_started_at);
+  if (st === 'searching') { const m = document.getElementById('setup-searching-msg'); if (m) m.textContent = d.message || t('ovPairing'); }
+  if (st === 'failed') { const m = document.getElementById('cal-fail-msg'); if (m) m.textContent = d.message || t('ovFailedMsg'); }
+  if (st === _lastSetupPhase && !force) return; _lastSetupPhase = st;
+  if (st === 'complete') { ov.stopTimer(); const phase = d.calibration_phase || 'idle'; if (phase === 'complete' && d.calibration && d.calibration.individualFrequency) { const el = document.getElementById('cal-result-line'); if (el) el.innerHTML = t('ovResultChartsHtml')(d.calibration.individualFrequency.toFixed(2)); } ov.showState('complete'); setTimeout(() => ov.hide(), 1500); }
+  else if (st === 'running') ov.showState('running');
+  else if (st === 'ready') { ov.stopTimer(); ov.showState('ready'); }
+  else if (st === 'failed') { ov.stopTimer(); ov.showState('failed'); }
+  else { ov.stopTimer(); ov.showState('searching'); }
 }
 
-function sendCmd(action) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action })); }
+function sendCmd(action) { wsHandle.send({ action }); }
 document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
 document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
-
-let calStartedAt = 0, calInterval = null;
-const CAL_DURATION = 30, RING_CIRC = 2 * Math.PI * 78;
-function tickTimer() {
-  const remaining = Math.max(0, CAL_DURATION - ((Date.now()/1000) - calStartedAt));
-  const ring = document.getElementById('timer-ring'), text = document.getElementById('timer-text'); if (!ring || !text) return;
-  ring.setAttribute('stroke-dashoffset', (1 - (remaining / CAL_DURATION)) * RING_CIRC); text.textContent = Math.ceil(remaining);
-  if (remaining < 5) ring.classList.add('warn'); else ring.classList.remove('warn');
-  if (remaining <= 0 && calInterval) { clearInterval(calInterval); calInterval = null; }
-}
-function startTimer(f) { calStartedAt = f || (Date.now()/1000); if (calInterval) clearInterval(calInterval); tickTimer(); calInterval = setInterval(tickTimer, 100); }
-function stopTimer() { if (calInterval) { clearInterval(calInterval); calInterval = null; } }
 </script>
 </body>
 </html>

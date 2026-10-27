@@ -4,14 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>NEIRY · Advanced Cognitive Analytics</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/common.css" />
+  <script src="/static/common.js"></script>
+  <script src="/static/vendor/chart.umd.min.js" onerror="Capsule.vendorFallback('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js')"></script>
   <style>
-    :root {
-      --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550;
-      --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00; --neon-pink: #ff3e7f;
-      --neon-yellow: #ffea00; --neon-purple: #b66bff;
-      --text: #d8e1ff; --text-dim: #6f7bb0;
-    }
+    /* Общие переменные и чипы — в /static/common.css; здесь только специфика страницы. */
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace; min-height: 100vh; }
     body::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:1; background: radial-gradient(ellipse at 50% 0%, rgba(0,240,255,0.05), transparent 50%); }
@@ -68,14 +65,17 @@
 <body>
   <header>
     <h1>🧠 ADVANCED COGNITIVE PROFILER</h1>
-    <a href="/">ГЛАВНАЯ</a>
-    <a href="/charts">ГРАФИКИ</a>
+    <a href="/" data-i18n="moreHome">ГЛАВНАЯ</a>
+    <a href="/charts" data-i18n="moreCharts">ГРАФИКИ</a>
+    <a href="/sessions" data-i18n="navSessions">🗂 СЕССИИ</a>
+    <span class="chip" id="chip-stale" title="Возраст данных (t_server в тике)"><span class="dot"></span><span class="stale-val">—</span></span>
     <div style="margin-left:auto; color:var(--text-dim); font-size:11px;" id="conn-status">Синхронизация...</div>
+    <button id="lang-toggle" class="chip">RU</button>
   </header>
 
   <main>
     <div class="card">
-      <h2>Психофизиологический Маркер</h2>
+      <h2 data-i18n="moreMarkerTitle">Психофизиологический Маркер</h2>
       <div style="display:flex; gap:8px; justify-content:center; margin-bottom:12px; font-size:11px;" id="resistance-bar"></div>
       <div class="brain-container">
         <div class="brain-3d st-neutral" id="brain-viz">
@@ -83,32 +83,32 @@
           <div class="hemisphere hemi-right"></div>
         </div>
         <div class="state-desc">
-          <div class="state-title c-dim" id="st-title">Калибровка...</div>
-          <div id="st-desc" style="color:var(--text-dim);">Анализ волновой активности мозга в реальном времени.</div>
+          <div class="state-title c-dim" id="st-title" data-i18n="moreCalibrating">Калибровка...</div>
+          <div id="st-desc" style="color:var(--text-dim);" data-i18n="moreDescInit">Анализ волновой активности мозга в реальном времени.</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <h2>Динамика Мониторинга (AsI Index)</h2>
-      <div style="flex:1; position:relative;">
+      <h2 data-i18n="moreAsiTitle">Динамика Мониторинга (AsI Index)</h2>
+      <div style="flex:1; position:relative; min-height:260px;">
         <canvas id="asi-chart"></canvas>
       </div>
       <div style="text-align:center; font-size:10px; color:var(--text-dim); margin-top:10px; display:flex; justify-content:space-between; padding:0 10px;">
-        <span>← Правое доминирование</span>
-        <span>Сбалансировано</span>
-        <span>Левое доминирование →</span>
+        <span data-i18n="moreAxisLeft">← Правое доминирование</span>
+        <span data-i18n="moreAxisMid">Сбалансировано</span>
+        <span data-i18n="moreAxisRight">Левое доминирование →</span>
       </div>
     </div>
 
     <div class="card">
-      <h2>Профиль за интервал</h2>
+      <h2 data-i18n="moreProfileTitle">Профиль за интервал</h2>
       <div class="tabs" id="time-tabs">
-        <div class="tab" data-win="5">5 СЕК</div>
-        <div class="tab" data-win="30">30 СЕК</div>
-        <div class="tab active" data-win="60">1 МИН</div>
-        <div class="tab" data-win="300">5 МИН</div>
-        <div class="tab" data-win="900">15 МИН</div>
+        <div class="tab" data-win="5" data-i18n="moreWin5">5 СЕК</div>
+        <div class="tab" data-win="30" data-i18n="moreWin30">30 СЕК</div>
+        <div class="tab active" data-win="60" data-i18n="moreWin60">1 МИН</div>
+        <div class="tab" data-win="300" data-i18n="moreWin300">5 МИН</div>
+        <div class="tab" data-win="900" data-i18n="moreWin900">15 МИН</div>
       </div>
       
       <div id="leaderboard"></div>
@@ -116,8 +116,38 @@
   </main>
 
 <script>
-Chart.defaults.color = '#6f7bb0';
-Chart.defaults.font.family = "'JetBrains Mono', monospace";
+// RU/EN через общий словарь Capsule (common.js); здесь только строки страницы.
+// Карта STATES_META — в двух языковых вариантах ниже.
+const lang = Capsule.createLang({
+  en: {
+    moreHome: "HOME", moreCharts: "CHARTS",
+    moreOnline: "ONLINE · EEG STREAMING", moreOffline: "OFFLINE · RECONNECTING",
+    moreMarkerTitle: "Psychophysiological Marker",
+    moreCalibrating: "Calibrating...", moreDescInit: "Real-time brain wave analysis.",
+    moreAsiTitle: "Monitoring Dynamics (AsI Index)",
+    moreAxisLeft: "← Right dominance", moreAxisMid: "Balanced", moreAxisRight: "Left dominance →",
+    moreProfileTitle: "Interval profile",
+    moreWin5: "5 SEC", moreWin30: "30 SEC", moreWin60: "1 MIN", moreWin300: "5 MIN", moreWin900: "15 MIN",
+    moreNoData: "No data for the selected interval — accumulating…",
+  },
+  ru: {
+    moreHome: "ГЛАВНАЯ", moreCharts: "ГРАФИКИ",
+    moreOnline: "ONLINE · СТРИМИНГ ЭЭГ", moreOffline: "OFFLINE · ПЕРЕПОДКЛЮЧЕНИЕ",
+    moreMarkerTitle: "Психофизиологический Маркер",
+    moreCalibrating: "Калибровка...", moreDescInit: "Анализ волновой активности мозга в реальном времени.",
+    moreAsiTitle: "Динамика Мониторинга (AsI Index)",
+    moreAxisLeft: "← Правое доминирование", moreAxisMid: "Сбалансировано", moreAxisRight: "Левое доминирование →",
+    moreProfileTitle: "Профиль за интервал",
+    moreWin5: "5 СЕК", moreWin30: "30 СЕК", moreWin60: "1 МИН", moreWin300: "5 МИН", moreWin900: "15 МИН",
+    moreNoData: "Нет данных за выбранный интервал — идёт накопление…",
+  },
+});
+function t(key) { return lang.t(key); }
+lang.apply();
+lang.bindToggle(() => { applyStatesLang(); });
+const stale = Capsule.stale('chip-stale', t);
+
+Capsule.setupCharts();
 
 const eegBuffer = { ch1: [], ch2: [] };
 let smoothAsI = 0;
@@ -125,9 +155,27 @@ let smoothAlphaTotal = 0;
 let smoothBetaTotal = 0;
 let smoothThetaTotal = 0;
 
-const EMA_ALPHA = 0.04; 
+const EMA_ALPHA = 0.04;
 const history = [];
 let currentWindowSec = 60;
+
+// Предвычисленное окно Ханна (было: cos внутри двойного цикла DFT на каждый тик).
+const HANN256 = new Float64Array(256);
+for (let i = 0; i < 256; i++) HANN256[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / 255));
+
+// Кэш neon-цветов (было: getComputedStyle на каждый тик -> forced style recalc).
+const NEON_CACHE = {};
+function neonColor(name) {
+  if (!NEON_CACHE[name]) {
+    NEON_CACHE[name] = getComputedStyle(document.documentElement).getPropertyValue(`--neon-${name}`).trim();
+  }
+  return NEON_CACHE[name];
+}
+
+// Троттлинг тяжёлого рендера (было: Chart.update + innerHTML rebuild на каждый WS-тик 10 Гц).
+let lastRenderMs = 0;
+const RENDER_MIN_INTERVAL_MS = 250;
+const MAX_RENDER_PTS = 400;
 
 function calcBandPower(samples, fMin, fMax) {
   const N = 256, sr = 250;
@@ -138,8 +186,7 @@ function calcBandPower(samples, fMin, fMax) {
     let real = 0, imag = 0;
     const omega = (2 * Math.PI * k) / N;
     for (let n = 0; n < N; n++) {
-      const w = 0.5 * (1 - Math.cos((2 * Math.PI * n) / 255));
-      const val = samples[n] * w;
+      const val = samples[n] * HANN256[n];
       real += val * Math.cos(omega * n);
       imag -= val * Math.sin(omega * n);
     }
@@ -159,13 +206,23 @@ const asiChart = new Chart(ctx, {
     plugins: { legend: { display: false } },
     scales: {
       x: { display: false },
-      y: { grid: { color: 'rgba(26,37,80,0.4)' }, min: -1, max: 1, ticks: { maxTicksLimit: 5 } }
+      y: { grid: { color: 'rgba(26,37,80,0.4)' }, suggestedMin: -0.25, suggestedMax: 0.25, ticks: { maxTicksLimit: 5 } }
     }
   }
 });
 
-// --- Расширенная карта состояний (Включая Сближение и Депрессию) ---
-const STATES_META = {
+// --- Расширенная карта состояний (Включая Сближение и Депрессию), RU/EN ---
+const STATES_META_EN = {
+  approach:   { title: "Approach / Excitement", colorCls: "c-cyan", bgCls: "bg-cyan", css: "st-approach", desc: "Maximum left-hemisphere shift. A state of strong goal motivation, dopamine lift, confidence and will to act." },
+  engagement: { title: "Mental Focus", colorCls: "c-cyan", bgCls: "bg-cyan", css: "st-engagement", desc: "Moderate left cortical dominance. Calm working concentration, steady engagement without excess stress." },
+  anxiety:    { title: "Avoidance / Anxiety", colorCls: "c-pink", bgCls: "bg-pink", css: "st-anxiety", desc: "Right-hemisphere shift on top of high Beta. Acute tension, mental resistance and panicked task avoidance." },
+  depression: { title: "Depressive baseline / Apathy", colorCls: "c-magenta", bgCls: "bg-magenta", css: "st-depression", desc: "Deep right dominance with falling Beta and rising slow Theta. A marker of learned helplessness, apathy, burnout." },
+  flow:       { title: "Flow (Pure Focus)", colorCls: "c-lime", bgCls: "bg-lime", css: "st-flow", desc: "Perfectly symmetric hemispheres with suppressed occipital Alpha. The brain is fully absorbed in processing external input." },
+  meditation: { title: "Meditation / Zen", colorCls: "c-purple", bgCls: "bg-purple", css: "st-meditation", desc: "Synchronous powerful Alpha burst. Eyes closed, sensory filters blocked, the brain is recovering." },
+  fatigue:    { title: "Mental Fatigue", colorCls: "c-yellow", bgCls: "bg-yellow", css: "st-fatigue", desc: "Global Theta rise. The prefrontal cortex is exhausted, reaction time drops, attention scatters. Rest is needed." },
+  neutral:    { title: "Calm Observation", colorCls: "c-dim", bgCls: "bg-dim", css: "st-neutral", desc: "Baseline wave-activity balance with no pronounced hemisphere tilt or rhythm bursts." }
+};
+const STATES_META_RU = {
   approach:   { title: "Сближение / Азарт", colorCls: "c-cyan", bgCls: "bg-cyan", css: "st-approach", desc: "Максимальный левосторонний сдвиг активности. Состояние выраженной мотивации достижения целей, дофаминового подъема, уверенности и воли к действию." },
   engagement: { title: "Ментальный Фокус", colorCls: "c-cyan", bgCls: "bg-cyan", css: "st-engagement", desc: "Умеренное левое доминирование коры. Спокойная рабочая концентрация, стабильное вовлечение в процесс без лишнего стресса." },
   anxiety:    { title: "Избегание / Тревога", colorCls: "c-pink", bgCls: "bg-pink", css: "st-anxiety", desc: "Смещение активности в правую долю на фоне высокой Бета. Состояние острого напряжения, ментального сопротивления и панического ухода от задач." },
@@ -175,6 +232,20 @@ const STATES_META = {
   fatigue:    { title: "Ментальное Утомление", colorCls: "c-yellow", bgCls: "bg-yellow", css: "st-fatigue", desc: "Глобальный подъем Тета-волн. Префронтальная кора истощена, падает скорость реакции, внимание рассеивается. Срочно нужен отдых." },
   neutral:    { title: "Спокойное Наблюдение", colorCls: "c-dim", bgCls: "bg-dim", css: "st-neutral", desc: "Базовый фоновый баланс волновой активности без выраженных кренов полушарий или всплесков ритмов." }
 };
+// Активная карта зависит от языка; при переключении перерисовываем динамику.
+let STATES_META = (lang.get() === 'ru') ? STATES_META_RU : STATES_META_EN;
+let lastStateKey = null;
+let lastNow = 0;
+function applyStatesLang() {
+  STATES_META = (lang.get() === 'ru') ? STATES_META_RU : STATES_META_EN;
+  if (lastStateKey && STATES_META[lastStateKey]) {
+    const meta = STATES_META[lastStateKey];
+    stTitle.className = `state-title ${meta.colorCls}`;
+    stTitle.textContent = meta.title;
+    stDesc.textContent = meta.desc;
+  }
+  if (lastNow) { refreshChart(lastNow); updateLeaderboard(lastNow); }
+}
 
 const brainViz = document.getElementById('brain-viz');
 const stTitle = document.getElementById('st-title');
@@ -208,8 +279,10 @@ function processMetrics(asi, alpha, beta, theta, now) {
 
   // Привязка динамических цветов графика
   const colorMap = { approach: 'cyan', engagement: 'cyan', anxiety: 'pink', depression: 'magenta', flow: 'lime', meditation: 'purple', fatigue: 'yellow', neutral: 'cyan' };
-  asiChart.data.datasets[0].borderColor = getComputedStyle(document.documentElement).getPropertyValue(`--neon-${colorMap[stateKey]}`).trim();
+  asiChart.data.datasets[0].borderColor = neonColor(colorMap[stateKey]);
 
+  lastStateKey = stateKey;
+  lastNow = now;
   const currentMeta = STATES_META[stateKey];
   if (!brainViz.classList.contains(currentMeta.css)) {
     brainViz.className = `brain-3d ${currentMeta.css}`;
@@ -218,20 +291,56 @@ function processMetrics(asi, alpha, beta, theta, now) {
     stDesc.textContent = currentMeta.desc;
   }
 
+  // Дедуп/монотонность: дубликаты и переупорядоченные пакеты не ломают окно.
+  if (history.length > 0 && now <= history[history.length - 1].t) return;
   history.push({ t: now, asi: asi, state: stateKey });
-  while (history.length > 0 && history[0].t < now - 1800) history.shift();
+  // Пакетный трим кэпа 1800с (было: shift() в цикле -> O(n) memmove за каждый сдвиг).
+  let cut = 0;
+  const keepFrom = now - 1800;
+  while (cut < history.length && history[cut].t < keepFrom) cut++;
+  if (cut > 0) history.splice(0, cut);
 
-  const chartData = history.filter(h => h.t >= now - 60);
-  asiChart.data.labels = chartData.map(h => h.t);
-  asiChart.data.datasets[0].data = chartData.map(h => h.asi);
+  const nowMs = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+  if (nowMs - lastRenderMs >= RENDER_MIN_INTERVAL_MS) {
+    lastRenderMs = nowMs;
+    refreshChart(now);
+    updateLeaderboard(now);
+  }
+}
+
+// График уважает выбранное окно (было: захардкожен срез now-60).
+// Переключение таба только меняет срез — history не трогаем и не перезапрашиваем.
+function refreshChart(now) {
+  const tMin = now - currentWindowSec;
+  let start = 0;
+  while (start < history.length && history[start].t < tMin) start++;
+  const n = history.length - start;
+  const labels = new Array(Math.min(n, MAX_RENDER_PTS));
+  const data = new Array(labels.length);
+  if (n <= MAX_RENDER_PTS) {
+    for (let i = 0; i < n; i++) { labels[i] = history[start + i].t; data[i] = history[start + i].asi; }
+  } else {
+    // Децимация средним по бакетам (окно 15 мин: ~9000 точек -> 400).
+    const stride = n / MAX_RENDER_PTS;
+    for (let i = 0; i < MAX_RENDER_PTS; i++) {
+      const a = start + Math.floor(i * stride), b = start + Math.floor((i + 1) * stride);
+      let s = 0, k = 0;
+      for (let j = a; j < b; j++) { s += history[j].asi; k++; }
+      labels[i] = history[a].t;
+      data[i] = k ? s / k : 0;
+    }
+  }
+  asiChart.data.labels = labels;
+  asiChart.data.datasets[0].data = data;
   asiChart.update('none');
-
-  updateLeaderboard(now);
 }
 
 function updateLeaderboard(now) {
   const windowData = history.filter(h => h.t >= now - currentWindowSec);
-  if (windowData.length === 0) return;
+  if (windowData.length === 0) {
+    lbContainer.innerHTML = '<div style="text-align:center;color:var(--text-dim);font-size:11px;">' + t('moreNoData') + '</div>';
+    return;
+  }
 
   const counts = { approach: 0, engagement: 0, anxiety: 0, depression: 0, flow: 0, meditation: 0, fatigue: 0, neutral: 0 };
   windowData.forEach(h => counts[h.state]++);
@@ -265,19 +374,24 @@ document.getElementById('time-tabs').addEventListener('click', e => {
   document.querySelectorAll('#time-tabs .tab').forEach(t => t.classList.remove('active'));
   e.target.classList.add('active');
   currentWindowSec = parseInt(e.target.dataset.win, 10);
-  if (history.length > 0) updateLeaderboard(history[history.length-1].t);
+  // Переключение окна — мгновенный пересрез накопленной history, без потерь и перезапросов.
+  if (history.length > 0) {
+    const lastT = history[history.length-1].t;
+    lastRenderMs = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+    refreshChart(lastT);
+    updateLeaderboard(lastT);
+  }
 });
 
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  
-  ws.onopen = () => document.getElementById('conn-status').textContent = "ONLINE · СТРИМИНГ ЭЭГ";
-  ws.onclose = () => { document.getElementById('conn-status').textContent = "OFFLINE · ПЕРЕПОДКЛЮЧЕНИЕ"; setTimeout(connect, 2000); };
-  
-  ws.onmessage = (ev) => {
-    const d = JSON.parse(ev.data);
-
+// Общий WS-клиент с экспоненциальным бэкоффом (common.js), подключается сам.
+const wsHandle = Capsule.connectWS('/ws', {
+  onOpen: () => { document.getElementById('conn-status').textContent = t('moreOnline'); },
+  onStatus: (s) => {
+    if (s === 'error') document.getElementById('conn-status').textContent = t('moreOffline');
+    else if (s === 'connected' || s === 'streaming') document.getElementById('conn-status').textContent = t('moreOnline');
+  },
+  onTick: (d) => {
+    stale.update(d.t_server);
     if (!d.eeg_stream || !d.eeg_stream.n) return;
 
     const { ch1, ch2, sr, t0 } = d.eeg_stream;
@@ -317,10 +431,8 @@ function connect() {
       const currentTime = serverT0 + t0 + (d.eeg_stream.n - 1) / sr;
       processMetrics(smoothAsI, smoothAlphaTotal, smoothBetaTotal, smoothThetaTotal, currentTime);
     }
-  };
-}
-
-connect();
+  },
+});
 </script>
 </body>
 </html>

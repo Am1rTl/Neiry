@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Watch the running capsule-web server. Polls /api/status and /api/buffers
-every 2s, reports state changes and growing data buffers, and tails the log.
-Designed to be left running — kill with Ctrl+C to exit."""
+every --interval seconds (default 0.5), reports state changes and growing
+data buffers, and tails the log. Designed to be left running — kill with
+Ctrl+C to exit."""
+import argparse
 import json
 import os
 import sys
@@ -9,9 +11,20 @@ import time
 import urllib.request
 import urllib.error
 
-LOG = "/tmp/capsule-web.log"
-API_STATUS = "http://127.0.0.1:8000/api/status"
-API_BUFFERS = "http://127.0.0.1:8000/api/buffers"
+DEFAULT_LOG = "/tmp/capsule-web.log"
+DEFAULT_URL = "http://127.0.0.1:8000"
+DEFAULT_INTERVAL = 0.5
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="Watch the running capsule-web server.")
+    p.add_argument("--url", default=DEFAULT_URL,
+                   help="server base URL (default %(default)s)")
+    p.add_argument("--log", default=DEFAULT_LOG,
+                   help="server log file to tail (default %(default)s)")
+    p.add_argument("--interval", type=float, default=DEFAULT_INTERVAL,
+                   help="poll interval in seconds (default %(default)s)")
+    return p.parse_args(argv)
 
 
 def fetch(url):
@@ -50,12 +63,16 @@ def fmt_buffers(b):
     return "  " + " · ".join(parts)
 
 
-def main():
-    print("▸ Watching capsule-web (Ctrl+C to stop)\n", flush=True)
+def main(argv=None):
+    args = parse_args(argv)
+    base = args.url.rstrip("/")
+    api_status = base + "/api/status"
+    api_buffers = base + "/api/buffers"
+    print(f"▸ Watching capsule-web at {base} (Ctrl+C to stop)\n", flush=True)
 
     # open log in follow mode
     try:
-        log = open(LOG, "r")
+        log = open(args.log, "r")
         log.seek(0, 2)  # seek to end
     except FileNotFoundError:
         log = None
@@ -69,8 +86,8 @@ def main():
 
     while True:
         tick += 1
-        s = fetch(API_STATUS)
-        b = fetch(API_BUFFERS)
+        s = fetch(api_status)
+        b = fetch(api_buffers)
         # show status on change
         if "_err" in s:
             cur = "ERR|" + s["_err"]
@@ -98,18 +115,20 @@ def main():
                 last_b_mems = bm
             if grew:
                 print(f"  data: {', '.join(grew)}", flush=True)
-        # tail log
+        # tail log — drain everything appended since the last tick
         if log:
-            line = log.readline()
-            if line:
+            while True:
+                line = log.readline()
+                if not line:
+                    break
                 sys.stdout.write("  log: " + line)
-                sys.stdout.flush()
+            sys.stdout.flush()
         if tick % 15 == 0:
             print(fmt_status(s), flush=True)
             bf = fmt_buffers(b)
             if bf:
                 print(bf, flush=True)
-        time.sleep(0.5)
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":

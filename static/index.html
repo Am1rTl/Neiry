@@ -4,21 +4,18 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title> NEIRY · Capsule Dashboard</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js?v=1780587612"></script>
+<link rel="stylesheet" href="/static/common.css" />
+<script src="/static/common.js"></script>
+<script src="/static/vendor/chart.umd.min.js" onerror="Capsule.vendorFallback('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js')"></script>
 <style>
-:root { --bg: #04060d; --bg2: #080c1a; --panel: #0a1024; --panel-border: #1a2550; --grid: #1b2750; --neon-cyan: #00f0ff; --neon-magenta: #ff2bd6; --neon-lime: #aaff00; --neon-pink: #ff3e7f; --neon-yellow: #ffea00; --neon-purple: #b66bff; --neon-orange: #ff8a00; --text: #d8e1ff; --text-dim: #6f7bb0; --good: #00ff88; --bad: #ff3355; }
+/* Общие переменные, чипы, оверлей — в /static/common.css; здесь только специфика дашборда. */
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace; min-height: 100vh; background-image: radial-gradient(ellipse at 20% 0%, rgba(0, 240, 255, 0.08), transparent 50%), radial-gradient(ellipse at 80% 100%, rgba(255, 43, 214, 0.08), transparent 50%), linear-gradient(180deg, #04060d 0%, #06091a 100%); background-attachment: fixed; }
 body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 1; background: repeating-linear-gradient(0deg, transparent 0, transparent 2px, rgba(0, 240, 255, 0.015) 2px, rgba(0, 240, 255, 0.015) 4px); }
 header { position: relative; z-index: 2; padding: 20px 28px; border-bottom: 1px solid var(--panel-border); display: flex; align-items: center; gap: 24px; flex-wrap: wrap; background: linear-gradient(180deg, rgba(0,240,255,0.04), transparent); backdrop-filter: blur(8px); }
 .logo { font-size: 22px; font-weight: 700; letter-spacing: 4px; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 30px rgba(0,240,255,0.4); }
 .logo::before { content: "◈"; margin-right: 10px; -webkit-text-fill-color: var(--neon-cyan); filter: drop-shadow(0 0 8px var(--neon-cyan)); }
-.chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border: 1px solid var(--panel-border); border-radius: 999px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; background: rgba(10, 16, 36, 0.6); }
-.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); box-shadow: 0 0 6px currentColor; }
-.chip.idle .dot, .chip.searching .dot { background: var(--neon-yellow); animation: pulse 1.5s infinite; }
-.chip.connected .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
-.chip.error .dot { background: var(--bad); }
-.chip.connecting .dot { background: var(--neon-orange); animation: pulse 1s infinite; }
+/* .chip — в common.css; pulse нужен индикаторам LIVE ниже. */
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 #battery { font-size: 14px; }
 #battery .lvl { display: inline-block; min-width: 28px; text-align: right; color: var(--neon-cyan); text-shadow: 0 0 8px var(--neon-cyan); }
@@ -83,40 +80,7 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
 @keyframes heartbeat { 0%, 100% { transform: scale(1); } 20% { transform: scale(1.4); box-shadow: 0 0 24px var(--neon-pink); } 40% { transform: scale(1); } }
 .footer-info { font-size: 10px; color: var(--text-dim); margin-top: 8px; line-height: 1.5; font-family: monospace; }
 
-#setup-overlay { position: fixed; inset: 0; z-index: 100; display: none; align-items: center; justify-content: center; background: radial-gradient(circle at center, rgba(8,12,28,0.92) 0%, rgba(0,0,0,0.97) 100%); backdrop-filter: blur(6px); }
-#setup-overlay.show { display: flex; }
-.setup-card { text-align: center; padding: 36px 44px; border: 1px solid var(--neon-cyan); border-radius: 14px; background: rgba(10,16,36,0.85); box-shadow: 0 0 30px rgba(0,240,255,0.18), inset 0 0 30px rgba(0,240,255,0.05); max-width: 460px; }
-.setup-card h2 { font-size: 22px; letter-spacing: 4px; color: var(--neon-cyan); text-shadow: 0 0 12px var(--neon-cyan); margin: 0 0 12px; text-transform: uppercase; }
-.setup-card p { color: var(--text); font-size: 13px; line-height: 1.6; margin: 8px 0 18px; }
-.setup-card .hint { color: var(--neon-yellow); font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-top: 14px; }
-.setup-btn { display: inline-block; margin: 10px 8px; padding: 14px 28px; font-family: inherit; font-size: 13px; letter-spacing: 3px; text-transform: uppercase; background: transparent; color: var(--neon-cyan); border: 1px solid var(--neon-cyan); border-radius: 4px; cursor: pointer; transition: all .2s; text-shadow: 0 0 6px var(--neon-cyan); }
-.setup-btn:hover { background: rgba(0,240,255,0.12); box-shadow: 0 0 18px var(--neon-cyan); }
-.setup-btn:active { transform: scale(0.97); }
-.setup-btn.skip { color: var(--text-dim); border-color: var(--panel-border); text-shadow: none; }
-.setup-btn.skip:hover { color: var(--neon-pink); border-color: var(--neon-pink); }
-.timer-svg { display: block; margin: 18px auto 6px; }
-.timer-svg .track { fill: none; stroke: rgba(0,240,255,0.15); stroke-width: 6; }
-.timer-svg .ring  { fill: none; stroke: var(--neon-cyan); stroke-width: 6; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; transition: stroke-dashoffset 0.3s linear, stroke 0.3s; }
-.timer-svg .ring.warn { stroke: var(--neon-pink); }
-.timer-svg text { fill: var(--neon-cyan); font-family: 'JetBrains Mono', monospace; font-size: 28px; text-anchor: middle; dominant-baseline: central; font-weight: 600; }
-.spinner { width: 40px; height: 40px; margin: 10px auto; border: 3px solid rgba(0,240,255,0.15); border-top-color: var(--neon-cyan); border-radius: 50%; animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-.sensor-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0 16px; width: 100%; max-width: 420px; }
-.sensor { position: relative; background: rgba(0,0,0,0.35); border: 1px solid rgba(0,240,255,0.12); border-radius: 6px; padding: 8px 8px 7px 22px; text-align: left; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-dim); line-height: 1.25; min-height: 44px; transition: border-color 0.25s, background 0.25s; }
-.sensor::before { content: ''; position: absolute; left: 9px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; background: #555; transition: background 0.25s, box-shadow 0.25s; }
-.sensor.state-ok { border-color: rgba(0,255,170,0.35); background: rgba(0,255,170,0.05); }
-.sensor.state-ok::before { background: var(--good); box-shadow: 0 0 8px var(--good); }
-.sensor.state-warn { border-color: rgba(255,210,0,0.35); background: rgba(255,210,0,0.04); }
-.sensor.state-warn::before { background: #ffd200; box-shadow: 0 0 8px #ffd200; }
-.sensor.state-error { border-color: rgba(255,80,120,0.5); background: rgba(255,80,120,0.05); }
-.sensor.state-error::before { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
-.sensor.state-none { opacity: 0.6; }
-.sensor .name { display: block; color: var(--neon-cyan); font-size: 10px; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 1px; text-transform: uppercase; }
-.sensor.state-ok .name  { color: var(--good); }
-.sensor.state-warn .name { color: #ffd200; }
-.sensor.state-error .name { color: var(--bad); }
-.sensor .value { display: block; color: var(--text-dim); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Оверлей, setup-card, спиннер, таймер, sensor-grid — в common.css. */
 </style>
 </head>
 <body>
@@ -125,11 +89,11 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   <div class="setup-card" data-state="searching">
     <h2>⚡ NEIRY · Headband</h2>
     <div class="spinner"></div>
-    <p>Searching for the headband…<br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode and bring it close</span></p>
+    <p><span data-i18n="ovSearching">Searching for the headband…</span><br><span style="color:var(--text-dim); font-size:11px;" id="setup-searching-msg">put it in pairing mode and bring it close</span></p>
   </div>
   <div class="setup-card" data-state="ready" style="display:none">
-    <h2>⚙ Calibration</h2>
-    <p>For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br> Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
+    <h2 data-i18n="ovCalTitle">⚙ Calibration</h2>
+    <p data-i18n-html="ovCalTextHtml">For best NFB results, do a quick <b style="color:var(--neon-cyan)">30-second eyes-closed</b> calibration.<br> Sit still, relax, and close your eyes once you press <b>Start</b>.</p>
     <div class="sensor-grid" id="sensor-grid">
       <div class="sensor state-none" data-sensor="eeg"><span class="name">EEG</span><span class="value">—</span></div>
       <div class="sensor state-none" data-sensor="skin"><span class="name">SKIN</span><span class="value">—</span></div>
@@ -138,29 +102,29 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
       <div class="sensor state-none" data-sensor="mems"><span class="name">MOTION</span><span class="value">—</span></div>
       <div class="sensor state-none" data-sensor="nfb"><span class="name">NFB</span><span class="value">—</span></div>
     </div>
-    <button class="setup-btn" id="btn-start-cal">▶ START CALIBRATION</button>
-    <button class="setup-btn skip" id="btn-skip-cal">SKIP</button>
-    <div class="hint">You can recalibrate later from the main view</div>
+    <button class="setup-btn" id="btn-start-cal" data-i18n="ovStart">▶ START CALIBRATION</button>
+    <button class="setup-btn skip" id="btn-skip-cal" data-i18n="ovSkip">SKIP</button>
+    <div class="hint" data-i18n="ovHint">You can recalibrate later from the main view</div>
   </div>
   <div class="setup-card" data-state="running" style="display:none">
-    <h2 style="color:var(--neon-pink); text-shadow:0 0 14px var(--neon-pink)">👁 Close your eyes</h2>
+    <h2 style="color:var(--neon-pink); text-shadow:0 0 14px var(--neon-pink)" data-i18n="ovCloseEyes">👁 Close your eyes</h2>
     <svg class="timer-svg" width="180" height="180" viewBox="0 0 180 180">
       <circle class="track" cx="90" cy="90" r="78" />
       <circle class="ring"  cx="90" cy="90" r="78" id="timer-ring" stroke-dasharray="490" stroke-dashoffset="0" />
       <text x="90" y="90" id="timer-text">30</text>
     </svg>
-    <p style="color:var(--text-dim)">Sit still · relax · don't blink too hard<br> <span style="font-size:11px; color:var(--text-dim)" id="timer-hint">measuring your individual α-rhythm…</span></p>
+    <p style="color:var(--text-dim)"><span data-i18n="ovStill">Sit still · relax · don't blink too hard</span><br> <span style="font-size:11px; color:var(--text-dim)" id="timer-hint" data-i18n="ovMeasuring">measuring your individual α-rhythm…</span></p>
   </div>
   <div class="setup-card" data-state="complete" style="display:none">
-    <h2 style="color:var(--good); text-shadow:0 0 14px var(--good)">✓ CALIBRATED</h2>
-    <p id="cal-result-line">individual α-frequency: <b style="color:var(--neon-cyan)">— Hz</b></p>
-    <p style="color:var(--text-dim); font-size:11px">Entering dashboard…</p>
+    <h2 style="color:var(--good); text-shadow:0 0 14px var(--good)" data-i18n="ovCalibrated">✓ CALIBRATED</h2>
+    <p id="cal-result-line" data-i18n-html="ovResultHtml">individual α-frequency: <b style="color:var(--neon-cyan)">— Hz</b></p>
+    <p style="color:var(--text-dim); font-size:11px" data-i18n="ovEntering">Entering dashboard…</p>
   </div>
   <div class="setup-card" data-state="failed" style="display:none">
-    <h2 style="color:var(--bad); text-shadow:0 0 14px var(--bad)">✗ CALIBRATION FAILED</h2>
+    <h2 style="color:var(--bad); text-shadow:0 0 14px var(--bad)" data-i18n="ovFailed">✗ CALIBRATION FAILED</h2>
     <p id="cal-fail-msg">Could not measure individual α-rhythm.</p>
-    <button class="setup-btn" id="btn-retry-cal">↻ RETRY</button>
-    <button class="setup-btn skip" id="btn-skip-cal-2">SKIP</button>
+    <button class="setup-btn" id="btn-retry-cal" data-i18n="ovRetry">↻ RETRY</button>
+    <button class="setup-btn skip" id="btn-skip-cal-2" data-i18n="ovSkip">SKIP</button>
   </div>
 </div>
 
@@ -169,39 +133,44 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   <span class="chip idle" id="chip-status"><span class="dot"></span><span id="status-text">idle</span></span>
   <span class="chip" id="chip-device"><span class="dot"></span><span id="device-name">—</span></span>
   <span class="chip" id="battery">🔋 <span class="lvl">—</span>%</span>
-  <span class="chip" id="chip-mode"><span class="dot"></span>mode <span id="mode-val">—</span></span>
+  <span class="chip" id="chip-mode"><span class="dot"></span><span data-i18n="mode">mode</span> <span id="mode-val">—</span></span>
   <span class="chip" id="chip-cal">⚙ <span id="cal-val">not calibrated</span></span>
+  <span class="chip" id="chip-stale" title="Возраст данных (t_server в тике)"><span class="dot"></span><span class="stale-val">—</span></span>
+  <a class="chip" id="chip-rec" href="/api/records" target="_blank" style="text-decoration:none; color:inherit;" title="Все показатели сессии пишутся в records/">● REC <span id="rec-val">—</span></a>
+  <button class="chip" id="btn-recal" style="cursor:pointer; background:transparent; color:inherit; font:inherit;" data-i18n="recalibrate">↻ Перекалибровать</button>
+  <button class="chip" id="btn-marker" style="cursor:pointer; background:transparent; color:inherit; font:inherit;" title="Отправить маркер в запись">🔖 <span data-i18n="markerBtn">маркер</span></button>
   <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
-    <button id="lang-toggle" class="chip" style="cursor:pointer; border-color:var(--neon-cyan); color:var(--neon-cyan); background:transparent; font-weight:bold;">RU</button>
-    <a href="/charts" style="color:var(--neon-cyan); text-decoration:none; font-size:11px; letter-spacing:2px; padding:5px 12px; border:1px solid var(--neon-cyan); border-radius:3px;">📈 FULL CHARTS →</a>
-    <a href="/more" style="color:#000; text-decoration:none; font-size:11px; font-weight:bold; letter-spacing:2px; padding:5px 12px; background:var(--neon-cyan); border:1px solid var(--neon-cyan); border-radius:3px; box-shadow:0 0 10px rgba(0,240,255,0.4);"> MORE </a>
+    <button id="lang-toggle" class="chip">RU</button>
+    <a href="/charts" class="nav-link" data-i18n="navCharts">📈 FULL CHARTS →</a>
+    <a href="/sessions" class="nav-link" data-i18n="navSessions">🗂 SESSIONS</a>
+    <a href="/more" class="nav-link solid" data-i18n="navMore"> MORE </a>
   </div>
 </header>
 
 <main>
   <section class="panel col-7">
-    <h3><span class="accent"></span>EEG Signal<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span><span data-i18n="eegTitle">EEG Signal</span><span class="live">LIVE</span></h3>
     <div class="chart-wrap tall"><canvas id="eeg-chart"></canvas></div>
-    <div class="footer-info">ch: <span id="eeg-channels">—</span> · sr: <span id="eeg-sr">—</span> Hz</div>
+    <div class="footer-info"><span data-i18n="ch">ch:</span> <span id="eeg-channels">—</span> · <span data-i18n="sr">sr:</span> <span id="eeg-sr">—</span> Hz</div>
   </section>
 
   <section class="panel col-5">
-    <h3><span class="accent"></span>Cardio<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span><span data-i18n="cardioTitle">Cardio</span><span class="live">LIVE</span></h3>
     <div style="display:flex; align-items:baseline; gap:14px;">
       <span class="heart-pulse"></span>
       <div>
         <div><span class="value-big pink" id="hr-val">—</span><span class="unit">bpm</span></div>
-        <div class="status-text" id="hr-quality">no contact</div>
+        <div class="status-text" id="hr-quality" data-i18n="sensContact">no contact</div>
       </div>
     </div>
     <div style="margin-top:14px;">
       <div class="bar-row">
-        <span class="bar-label">Stress Idx</span>
+        <span class="bar-label" data-i18n="stressIdx">Stress Idx</span>
         <div class="bar-track"><div class="bar-fill pink" id="stress-bar" style="width:0%"></div></div>
         <span class="bar-val" id="stress-val">—</span>
       </div>
       <div class="bar-row">
-        <span class="bar-label">Kaplan Idx</span>
+        <span class="bar-label" data-i18n="kaplanIdx">Kaplan Idx</span>
         <div class="bar-track"><div class="bar-fill yellow" id="kaplan-bar" style="width:0%"></div></div>
         <span class="bar-val" id="kaplan-val">—</span>
       </div>
@@ -209,13 +178,13 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   </section>
 
   <section class="panel col-6">
-    <h3><span class="accent"></span>PPG (Photoplethysmogram)<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span><span data-i18n="ppgTitle">PPG (Photoplethysmogram)</span><span class="live">LIVE</span></h3>
     <div class="chart-wrap"><canvas id="ppg-chart"></canvas></div>
   </section>
 
   <section class="panel col-6">
-    <h3><span class="accent"></span>Head motion · Accel (m/s²) + Gyro (°/s)<span class="live">LIVE</span> <span class="help" data-help="mems">?</span></h3>
-    <div class="help-popup" id="help-mems">
+    <h3><span class="accent"></span><span data-i18n="memsTitle">Head motion · Accel (m/s²) + Gyro (°/s)</span><span class="live">LIVE</span> <span class="help" data-help="mems">?</span></h3>
+    <div class="help-popup" id="help-mems" data-i18n-html="memsHelpHtml">
       <div class="help-row"><b>3-axis accelerometer</b> — measures head <u>linear</u> acceleration (m/s²)</div>
       <div class="help-row"><span style="color:#00f0ff">━ accX</span> tilt left/right</div>
       <div class="help-row"><span style="color:#ff2bd6">━ accY</span> nod forward/back</div>
@@ -226,13 +195,13 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   </section>
 
   <section class="panel col-4 panel-magenta">
-    <h3 id="title-emotions"><span class="accent"></span>Эмоции<span class="live">LIVE</span></h3>
+    <h3 id="title-emotions"><span class="accent"></span><span data-i18n="emotionsTitle">Эмоции</span><span class="live">LIVE</span></h3>
     <div id="emotions-bars">
-      <div class="bar-row"><span class="bar-label" id="lbl-focus">Фокус</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-chill">Азарт</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-stress">Когнитивная нагрузка</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-anger">Волнение</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-sc">Самоконтроль</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-focus" data-i18n="attention">Фокус</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-chill" data-i18n="relaxation">Азарт</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-stress" data-i18n="cogLoad">Когнитивная нагрузка</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-anger" data-i18n="cogControl">Волнение</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-sc" data-i18n="selfControl">Самоконтроль</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
     </div>
   </section>
 
@@ -242,79 +211,93 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   </section>
 
   <section class="panel col-4 panel-lime">
-    <h3><span class="accent"></span>Electrode Resistance<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span><span data-i18n="resTitle">Electrode Resistance</span><span class="live">LIVE</span></h3>
     <div class="res-grid" id="res-grid">
       <div class="res-cell bad"><div class="name">—</div><div class="val">—</div></div>
     </div>
     <div class="res-status none" id="res-status">—</div>
-    <div class="footer-info">good: &lt; 500 kΩ · bad: &gt; 1000 kΩ</div>
+    <div class="footer-info" data-i18n-html="resFooterHtml">good: &lt; 500 kΩ · bad: &gt; 1000 kΩ</div>
   </section>
 
   <section class="panel col-6 panel-pink">
-    <h3><span class="accent"></span>Productivity<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span><span data-i18n="prodTitle">Productivity</span><span class="live">LIVE</span></h3>
     <div id="prod-rows">
-      <div class="bar-row"><span class="bar-label">Productivity</span><div class="bar-track"><div class="bar-fill" id="pr-prod" style="width:0%"></div></div><span class="bar-val" id="pr-prod-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Concentration</span><div class="bar-track"><div class="bar-fill lime" id="pr-conc" style="width:0%"></div></div><span class="bar-val" id="pr-conc-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Relaxation</span><div class="bar-track"><div class="bar-fill purple" id="pr-rel" style="width:0%"></div></div><span class="bar-val" id="pr-rel-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Fatigue</span><div class="bar-track"><div class="bar-fill yellow" id="pr-fat" style="width:0%"></div></div><span class="bar-val" id="pr-fat-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Gravity (Load)</span><div class="bar-track"><div class="bar-fill pink" id="pr-grv" style="width:0%"></div></div><span class="bar-val" id="pr-grv-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="prodProductivity">Productivity</span><div class="bar-track"><div class="bar-fill" id="pr-prod" style="width:0%"></div></div><span class="bar-val" id="pr-prod-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="prodConcentration">Concentration</span><div class="bar-track"><div class="bar-fill lime" id="pr-conc" style="width:0%"></div></div><span class="bar-val" id="pr-conc-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="prodRelaxation">Relaxation</span><div class="bar-track"><div class="bar-fill purple" id="pr-rel" style="width:0%"></div></div><span class="bar-val" id="pr-rel-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="prodFatigue">Fatigue</span><div class="bar-track"><div class="bar-fill yellow" id="pr-fat" style="width:0%"></div></div><span class="bar-val" id="pr-fat-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="prodGravity">Gravity (Load)</span><div class="bar-track"><div class="bar-fill pink" id="pr-grv" style="width:0%"></div></div><span class="bar-val" id="pr-grv-v">—</span></div>
     </div>
   </section>
 
   <section class="panel col-6 panel-purple">
-    <h3><span class="accent"></span>Physiological States<span class="live">LIVE</span></h3>
+    <h3><span class="accent"></span><span data-i18n="phyTitle">Physiological States</span><span class="live">LIVE</span></h3>
     <div id="phy-rows">
-      <div class="bar-row"><span class="bar-label">Relaxation</span><div class="bar-track"><div class="bar-fill purple" id="ph-rel" style="width:0%"></div></div><span class="bar-val" id="ph-rel-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Concentration</span><div class="bar-track"><div class="bar-fill" id="ph-conc" style="width:0%"></div></div><span class="bar-val" id="ph-conc-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Fatigue</span><div class="bar-track"><div class="bar-fill yellow" id="ph-fat" style="width:0%"></div></div><span class="bar-val" id="ph-fat-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Stress</span><div class="bar-track"><div class="bar-fill pink" id="ph-str" style="width:0%"></div></div><span class="bar-val" id="ph-str-v">—</span></div>
-      <div class="bar-row"><span class="bar-label">Involvement</span><div class="bar-track"><div class="bar-fill lime" id="ph-inv" style="width:0%"></div></div><span class="bar-val" id="ph-inv-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="phyRelaxation">Relaxation</span><div class="bar-track"><div class="bar-fill purple" id="ph-rel" style="width:0%"></div></div><span class="bar-val" id="ph-rel-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="phyConcentration">Concentration</span><div class="bar-track"><div class="bar-fill" id="ph-conc" style="width:0%"></div></div><span class="bar-val" id="ph-conc-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="phyFatigue">Fatigue</span><div class="bar-track"><div class="bar-fill yellow" id="ph-fat" style="width:0%"></div></div><span class="bar-val" id="ph-fat-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="phyStress">Stress</span><div class="bar-track"><div class="bar-fill pink" id="ph-str" style="width:0%"></div></div><span class="bar-val" id="ph-str-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" data-i18n="phyInvolvement">Involvement</span><div class="bar-track"><div class="bar-fill lime" id="ph-inv" style="width:0%"></div></div><span class="bar-val" id="ph-inv-v">—</span></div>
     </div>
   </section>
 
   <section class="panel col-12 panel-yellow">
-    <h3><span class="accent"></span>Calibration / Device</h3>
-    <div class="footer-info" id="cal-info">waiting for headband…</div>
+    <h3><span class="accent"></span><span data-i18n="calTitle">Calibration / Device</span></h3>
+    <div class="footer-info" id="cal-info" data-i18n="calWaiting">waiting for headband…</div>
   </section>
 </main>
 
 <script>
-let currentLang = 'ru';
-const langDict = {
-  en: { emotionsTitle: "Emotions", attention: "Focus", relaxation: "Excitement", cogLoad: "Cognitive load", cogControl: "Anxiety", selfControl: "Self-control" },
-  ru: { emotionsTitle: "Эмоции", attention: "Фокус", relaxation: "Азарт", cogLoad: "Когнитивная нагрузка", cogControl: "Волнение", selfControl: "Самоконтроль" }
-};
-
-function applyLang() {
-  const t = langDict[currentLang];
-  document.getElementById('title-emotions').innerHTML = `<span class="accent"></span>${t.emotionsTitle}<span class="live">LIVE</span>`;
-  document.getElementById('lbl-focus').textContent = t.attention;
-  document.getElementById('lbl-chill').textContent = t.relaxation;
-  document.getElementById('lbl-stress').textContent = t.cogLoad;
-  document.getElementById('lbl-anger').textContent = t.cogControl;
-  document.getElementById('lbl-sc').textContent = t.selfControl;
-  document.getElementById('lang-toggle').innerHTML = currentLang === 'ru' ? 'RU' : 'EN';
-}
-
-document.getElementById('lang-toggle').addEventListener('click', () => {
-  currentLang = currentLang === 'ru' ? 'en' : 'ru';
-  applyLang();
+// RU/EN через общий словарь Capsule (статусы, навигация, оверлей, сенсоры —
+// в common.js). Здесь только строки дашборда. Динамика — через t().
+const lang = Capsule.createLang({
+  en: {
+    mode: "mode", calibrated: "calibrated", notCalibrated: "not calibrated", recording: "recording",
+    recalibrate: "↻ Recalibrate", markerBtn: "marker", markerPrompt: "Marker label:",
+    eegTitle: "EEG Signal", ch: "ch:", sr: "sr:",
+    cardioTitle: "Cardio", stressIdx: "Stress Idx", kaplanIdx: "Kaplan Idx",
+    hrNoContact: "⚠ no skin contact", hrMotion: "⚠ motion artifact", hrGood: "♡ good signal · HRV ",
+    ppgTitle: "PPG (Photoplethysmogram)", memsTitle: "Head motion · Accel (m/s²) + Gyro (°/s)",
+    memsHelpHtml: `<div class="help-row"><b>3-axis accelerometer</b> — measures head <u>linear</u> acceleration (m/s²)</div><div class="help-row"><span style="color:#00f0ff">━ accX</span> tilt left/right</div><div class="help-row"><span style="color:#ff2bd6">━ accY</span> nod forward/back</div><div class="help-row"><span style="color:#aaff00">━ accZ</span> lean up/down</div><div class="help-row" style="margin-top:6px"><b>3-axis gyroscope</b> — measures <u>angular</u> velocity (°/s, dashed)</div>`,
+    emotionsTitle: "Emotions", attention: "Focus", relaxation: "Excitement", cogLoad: "Cognitive load", cogControl: "Anxiety", selfControl: "Self-control",
+    resTitle: "Electrode Resistance", resFooterHtml: "good: &lt; 500 kΩ · bad: &gt; 1000 kΩ",
+    resBad: "✗ bad contact — ", resWarn: "⚠ some channels elevated — ", resGood: "✓ good — ",
+    prodTitle: "Productivity", prodProductivity: "Productivity", prodConcentration: "Concentration", prodRelaxation: "Relaxation", prodFatigue: "Fatigue", prodGravity: "Gravity (Load)",
+    phyTitle: "Physiological States", phyRelaxation: "Relaxation", phyConcentration: "Concentration", phyFatigue: "Fatigue", phyStress: "Stress", phyInvolvement: "Involvement",
+    calTitle: "Calibration / Device", calWaiting: "waiting for headband…", calScanning: "scanning…",
+    calInfoHtml: (f1, f2, s) => `α-frequency: <b style="color:var(--neon-cyan)">${f1} Hz</b> · peak: <b style="color:var(--neon-cyan)">${f2} Hz</b> · serial: <b>${s}</b>`,
+    calWaitingFor: (d) => `${d} — waiting for calibration...`,
+  },
+  ru: {
+    mode: "режим", calibrated: "калибровано", notCalibrated: "не калибровано", recording: "запись",
+    recalibrate: "↻ Перекалибровать", markerBtn: "маркер", markerPrompt: "Название маркера:",
+    eegTitle: "ЭЭГ-сигнал", ch: "кан.:", sr: "чд:",
+    cardioTitle: "Кардио", stressIdx: "Стресс", kaplanIdx: "Каплан",
+    hrNoContact: "⚠ нет контакта с кожей", hrMotion: "⚠ артефакт движения", hrGood: "♡ хороший сигнал · ВСР ",
+    ppgTitle: "PPG (фотоплетизмограмма)", memsTitle: "Движение головы · аксель (м/с²) + гиро (°/с)",
+    memsHelpHtml: `<div class="help-row"><b>3-осевой акселерометр</b> — <u>линейное</u> ускорение головы (м/с²)</div><div class="help-row"><span style="color:#00f0ff">━ accX</span> наклоны влево/вправо</div><div class="help-row"><span style="color:#ff2bd6">━ accY</span> кивки вперёд/назад</div><div class="help-row"><span style="color:#aaff00">━ accZ</span> наклоны вверх/вниз</div><div class="help-row" style="margin-top:6px"><b>3-осевой гироскоп</b> — <u>угловая</u> скорость (°/с, пунктир)</div>`,
+    emotionsTitle: "Эмоции", attention: "Фокус", relaxation: "Азарт", cogLoad: "Когнитивная нагрузка", cogControl: "Волнение", selfControl: "Самоконтроль",
+    resTitle: "Сопротивление электродов", resFooterHtml: "норма: &lt; 500 кОм · плохо: &gt; 1000 кОм",
+    resBad: "✗ плохой контакт — ", resWarn: "⚠ каналы повышены — ", resGood: "✓ норма — ",
+    prodTitle: "Продуктивность", prodProductivity: "Продуктивность", prodConcentration: "Концентрация", prodRelaxation: "Релаксация", prodFatigue: "Усталость", prodGravity: "Нагрузка",
+    phyTitle: "Физиологические состояния", phyRelaxation: "Расслабление", phyConcentration: "Концентрация", phyFatigue: "Усталость", phyStress: "Стресс", phyInvolvement: "Вовлечённость",
+    calTitle: "Калибровка / Устройство", calWaiting: "ожидание повязки…", calScanning: "сканирование…",
+    calInfoHtml: (f1, f2, s) => `α-частота: <b style="color:var(--neon-cyan)">${f1} Гц</b> · пик: <b style="color:var(--neon-cyan)">${f2} Гц</b> · серийный: <b>${s}</b>`,
+    calWaitingFor: (d) => `${d} — ожидание калибровки…`,
+  },
 });
+function t(key) { return lang.t(key); }
 
-Chart.defaults.color = '#6f7bb0';
-Chart.defaults.borderColor = 'rgba(26, 37, 80, 0.6)';
-Chart.defaults.font.family = "'JetBrains Mono', 'Fira Code', 'Courier New', monospace";
-Chart.defaults.font.size = 10;
-const gridColor = 'rgba(26, 37, 80, 0.55)';
-const tickColor = '#3a4a7a';
+let lastRendered = null; // последний тик — для мгновенной перерисовки при смене языка
+lang.apply();
+lang.bindToggle(() => { if (lastRendered) handleTick(lastRendered); });
+const stale = Capsule.stale('chip-stale', t);
+const ov = Capsule.overlay();
 
-function neonGradient(_ctx, area, hex) {
-  if (!area || typeof area.top !== 'number' || typeof area.bottom !== 'number') return hex + '40';
-  try {
-    const g = _ctx.createLinearGradient(0, area.top, 0, area.bottom);
-    g.addColorStop(0, hex + 'cc'); g.addColorStop(1, hex + '00'); return g;
-  } catch (e) { return hex + '40'; }
-}
+Capsule.setupCharts();
+const gridColor = Capsule.GRID_COLOR;
+const tickColor = Capsule.TICK_COLOR;
+const neonGradient = Capsule.neonGradient;
 
 const eegCtx = document.getElementById('eeg-chart').getContext('2d');
 const eegChart = new Chart(eegCtx, {
@@ -344,12 +327,14 @@ const memsChart = new Chart(memsCtx, {
     { label: 'acc · Y', data: [], borderColor: '#ff2bd6', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
     { label: 'acc · Z', data: [], borderColor: '#aaff00', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
     { label: '|a| total', data: [], borderColor: '#ffffff', borderWidth: 1.4, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false },
-    { label: 'gyro · X', data: [], borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
-    { label: 'gyro · Y', data: [], borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
-    { label: 'gyro · Z', data: [], borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
-    { label: '|ω| total', data: [], borderColor: '#ffffff', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: 'gyro · X', data: [], yAxisID: 'y1', borderColor: '#ff8a00', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: 'gyro · Y', data: [], yAxisID: 'y1', borderColor: '#b66bff', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: 'gyro · Z', data: [], yAxisID: 'y1', borderColor: '#ffea00', borderWidth: 1.0, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
+    { label: '|ω| total', data: [], yAxisID: 'y1', borderColor: '#ffffff', borderWidth: 1.2, pointRadius: 0, tension: 0.15, cubicInterpolationMode: 'default', fill: false, borderDash: [3,3] },
   ] },
-  options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } } }, scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
+  // Гироскоп (±сотни °/с) на отдельной правой оси: на общей оси он полностью
+  // давил акселерометр (±1 g), и график выглядел «пилой» без движения.
+  options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10, font: { size: 9 } } } }, scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 4 } }, y1: { position: 'right', grid: { drawOnChartArea: false }, ticks: { color: tickColor, maxTicksLimit: 4 } } } },
 });
 
 const nfbChart = new Chart(document.getElementById('nfb-chart').getContext('2d'), {
@@ -362,22 +347,51 @@ const nfbChart = new Chart(document.getElementById('nfb-chart').getContext('2d')
   options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: true, labels: { color: '#d8e1ff', boxWidth: 10 } } }, scales: { x: { display: false }, y: { grid: { color: gridColor }, ticks: { color: tickColor, maxTicksLimit: 3 } } } },
 });
 
-function setBar(id, value) { document.getElementById(id).style.width = Math.max(0, Math.min(100, value || 0)) + '%'; }
+function setBar(id, value, max = 100) { const v = (value || 0) / max * 100; document.getElementById(id).style.width = Math.max(0, Math.min(100, v)) + '%'; }
+// Для безграничных скорингов (Productivity: типично 0–10, выбросы до сотен):
+// мягкая нормировка v/(v+half) — монотонна, не уходит в насыщение, точное
+// значение всё равно показывает подпись рядом. half — значение на 50% шкалы.
+function setBarSoft(id, value, half = 5) { const v = value || 0; document.getElementById(id).style.width = (v <= 0 ? 0 : Math.min(100, 100 * v / (v + half))) + '%'; }
 function setVal(id, value, digits = 1) { document.getElementById(id).textContent = (value === null || value === undefined) ? '—' : Number(value).toFixed(digits); }
-function setStatus(s) { document.getElementById('chip-status').className = 'chip ' + s; document.getElementById('status-text').textContent = s; }
+function setStatus(s) { document.getElementById('chip-status').className = 'chip ' + s; document.getElementById('status-text').textContent = t('status_' + s) ?? s; }
 
 let lastTickData = null;
 let lastRenderTime = 0;
-let ws;
+let lastOvState = null;
 
-function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen = () => setStatus('connecting');
-  ws.onmessage = (ev) => { lastTickData = JSON.parse(ev.data); };
-  ws.onclose = () => { setStatus('error'); setTimeout(connect, 1500); };
-  ws.onerror = () => ws.close();
+// Кэш последних данных в браузере: после F5 интерфейс мгновенно показывает
+// последние значения из localStorage, а живой поток их тут же заменяет.
+// Раньше страница до первого тика (или при недоступном сервере) была пустой.
+const CACHE_KEY = 'capsule_dashboard_v1';
+let lastCacheAt = 0;
+function cacheTick(d) {
+  const now = Date.now();
+  if (now - lastCacheAt < 1000) return;
+  lastCacheAt = now;
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      ts: now, battery: d.battery, device: d.device, serial: d.serial,
+      calibrated: d.calibrated, calibration: d.calibration,
+      calibration_phase: d.calibration_phase, resistances: d.resistances,
+      emotions: d.emotions, cardio: d.cardio, phy: d.phy, prod: d.prod,
+      eeg: d.eeg, ppg: d.ppg, nfb: d.nfb, eeg_channels: d.eeg_channels,
+    }));
+  } catch (e) {}
 }
+function restoreCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return;
+    const c = JSON.parse(raw);
+    handleTick({ status: 'cached', message: t('lastKnown'), ...c });
+  } catch (e) {}
+}
+
+// Общий WS-клиент с экспоненциальным бэкоффом (common.js), подключается сам.
+const wsHandle = Capsule.connectWS('/ws', {
+  onStatus: setStatus,
+  onTick: (d) => { lastTickData = d; cacheTick(d); },
+});
 
 function renderLoop(now) {
   if (lastTickData && (now - lastRenderTime > 66)) {
@@ -389,47 +403,45 @@ function renderLoop(now) {
 }
 requestAnimationFrame(renderLoop);
 
-function renderSensorStatus(s) {
-  if (!s) return;
-  const setEl = (key, name, value) => {
-    const el = document.querySelector(`.sensor[data-sensor="${key}"]`); if (!el) return;
-    el.className = 'sensor state-' + (s[key]?.state || 'none');
-    el.querySelector('.name').textContent = name;
-    el.querySelector('.value').textContent = value;
-  };
-  let eegVal = s.eeg?.state === 'ok' ? `${s.eeg.sr || '?'} Hz · ${(s.eeg.channels || []).join(' · ')}` : 'no data';
-  setEl('eeg', 'EEG', eegVal);
-  
-  let skinVal = '—';
-  if (s.skin) {
-    if (s.skin.state === 'ok') skinVal = `good · ${(s.skin.max_r/1000).toFixed(1)} kΩ`; // ИСПРАВЛЕНО: S.skin изменен на s.skin
-    else if (s.skin.state === 'warn') skinVal = `${s.skin.n_good}/${s.skin.n_ch} ok`;
-    else if (s.skin.state === 'error') skinVal = 'no contact';
-  }
-  setEl('skin', 'SKIN', skinVal);
-  setEl('ppg', 'PPG', s.ppg?.state === 'ok' ? `${s.ppg.sr || '?'} Hz` : 'no data');
-  setEl('cardio', 'HEART', s.cardio?.state === 'ok' ? `${s.cardio.hr?.toFixed(0)} bpm` : '—');
-  setEl('mems', 'MOTION', s.mems?.state === 'ok' ? `${s.mems.sr || '?'} Hz` : 'no data');
-  setEl('nfb', 'NFB', s.nfb?.state === 'ok' ? `${s.nfb.n} pts` : s.nfb?.state === 'warn' ? 'after cal' : '—');
+// Кольцевые буферы живых графиков: читаем дельта-стримы (*_stream),
+// накапливаем последние WIN_N точек. Legacy-массивы eeg/ppg/mems_*
+// из тика — только фолбэк, если стрима нет (бэкенд может их убрать).
+const WIN_N = 256;
+const eegBuf = { ch1: [], ch2: [] };
+const ppgBuf = [];
+const accBuf = [[], [], []];
+const gyrBuf = [[], [], []];
+function pushCapped(arr, vals) {
+  if (!vals || !vals.length) return;
+  for (let i = 0; i < vals.length; i++) arr.push(vals[i]);
+  if (arr.length > WIN_N) arr.splice(0, arr.length - WIN_N);
 }
 
 function handleTick(d) {
+  lastRendered = d;
   setStatus(d.status || 'idle');
   document.getElementById('device-name').textContent = d.device || '—';
   document.getElementById('mode-val').textContent = d.mode === null ? '—' : d.mode;
-  document.getElementById('cal-val').textContent = d.calibrated ? 'calibrated' : 'not calibrated';
+  document.getElementById('cal-val').textContent = d.calibrated ? t('calibrated') : t('notCalibrated');
   document.querySelector('#chip-cal').style.borderColor = d.calibrated ? 'var(--good)' : 'var(--panel-border)';
   document.querySelector('#chip-cal').style.color = d.calibrated ? 'var(--good)' : '';
+  const recChip = document.getElementById('chip-rec');
+  if (recChip) {
+    document.getElementById('rec-val').textContent = d.recording ? t('recording') : '—';
+    recChip.style.borderColor = d.recording ? 'var(--bad)' : 'var(--panel-border)';
+    recChip.style.color = d.recording ? 'var(--bad)' : '';
+  }
 
-  const phase = d.calibration_phase || 'idle';
-  const connected = (d.status === 'connected' || d.status === 'streaming' || d.device);
-  if (phase === 'complete' || phase === 'skipped') hideSetup();
-  else if (phase === 'running') { if (!calInterval) startTimer(d.calibration_started_at); showSetupState('running'); }
-  else if (connected && (phase === 'ready' || phase === 'idle')) { stopTimer(); showSetupState('ready'); }
-  else if (phase === 'failed') { stopTimer(); document.getElementById('cal-fail-msg').textContent = d.message || 'Calibration failed.'; showSetupState('failed'); }
-  else { stopTimer(); document.getElementById('setup-searching-msg').textContent = d.message || 'put it in pairing mode'; showSetupState('searching'); }
+  const ovState = ov.stateForTick(d);
+  if (ovState === 'complete') { ov.stopTimer(); ov.hide(); }
+  else if (ovState === 'running') { if (lastOvState !== 'running') ov.startTimer(d.calibration_started_at); ov.showState('running'); }
+  else if (ovState === 'ready') { ov.stopTimer(); ov.showState('ready'); }
+  else if (ovState === 'failed') { ov.stopTimer(); document.getElementById('cal-fail-msg').textContent = d.message || t('ovFailedMsg'); ov.showState('failed'); }
+  else { ov.stopTimer(); document.getElementById('setup-searching-msg').textContent = d.message || t('ovPairing'); ov.showState('searching'); }
+  lastOvState = ovState;
 
-  renderSensorStatus(d.sensor_status);
+  Capsule.renderSensorStatus(d.sensor_status, t);
+  stale.update(d.t_server);
   const lvl = document.querySelector('#battery .lvl');
   lvl.textContent = d.battery ?? '—';
   if (d.battery != null) {
@@ -439,27 +451,63 @@ function handleTick(d) {
 
   if (d.calibration) {
     const c = d.calibration;
-    document.getElementById('cal-info').innerHTML = `α-frequency: <b style="color:var(--neon-cyan)">${c.individualFrequency?.toFixed(2)} Hz</b> · peak: <b style="color:var(--neon-cyan)">${c.individualPeakFrequency?.toFixed(2)} Hz</b> · serial: <b>${d.serial || '—'}</b>`;
+    document.getElementById('cal-info').innerHTML = t('calInfoHtml')(c.individualFrequency?.toFixed(2), c.individualPeakFrequency?.toFixed(2), d.serial || '—');
   } else if (d.device) {
-    document.getElementById('cal-info').textContent = `${d.device} (${d.serial}) — waiting for calibration...`;
+    document.getElementById('cal-info').textContent = t('calWaitingFor')(`${d.device} (${d.serial})`);
   } else {
-    document.getElementById('cal-info').textContent = d.message || 'scanning…';
+    document.getElementById('cal-info').textContent = d.message || t('calScanning');
   }
 
   document.getElementById('eeg-channels').textContent = (d.eeg_channels || []).join(', ') || '—';
 
-  if (d.eeg && d.eeg.length) {
+  const es = d.eeg_stream;
+  if (es && es.n) {
+    pushCapped(eegBuf.ch1, es.ch1 || es.samples || []);
+    pushCapped(eegBuf.ch2, es.ch2 || []);
+    eegChart.data.labels = eegBuf.ch1.map((_, i) => i);
+    eegChart.data.datasets[0].data = eegBuf.ch1.slice();
+    eegChart.data.datasets[1].data = eegBuf.ch2.slice();
+    eegChart.update('none');
+  } else if (d.eeg && d.eeg.length) {
     eegChart.data.labels = d.eeg.map((_, i) => i);
     eegChart.data.datasets[0].data = d.eeg.map(s => s[0] ?? null);
     eegChart.data.datasets[1].data = d.eeg.map(s => s[1] ?? null);
     eegChart.update('none');
   }
-  if (d.ppg && d.ppg.length) {
+  const ps = d.ppg_stream;
+  // Сырой PPG ~220000 с колебаниями в сотни: без вычитания базовой линии
+  // график прилипал к верху и выглядел плоской линией.
+  if (ps && ps.n) {
+    pushCapped(ppgBuf, ps.samples || []);
+    const base = Math.min(...ppgBuf);
+    ppgChart.data.labels = ppgBuf.map((_, i) => i);
+    ppgChart.data.datasets[0].data = ppgBuf.map(v => v - base);
+    ppgChart.update('none');
+  } else if (d.ppg && d.ppg.length) {
+    const base = Math.min(...d.ppg);
     ppgChart.data.labels = d.ppg.map((_, i) => i);
-    ppgChart.data.datasets[0].data = d.ppg;
+    ppgChart.data.datasets[0].data = d.ppg.map(v => v - base);
     ppgChart.update('none');
   }
-  if (d.mems_acc && d.mems_acc.length) {
+  const ms = d.mems_stream;
+  if (ms && ms.n && ms.acc && ms.gyro) {
+    pushCapped(accBuf[0], ms.acc.map(v => v[0]));
+    pushCapped(accBuf[1], ms.acc.map(v => v[1]));
+    pushCapped(accBuf[2], ms.acc.map(v => v[2]));
+    pushCapped(gyrBuf[0], ms.gyro.map(v => v[0]));
+    pushCapped(gyrBuf[1], ms.gyro.map(v => v[1]));
+    pushCapped(gyrBuf[2], ms.gyro.map(v => v[2]));
+    memsChart.data.labels = accBuf[0].map((_, i) => i);
+    memsChart.data.datasets[0].data = accBuf[0].slice();
+    memsChart.data.datasets[1].data = accBuf[1].slice();
+    memsChart.data.datasets[2].data = accBuf[2].slice();
+    memsChart.data.datasets[3].data = accBuf[0].map((x, i) => Math.hypot(x, accBuf[1][i], accBuf[2][i]));
+    memsChart.data.datasets[4].data = gyrBuf[0].slice();
+    memsChart.data.datasets[5].data = gyrBuf[1].slice();
+    memsChart.data.datasets[6].data = gyrBuf[2].slice();
+    memsChart.data.datasets[7].data = gyrBuf[0].map((x, i) => Math.hypot(x, gyrBuf[1][i], gyrBuf[2][i]));
+    memsChart.update('none');
+  } else if (d.mems_acc && d.mems_acc.length) {
     memsChart.data.labels = d.mems_acc.map((_, i) => i);
     memsChart.data.datasets[0].data = d.mems_acc.map(v => v[0]);
     memsChart.data.datasets[1].data = d.mems_acc.map(v => v[1]);
@@ -474,7 +522,7 @@ function handleTick(d) {
   if (d.cardio) {
     const c = d.cardio; document.getElementById('hr-val').textContent = c.heartRate > 0 ? c.heartRate.toFixed(0) : '—';
     const q = document.getElementById('hr-quality');
-    q.textContent = !c.skinContact ? '⚠ no skin contact' : c.motionArtifacts ? '⚠ motion artifact' : `♡ good signal · HRV ${c.kaplanIndex.toFixed(0)}`;
+    q.textContent = !c.skinContact ? t('hrNoContact') : c.motionArtifacts ? t('hrMotion') : t('hrGood') + c.kaplanIndex.toFixed(0);
     q.style.color = !c.skinContact ? 'var(--bad)' : c.motionArtifacts ? 'var(--neon-yellow)' : 'var(--good)';
     setBar('stress-bar', c.stressIndex); setVal('stress-val', c.stressIndex, 1);
     setBar('kaplan-bar', c.kaplanIndex); setVal('kaplan-val', c.kaplanIndex, 1);
@@ -497,62 +545,61 @@ function handleTick(d) {
     const grid = document.getElementById('res-grid'); grid.innerHTML = '';
     let nGood = 0, nWarn = 0, nBad = 0;
     d.resistances.forEach(r => {
-      const isBad = r.is_inf || r.value > 1000;
-      const isGood = !r.is_inf && r.value != null && r.value < 500;
+      // SDK отдаёт омы, а не кОм: раньше значение 291778 печаталось как
+      // «291778 kΩ» и любой канал навсегда попадал в bad (>1000).
+      const kohm = r.value != null ? r.value / 1000 : null;
+      const isBad = r.is_inf || (kohm != null && kohm > 2000);
+      const isGood = !r.is_inf && kohm != null && kohm < 1000;
       const cellCls = isBad ? 'bad' : isGood ? 'good' : 'warn';
       if (isBad) nBad++; else if (isGood) nGood++; else nWarn++;
       const cell = document.createElement('div'); cell.className = 'res-cell ' + cellCls;
-      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${r.is_inf ? '∞' : r.value.toFixed(0) + ' kΩ'}</div>`;
+      cell.innerHTML = `<div class="name">${r.channel}</div><div class="val">${r.is_inf ? '∞' : kohm.toFixed(0) + ' kΩ'}</div>`;
       grid.appendChild(cell);
     });
     const panel = grid.closest('.panel');
     panel.classList.remove('good', 'bad', 'warn');
     const st = document.getElementById('res-status');
     if (nBad > 0) {
-      st.className = 'res-status bad'; st.textContent = '✗ bad contact — ' + nBad + '/' + d.resistances.length;
+      st.className = 'res-status bad'; st.textContent = t('resBad') + nBad + '/' + d.resistances.length;
       panel.classList.add('bad');
     } else if (nWarn > 0) {
-      st.className = 'res-status warn'; st.textContent = '⚠ some channels elevated — ' + nWarn + '/' + d.resistances.length;
+      st.className = 'res-status warn'; st.textContent = t('resWarn') + nWarn + '/' + d.resistances.length;
       panel.classList.add('warn');
     } else {
-      st.className = 'res-status good'; st.textContent = '✓ good — all ' + d.resistances.length + ' channels';
+      st.className = 'res-status good'; st.textContent = t('resGood') + d.resistances.length + '/' + d.resistances.length;
       panel.classList.add('good');
     }
   }
-  if (d.prod) { const p = d.prod; setBar('pr-prod', p.productivityScore); setVal('pr-prod-v', p.productivityScore, 1); setBar('pr-conc', p.concentrationScore); setVal('pr-conc-v', p.concentrationScore, 1); setBar('pr-rel', p.relaxationScore); setVal('pr-rel-v', p.relaxationScore, 1); setBar('pr-fat', p.fatigueScore); setVal('pr-fat-v', p.fatigueScore, 1); setBar('pr-grv', p.gravityScore); setVal('pr-grv-v', p.gravityScore, 1); }
-  if (d.phy) { const p = d.phy; setBar('ph-rel', p.relaxation); setVal('ph-rel-v', p.relaxation, 1); setBar('ph-conc', p.concentration); setVal('ph-conc-v', p.concentration, 1); setBar('ph-fat', p.fatigue); setVal('ph-fat-v', p.fatigue, 1); setBar('ph-str', p.stress); setVal('ph-str-v', p.stress, 1); setBar('ph-inv', p.involvement); setVal('ph-inv-v', p.involvement, 1); }
+  if (d.prod) { const p = d.prod; setBarSoft('pr-prod', p.productivityScore); setVal('pr-prod-v', p.productivityScore, 1); setBarSoft('pr-conc', p.concentrationScore); setVal('pr-conc-v', p.concentrationScore, 1); setBarSoft('pr-rel', p.relaxationScore); setVal('pr-rel-v', p.relaxationScore, 1); setBarSoft('pr-fat', p.fatigueScore); setVal('pr-fat-v', p.fatigueScore, 1); setBarSoft('pr-grv', p.gravityScore); setVal('pr-grv-v', p.gravityScore, 1); }
+  if (d.phy) { const p = d.phy; setBar('ph-rel', p.relaxation, 1); setVal('ph-rel-v', p.relaxation, 2); setBar('ph-conc', p.concentration, 1); setVal('ph-conc-v', p.concentration, 2); setBar('ph-fat', p.fatigue, 1); setVal('ph-fat-v', p.fatigue, 2); setBar('ph-str', p.stress, 1); setVal('ph-str-v', p.stress, 2); setBar('ph-inv', p.involvement, 1); setVal('ph-inv-v', p.involvement, 2); }
 }
 
 (async function initOverlay() {
+  lang.apply();
+  restoreCache();
   try {
     const r = await fetch('/api/status');
     if (r.ok) { const st = await r.json(); handleTick({ ...st, eeg_channels: st.channels }); }
   } catch (e) {}
-  applyLang();
-  connect();
+  // WS уже подключается через Capsule.connectWS выше.
 })();
 
-const overlay = document.getElementById('setup-overlay');
-function showSetupState(name) { overlay.className = 'show setup-state-' + name; for (const el of overlay.querySelectorAll('[data-state]')) { el.style.display = (el.dataset.state === name) ? '' : 'none'; } }
-function hideSetup() { overlay.classList.remove('show'); }
-function sendCmd(action) { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action })); }
+function sendCmd(action) { wsHandle.send({ action }); }
 
 document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
+document.getElementById('btn-recal').addEventListener('click', () => {
+  sendCmd('start_calibration');
+  ov.startTimer(Date.now() / 1000);
+  lastOvState = 'running';
+  ov.showState('running');
+});
 document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
-
-let calStartedAt = 0, calInterval = null;
-const CAL_DURATION = 30, RING_CIRC = 2 * Math.PI * 78;
-function tickTimer() {
-  const remaining = Math.max(0, CAL_DURATION - ((Date.now()/1000) - calStartedAt));
-  const ring = document.getElementById('timer-ring'), text = document.getElementById('timer-text'); if (!ring || !text) return;
-  ring.setAttribute('stroke-dashoffset', (1 - (remaining / CAL_DURATION)) * RING_CIRC); text.textContent = Math.ceil(remaining);
-  if (remaining < 5) ring.classList.add('warn'); else ring.classList.remove('warn');
-  if (remaining <= 0 && calInterval) { clearInterval(calInterval); calInterval = null; }
-}
-function startTimer(f) { calStartedAt = f || (Date.now()/1000); if (calInterval) clearInterval(calInterval); tickTimer(); calInterval = setInterval(tickTimer, 100); }
-function stopTimer() { if (calInterval) { clearInterval(calInterval); calInterval = null; } }
+document.getElementById('btn-marker').addEventListener('click', () => {
+  const label = prompt(t('markerPrompt'));
+  if (label && label.trim()) wsHandle.send({ action: 'add_marker', label: label.trim() });
+});
 
 document.querySelectorAll('.help').forEach(el => {
   el.addEventListener('click', e => {

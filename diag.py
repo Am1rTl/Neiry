@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Diagnostic: does the Capsule Python wrapper work end-to-end on its own?
 Run this with the headband awake. Prints step-by-step progress to find where
-it crashes (if it does)."""
+it crashes (if it does). Collects EEG, PPG, MEMS and resistances.
+Exit code: 0 = full pipeline OK (EEG flowing), 1 = failure."""
 import os, sys, time, ctypes
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PARENT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from server import _find_sdk_dir  # тот же поиск SDK, что и у веб-приложения
+PARENT = _find_sdk_dir()
 sys.path.insert(0, os.path.join(PARENT, "Capsule Python", "CapsuleClientPython"))
 LIB = os.path.join(PARENT, "Lib", "libCapsuleClient.so")
 
@@ -60,7 +63,7 @@ def main():
 
     if "first" not in info_holder:
         log("✗ no device found in 12s — giving up")
-        return
+        return 1
 
     first = info_holder["first"]
     log(f"first device serial={first.get_serial()} name={first.get_name()}")
@@ -81,7 +84,7 @@ def main():
         log("connect() returned without error")
     except Exception as e:
         log(f"connect() raised: {e!r}")
-        return
+        return 1
 
     log("waiting up to 10s for connection event")
     t0 = time.time()
@@ -95,11 +98,11 @@ def main():
         log(f"is_connected() = {is_conn}")
     except Exception as e:
         log(f"is_connected raised: {e!r}")
-        return
+        return 1
 
     if not connected["hit"]:
         log("✗ connection event never fired")
-        return
+        return 1
 
     log("subscribing to eeg/resistances")
     n_eeg = {"n": 0}
@@ -109,23 +112,65 @@ def main():
             log(f">> eeg callback: {eeg.get_samples_count()} samples, total={n_eeg['n']}")
     device.set_on_eeg(on_eeg)
 
+    log("subscribing to resistances")
+    n_res = {"n": 0}
+    last_res = {}
+    def on_res(dev, res):
+        n_res["n"] += 1
+        for i in range(len(res)):
+            last_res[res.get_channel_name(i)] = res.get_value(i)
+        if n_res["n"] <= 3:
+            log(f">> resistances callback #{n_res['n']}: {len(res)} ch, e.g. {dict(list(last_res.items())[:4])}")
+    device.set_on_resistances(on_res)
+
+    log("subscribing to PPG via Cardio")
+    n_ppg = {"n": 0}
+    def on_ppg(cardio, ppg):
+        n_ppg["n"] += len(ppg)
+        if n_ppg["n"] < 200:
+            log(f">> ppg callback: {len(ppg)} samples, total={n_ppg['n']}")
+    cardio = Cardio(device, lib)
+    cardio.set_on_ppg(on_ppg)
+
+    log("subscribing to MEMS")
+    n_mems = {"n": 0}
+    def on_mems(mems, mems_data):
+        n_mems["n"] += len(mems_data)
+        if n_mems["n"] < 200:
+            log(f">> mems callback: {len(mems_data)} samples, total={n_mems['n']}")
+    mems = MEMS(device, lib)
+    mems.set_on_update(on_mems)
+
     log("device.start()")
     try:
         device.start()
         log("start() OK")
     except Exception as e:
         log(f"start() raised: {e!r}")
-        return
+        return 1
 
-    log("pumping update() for 8s to collect some EEG")
+    log("pumping update() for 8s to collect EEG/PPG/MEMS/resistances")
     t0 = time.time()
     while time.time() - t0 < 8:
         locator.update()
         time.sleep(0.04)
 
     log(f"total EEG samples received: {n_eeg['n']}")
+    log(f"total PPG samples received: {n_ppg['n']}")
+    log(f"total MEMS samples received: {n_mems['n']}")
+    log(f"resistance callbacks received: {n_res['n']} last={dict(last_res)}")
+    if n_ppg["n"] == 0:
+        log("⚠ no PPG data — check sensor contact")
+    if n_mems["n"] == 0:
+        log("⚠ no MEMS data")
+    if n_res["n"] == 0:
+        log("⚠ no resistances data")
+    if n_eeg["n"] == 0:
+        log("✗ no EEG data — diagnostic FAILED")
+        return 1
     log("diagnostic complete")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

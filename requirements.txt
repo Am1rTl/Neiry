@@ -1,0 +1,11 @@
+# Neiry Capsule WebApp — runtime dependencies.
+# Versions pinned from .venv via `pip freeze` (2026-10-27).
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+websockets==17.3
+numpy==2.5.4  # /api/spectrum (compute_psd); без него эндпоинт вернёт 503
+
+# Optional (offline analysis / export, not needed by the server):
+# pandas      # session_loader: DataFrame-выгрузка сессий
+# pyedflib    # edf_export: экспорт сессий в EDF
+# matplotlib  # examples/plot_session: графики
