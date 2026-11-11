@@ -57,9 +57,15 @@ class ElectrodeContact:
             all_good = all_good and ok
             safe.append({'channel': name, 'ohm': ohm, 'good': ok,
                          'preferred': ohm is not None and ohm < self.options.preferred_ohm})
-        # A repeated/older callback is not proof of new stable contact.
-        if self._last_received is not None and timestamp <= self._last_received:
-            all_good = False
+        # A repeated/older callback is not evidence of a new measurement.
+        # Long pauses invalidate the previous continuous-contact interval,
+        # even when the first measurement after resuming looks good.
+        if self._last_received is not None:
+            if timestamp <= self._last_received:
+                all_good = False
+            elif timestamp - self._last_received > self.options.stale_seconds:
+                self._good_since = None
+                self._good_updates = 0
         self._last_received = timestamp
         self._values = safe
         if all_good:

@@ -51,6 +51,16 @@ class TestContactTracker(unittest.TestCase):
         self.tracker.add(ROWS,now=self.now-99)
         self.assertNotEqual(self.tracker.snapshot(connected=True,now=self.now)['state'],'ready')
 
+    def test_new_reading_after_long_gap_cannot_resurrect_old_good_contact(self):
+        settled(self.tracker, self.now)
+        self.assertTrue(self.tracker.snapshot(connected=True, now=self.now)['ready'])
+        resumed_at = self.now + self.tracker.options.stale_seconds + 1
+        self.tracker.add(ROWS, now=resumed_at)
+        snapshot = self.tracker.snapshot(connected=True, now=resumed_at)
+        self.assertEqual(snapshot['state'], 'settling')
+        self.assertFalse(snapshot['calibration_allowed'])
+        self.assertEqual(snapshot['sample_count'], 1)
+
     def test_empty_nan_zero_infinite_channels_not_ready(self):
         for vals in ([],[ROWS[0]],
                      [{**ROWS[0],'value':0},ROWS[1]],
