@@ -59,6 +59,12 @@ class Settings:
     MAX_CSV_MB: float = 500.0       # ротация сессии по размеру eeg.csv
     SKIN_WARN_OHM: float = 500e3  # импеданс выше — канал «так себе»
     SKIN_BAD_OHM: float = 1e6     # импеданс выше — контакта нет
+    CONTACT_READY_OHM: float = 1e6   # по умолчанию до 1000 кОм в шкале сопротивления SDK
+    CONTACT_STABLE_SECONDS: float = 6.0
+    CONTACT_STALE_SECONDS: float = 4.5
+    CONTACT_MIN_UPDATES: int = 3
+    CONTACT_MIN_CHANNELS: int = 2
+    METRIC_STALE_SECONDS: float = 8.0
     EEG_MIN_SAMPLES: int = 100  # пороги sensor_status: сколько точек считать «есть сигнал»
     PPG_MIN_SAMPLES: int = 50
     MEMS_MIN_SAMPLES: int = 100
@@ -87,6 +93,12 @@ class Settings:
             MAX_CSV_MB=_env_float("MAX_CSV_MB", 500.0),
             SKIN_WARN_OHM=_env_float("SKIN_WARN_OHM", 500e3),
             SKIN_BAD_OHM=_env_float("SKIN_BAD_OHM", 1e6),
+            CONTACT_READY_OHM=_env_float("CONTACT_READY_OHM", 1e6),
+            CONTACT_STABLE_SECONDS=_env_float("CONTACT_STABLE_SECONDS", 6.0),
+            CONTACT_STALE_SECONDS=_env_float("CONTACT_STALE_SECONDS", 4.5),
+            CONTACT_MIN_UPDATES=_env_int("CONTACT_MIN_UPDATES", 3),
+            CONTACT_MIN_CHANNELS=_env_int("CONTACT_MIN_CHANNELS", 2),
+            METRIC_STALE_SECONDS=_env_float("METRIC_STALE_SECONDS", 8.0),
             EEG_MIN_SAMPLES=_env_int("EEG_MIN_SAMPLES", 100),
             PPG_MIN_SAMPLES=_env_int("PPG_MIN_SAMPLES", 50),
             MEMS_MIN_SAMPLES=_env_int("MEMS_MIN_SAMPLES", 100),

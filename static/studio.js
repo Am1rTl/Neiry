@@ -37,7 +37,7 @@
                  `Устройство: ${d.connected?'подключено':'не подключено'} · Запись: ${d.recording?'активна':'не запущена'}`}</span>
        ${active?`<progress value="${Math.max(0,(phase.duration_s-s.remaining_s))}" max="${phase.duration_s}" style="width:100%"></progress>`:''}</div>`;
       $$('[data-studio^="start:"]').forEach(b=>b.disabled=active||!d.connected||!d.recording);
-      const rec=$('[data-studio="record"]');if(rec)rec.disabled=!!d.recording||!d.connected||d.stream_stale;
+      const rec=$('[data-studio="record"]');if(rec)rec.disabled=!!d.recording||!d.connected||!d.validity?.eeg||d.stream_stale;
       const abort=$('[data-studio="abort"]');if(abort)abort.disabled=!active;
     }catch(e){const area=$('#studio-exp-state');if(area)area.textContent=e.message;}
   }

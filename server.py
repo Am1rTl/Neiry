@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import find_sdk_dir, settings, setup_logging
 from json_utils import finite_json
+from contact_quality import ElectrodeContact, ContactOptions
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -310,6 +311,18 @@ class State:
         self.latest_phy: dict[str, Any] | None = None
         self.latest_prod: dict[str, Any] | None = None
         self.latest_resistances: list[dict[str, Any]] = []
+        self.contact_tracker = ElectrodeContact(ContactOptions(
+            ready_ohm=settings.CONTACT_READY_OHM,
+            preferred_ohm=settings.SKIN_WARN_OHM,
+            stable_seconds=settings.CONTACT_STABLE_SECONDS,
+            stale_seconds=settings.CONTACT_STALE_SECONDS,
+            min_updates=settings.CONTACT_MIN_UPDATES,
+            min_channels=settings.CONTACT_MIN_CHANNELS,
+        ))
+        # Monotonic timestamps identify stale SDK estimates; a fresh battery
+        # event does NOT make earlier pulse/attention readings fresh.
+        self.metrics_updated_at: dict[str, float] = {}
+
         self.latest_calibration: dict[str, Any] | None = None
 
         self.eeg: deque[list[float]] = deque(maxlen=EEG_WINDOW)
@@ -342,6 +355,48 @@ _STOP = threading.Event()
 
 # Момент старта процесса — для /api/health uptime.
 _STARTED_AT = time.time()
+
+
+def _stamp_metric(name: str) -> None:
+    """Called while STATE_LOCK is held by the corresponding SDK callback."""
+    S.metrics_updated_at[name] = time.monotonic()
+
+
+def _contact_locked() -> dict[str, Any]:
+    return S.contact_tracker.snapshot(connected=(S._device_ready and S.status == "connected"))
+
+
+def _validity_locked(contact: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Data can stream with the band off-head. Only validated values enter cards.
+
+    Physical wear itself cannot be proven by an SDK resistance callback.
+    Historical/replay streams are labelled separately, never called live verified.
+    """
+    contact = contact or _contact_locked()
+    now = time.monotonic()
+    def fresh(name: str, age: float | None = None) -> bool:
+        stamp = S.metrics_updated_at.get(name)
+        return stamp is not None and 0 <= now - stamp <= (age or settings.METRIC_STALE_SECONDS)
+    eeg = bool(contact["ready"] and fresh("eeg", settings.CONTACT_STALE_SECONDS)
+               and len(S.eeg) >= settings.EEG_MIN_SAMPLES)
+    c = S.latest_cardio or {}
+    cardio = bool(contact["ready"] and fresh("cardio") and fresh("ppg")
+                  and c.get("skinContact") is True and c.get("metricsAvailable") is True
+                  and not c.get("hasArtifacts") and not c.get("motionArtifacts")
+                  and isinstance(c.get("heartRate"), (int,float))
+                  and 30 <= c["heartRate"] <= 220)
+    sdk = eeg and bool(S.calibrated)
+    return {
+        "raw_source": "Capsule SDK", "contact_verified": bool(contact["ready"]),
+        "eeg": eeg, "ppg": cardio, "cardio": cardio,
+        "emotions": sdk and fresh("emotions"), "phy": sdk and fresh("phy"),
+        "prod": sdk and fresh("prod"), "nfb": sdk and fresh("nfb"),
+        "source_mode": "live" if S._device_ready and S.status == "connected" else "none",
+        "notice": ("Оценки SDK скрыты: контакт не подтверждён или данные устарели. "
+                   "Сырые отсчёты могут поступать без надетой повязки."
+                   if not contact["ready"] else
+                   "Контакт электродов подтверждён по сопротивлению SDK, но это не доказывает качество всех отсчётов."),
+    }
 
 
 def _touch_data() -> None:
@@ -495,23 +550,24 @@ def on_resistances(device, res) -> None:
             except Exception:
                 is_inf = False
             if is_inf:
-                chart_vals.append(1e6)
+                chart_vals.append(float("nan"))
             else:
                 try:
                     chart_vals.append(float(v))
                 except Exception:
-                    chart_vals.append(0.0)
+                    chart_vals.append(float("nan"))
             latest.append({"channel": name, "value": v, "is_inf": is_inf})
         with STATE_LOCK:
             S.res_channel_names = names
             S.latest_resistances = latest
+            S.contact_tracker.add(latest)  # only real SDK callbacks count
             S.resistances_hist.append(chart_vals)
             S.resistances_t.append(S.now())
             _touch_data()
         if RECORDER:
             RECORDER.record_resistances({nme: (float("nan") if is_i else float(v))
                                          for nme, v, is_i in zip(names, raw, [r["is_inf"] for r in latest])})
-        preview = ", ".join(f"{n}={v:.0f}kΩ" if not is_i else f"{n}=INF" for n, v, is_i in zip(names, raw, [r["is_inf"] for r in latest]))
+        preview = ", ".join(f"{n}={float(v)/1000:.0f}kΩ" if not is_i else f"{n}=INF" for n, v, is_i in zip(names, raw, [r["is_inf"] for r in latest]))
         _cb_log("res", f"ch={n} {preview}")
     except BaseException as exc:
         log.warning("[cb] on_resistances EXC: %r", exc)
@@ -536,6 +592,7 @@ def on_eeg(device, eeg) -> None:
                 S.eeg_t.append(now - ts_back)
                 rec_rows.append(sample)
                 rec_ts.append(unix_now - ts_back)
+            _stamp_metric("eeg")
             _touch_data()
         if RECORDER:
             RECORDER.record_eeg(rec_rows, rec_ts)
@@ -590,6 +647,7 @@ def on_ppg(cardio, ppg) -> None:
                 S.ppg_t.append(now - ts_back)
                 rec_vals.append(float(ppg.get_value(i)))
                 rec_ts.append(unix_now - ts_back)
+            _stamp_metric("ppg")
             _touch_data()
         if RECORDER:
             RECORDER.record_ppg(rec_vals, rec_ts)
@@ -604,6 +662,7 @@ def on_emotions_states(emotion, states) -> None:
         d["t"] = S.now()
         with STATE_LOCK:
             S.latest_emotions = d
+            _stamp_metric("emotions")
             S.emotions_hist.append(d)
             _touch_data()
         if RECORDER:
@@ -627,6 +686,7 @@ def on_cardio_indexes(cardio, indexes) -> None:
         }
         with STATE_LOCK:
             S.latest_cardio = d
+            _stamp_metric("cardio")
             S.cardio_hist.append(d)
             _touch_data()
         if RECORDER:
@@ -650,6 +710,7 @@ def on_phy_states(phy, states) -> None:
         }
         with STATE_LOCK:
             S.latest_phy = d
+            _stamp_metric("phy")
             _touch_data()
         if RECORDER:
             RECORDER.record_metric("phy", d)
@@ -703,6 +764,7 @@ def on_prod_metrics(prod, metrics) -> None:
         }
         with STATE_LOCK:
             S.latest_prod = d
+            _stamp_metric("prod")
             _touch_data()
         if RECORDER:
             RECORDER.record_metric("productivity", d)
@@ -723,6 +785,7 @@ def on_nfb_user_state(nfb, user_state) -> None:
         }
         with STATE_LOCK:
             S.nfb_hist.append(d)
+            _stamp_metric("nfb")
             _touch_data()
         if RECORDER:
             RECORDER.record_metric("nfb", d)
@@ -798,6 +861,8 @@ def _clear_live_connection(reason: str, status: str = "idle", *, preserve_device
         S.latest_emotions = S.latest_cardio = S.latest_phy = S.latest_prod = None
         S.latest_resistances = []
         S.res_channel_names = []
+        S.contact_tracker.reset()
+        S.metrics_updated_at.clear()
         S.last_data_at = 0.0
         for key in ("eeg", "eeg_t", "ppg", "ppg_t", "mems_acc", "mems_gyro", "mems_t",
                     "resistances_hist", "resistances_t", "emotions_hist", "cardio_hist", "nfb_hist"):
@@ -1151,6 +1216,12 @@ def capsule_worker() -> None:
                     S.calibration_phase = "failed"
                     S.status_message = "Калибровка превысила лимит времени: проверьте контакт ЭЭГ."
             if ready and cal_start and cal is not None and phase in ("ready", "complete", "failed", "skipped"):
+                with STATE_LOCK:
+                    contact_still_ready = _contact_locked()["calibration_allowed"]
+                if not contact_still_ready:
+                    with STATE_LOCK:
+                        S.status_message = "Калибровка не началась: контакт электродов утрачен."
+                    continue
                 try:
                     # Baseline algorithms are also opt-in, never run on discovery or connection.
                     for processor in baseline_handlers:
@@ -1200,6 +1271,11 @@ def _on_calibration(calibrator, data) -> None:
               "lowerFrequency", "upperFrequency"]}
         with STATE_LOCK:
             if not (S._device_ready and S.status == "connected" and S.calibration_phase == "running"):
+                return
+            if not _contact_locked()["calibration_allowed"]:
+                S.calibration_phase = "failed"
+                S.calibrated = False
+                S.status_message = "Калибровка завершилась при плохом контакте. Повторите после стабилизации."
                 return
             S.latest_calibration = d
             S.calibrated = True
@@ -1344,7 +1420,9 @@ def _device_status_payload() -> dict[str, Any]:
             "auto_reconnect": S.auto_reconnect,
             "last_device_serial": S.last_device_serial,
             "calibration_phase": S.calibration_phase if ready else "unavailable",
-            "calibration_available": ready and S._calibrator is not None,
+            "contact": (contact := _contact_locked()),
+            "validity": _validity_locked(contact),
+            "calibration_available": ready and S._calibrator is not None and contact["calibration_allowed"],
             "calibrated": S.calibrated if ready else False,
             "recording": RECORDER.session_id if ready and RECORDER and RECORDER.active else None,
             "data_age_s": round(age, 2) if ready and age is not None else None,
@@ -1421,6 +1499,8 @@ async def api_calibration_start() -> dict[str, Any]:
             raise HTTPException(503, "Калибратор недоступен для этого устройства.")
         if S.calibration_phase == "running":
             raise HTTPException(409, "Калибровка уже выполняется.")
+        if not _contact_locked()["calibration_allowed"]:
+            raise HTTPException(409, "Контакт электродов ещё не стабилен. Наденьте повязку, дождитесь измерений ниже порога по всем каналам и повторите.")
         S._calibration_requested = True
     return {"accepted": True, "calibration_phase": "queued"}
 
@@ -1559,6 +1639,14 @@ async def api_records_delete(session_id: str) -> dict[str, Any]:
     return await asyncio.to_thread(store.delete, session_id)
 
 
+@app.get("/api/live/contact")
+async def api_live_contact() -> dict[str, Any]:
+    with STATE_LOCK:
+        contact = _contact_locked()
+        return {"contact": contact, "validity": _validity_locked(contact),
+                "calibration_phase": S.calibration_phase}
+
+
 @app.get("/api/live/quality")
 async def api_live_quality() -> dict[str, Any]:
     """Advisory engineering flags; works for replay, too."""
@@ -1588,8 +1676,9 @@ async def api_recording_start() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="recording module unavailable")
     if not _live_connected():
         raise HTTPException(status_code=409, detail="Сначала подключите устройство и дождитесь живых данных.")
-    if (_data_age_s() is None or _data_age_s() > LOST_TIMEOUT_S):
-        raise HTTPException(status_code=409, detail="Данные с повязки пока не поступают: проверьте контакт и поток перед записью.")
+    with STATE_LOCK:
+        if not _validity_locked()["eeg"]:
+            raise HTTPException(status_code=409, detail="Для записи наденьте повязку и дождитесь свежего ЭЭГ и стабильного контакта электродов.")
     if RECORDER is not None and RECORDER.active:
         raise HTTPException(status_code=409, detail="recording already active")
     with STATE_LOCK:
@@ -1655,6 +1744,8 @@ async def api_hrv(window_s: float = Query(30.0, ge=5.0, le=300.0)) -> dict[str, 
     if compute_hrv is None:
         raise HTTPException(status_code=503, detail="analytics module unavailable")
     with STATE_LOCK:
+        if not (REPLAY and REPLAY.active) and not _validity_locked()["cardio"]:
+            raise HTTPException(status_code=409, detail="ФПГ/пульс не подтверждены контактом и SDK, HRV сейчас недоступна.")
         sr = S.ppg_sample_rate or DEFAULT_PPG_SR
         n = max(1, int(window_s * max(sr, 1)))
         vals = list(S.ppg)[-n:]
@@ -1748,12 +1839,14 @@ async def api_buffers() -> dict[str, Any]:
             "mems_gyro_samples": len(S.mems_gyro),
             "mems_gyro_last": (S.mems_gyro[-1] if S.mems_gyro else None),
             "resistances": S.latest_resistances,
-            "emotions": S.latest_emotions,
-            "cardio": S.latest_cardio,
-            "phy": S.latest_phy,
-            "prod": S.latest_prod,
-            "nfb_history": len(S.nfb_hist),
-            "nfb_last": (S.nfb_hist[-1] if S.nfb_hist else None),
+            "contact": (contact := _contact_locked()),
+            "validity": (validity := _validity_locked(contact)),
+            "emotions": S.latest_emotions if validity["emotions"] else None,
+            "cardio": S.latest_cardio if validity["cardio"] else None,
+            "phy": S.latest_phy if validity["phy"] else None,
+            "prod": S.latest_prod if validity["prod"] else None,
+            "nfb_history": len(S.nfb_hist) if validity["nfb"] else 0,
+            "nfb_last": (S.nfb_hist[-1] if S.nfb_hist and validity["nfb"] else None),
         }
 
 
@@ -1862,6 +1955,24 @@ def _sensor_status(S) -> dict:
     return out
 
 
+def _verified_sensor_status(source: State, validity: dict[str, Any], contact: dict[str, Any]) -> dict[str, Any]:
+    """Distinguish *stream arrived* from *wear/contact verified* in live UI."""
+    sensors = _sensor_status(source)
+    connected = source._device_ready and source.status == "connected"
+    if connected:
+        sensors["skin"] = {**sensors["skin"], "state": "ok" if contact["ready"] else "warn",
+                           "reason": contact["message"], "contact_state": contact["state"]}
+        for key in ("eeg", "ppg"):
+            if not validity[key]:
+                sensors[key] = {**sensors[key], "state": "warn" if sensors[key]["n"] else "none",
+                                "reason": "Сырые отсчёты без подтверждённого контакта"}
+        for key in ("cardio", "emotions", "phy", "prod", "nfb"):
+            if not validity.get(key, False):
+                sensors[key] = {"state": "warn" if sensors[key]["state"] != "none" else "none",
+                                "reason": "Результат скрыт до проверки контакта, калибровки и свежести"}
+    return sensors
+
+
 def _sanitize(obj):
     if isinstance(obj, dict):
         for k in list(obj.keys()):
@@ -1936,6 +2047,11 @@ def _build_tick_snapshot() -> dict[str, Any]:
     """Общая часть тика: строится ОДИН раз за тик под одним локом."""
     with STATE_LOCK:
         age = _data_age_s()
+        contact = _contact_locked()
+        validity = _validity_locked(contact)
+        # In replay we surface archived estimates *as archived*, not fresh SDK
+        # readings. Never forward unverified live estimates as brain metrics.
+        archived = bool(REPLAY and REPLAY.active and not S._device_ready)
         return {
             "connected": S._device_ready and S.status == "connected",
             "t": S.now(),
@@ -1956,15 +2072,18 @@ def _build_tick_snapshot() -> dict[str, Any]:
             "eeg_sr": S.eeg_sample_rate,
             "ppg_sr": S.ppg_sample_rate,
             "mems_sr": S.mems_sample_rate,
-            "emotions": S.latest_emotions,
-            "cardio": S.latest_cardio,
-            "phy": S.latest_phy,
-            "prod": S.latest_prod,
+            "contact": contact,
+            "validity": {**validity, "source_mode": "replay" if archived else validity["source_mode"]},
+            "emotions": S.latest_emotions if (archived or validity["emotions"]) else None,
+            "cardio": S.latest_cardio if (archived or validity["cardio"]) else None,
+            "phy": S.latest_phy if (archived or validity["phy"]) else None,
+            "prod": S.latest_prod if (archived or validity["prod"]) else None,
             "resistances": S.latest_resistances,
             "resistances_hist": list(S.resistances_hist)[-128:],
+            "resistances_times": list(S.resistances_t)[-128:],
             "res_channel_names": S.res_channel_names,
-            "nfb": list(S.nfb_hist)[-128:],
-            "sensor_status": _sensor_status(S),
+            "nfb": list(S.nfb_hist)[-128:] if (archived or validity["nfb"]) else [],
+            "sensor_status": _verified_sensor_status(S, validity, contact),
             "eeg_t": list(S.eeg_t),
             "eeg_s": list(S.eeg),
             "ppg_t": list(S.ppg_t),
@@ -2007,9 +2126,13 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
     if delta.is_first:
         delta.is_first = False
         with STATE_LOCK:
-            cardio_hist_list = list(S.cardio_hist)
-            emotions_hist_list = list(S.emotions_hist)
-            nfb_hist_list = list(S.nfb_hist)
+            # Historic SDK scores are not guaranteed to have had electrode
+            # contact at their original timestamps. Do not import them into a
+            # supposedly verified live chart; replay is labelled separately.
+            archived = bool(REPLAY and REPLAY.active and not S._device_ready)
+            cardio_hist_list = list(S.cardio_hist) if archived else []
+            emotions_hist_list = list(S.emotions_hist) if archived else []
+            nfb_hist_list = list(S.nfb_hist) if archived else []
     else:
         cardio_hist_list = []
         emotions_hist_list = []
@@ -2032,6 +2155,8 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "calibration": snap["calibration"],
         "calibration_phase": snap["calibration_phase"],
         "calibration_started_at": snap["calibration_started_at"],
+        "contact": snap["contact"],
+        "validity": snap["validity"],
         "eeg_channels": snap["eeg_channels"],
         "eeg_sr": snap["eeg_sr"],
         "ppg_sr": snap["ppg_sr"],
@@ -2042,6 +2167,7 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "prod": snap["prod"],
         "resistances": snap["resistances"],
         "resistances_hist": snap["resistances_hist"],
+        "resistances_times": snap["resistances_times"],
         "res_channel_names": snap["res_channel_names"],
         "nfb": snap["nfb"],
         "sensor_status": snap["sensor_status"],

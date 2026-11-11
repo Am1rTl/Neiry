@@ -208,6 +208,16 @@ class TestFakeSdkLifecycle(unittest.TestCase):
                         self.assertEqual(client.get('/api/device/status').json()['serial'],'BB-02')
                         self.assertFalse(client.get('/api/device/status').json()['calibrated'])
                         self.assertEqual(FakeCalibrator.instances[-1].started,0,'Calibration must be opt-in')
+                        # A connected band is NOT necessarily worn. Mimic real
+                        # resistance callbacks, never fake contact in production.
+                        self.assertEqual(client.post('/api/device/calibration/start').status_code,409)
+                        now=time.monotonic()
+                        rows=[{'channel':'O1-T3','value':350_000,'is_inf':False},
+                              {'channel':'O2-T4','value':420_000,'is_inf':False}]
+                        for timestamp in (now-7.0,now-3.0,now-0.01):
+                            with server.STATE_LOCK:
+                                server.S.contact_tracker.add(rows,now=timestamp)
+                        self.assertTrue(client.get('/api/device/status').json()['contact']['ready'])
                         self.assertEqual(client.post('/api/device/calibration/start').status_code,200)
                         self.assertTrue(until(lambda:FakeCalibrator.instances[-1].started==1))
                         self.assertEqual(client.post('/api/device/calibration/start').status_code,409)
