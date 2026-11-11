@@ -28,6 +28,26 @@ class FakeEntry:
     def get_name(self):return self.name
 
 
+class DangerousDeviceInfoList:
+    """Model vendor wrapper: it crashes if Python probes the first invalid index.
+
+    Importantly, there is NO __iter__ and NO IndexError termination.
+    A real clCDeviceInfoList_GetDeviceInfo can SIGSEGV on that invalid access.
+    """
+    def __init__(self, entries):
+        self.entries = entries
+        self.indices = []
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __getitem__(self, index):
+        self.indices.append(index)
+        if index >= len(self.entries) or index < 0:
+            raise AssertionError("OUT-OF-BOUNDS NATIVE DEVICE ACCESS")
+        return self.entries[index]
+
+
 class FakeLocator:
     update_threads = set()
     instances = []
@@ -42,7 +62,7 @@ class FakeLocator:
         self.updates+=1
         if self.pending:
             self.pending=False
-            self.callback(self,[FakeEntry('AA-01','Neiry Alpha'),FakeEntry('BB-02','Neiry Beta')],0)
+            self.callback(self,DangerousDeviceInfoList([FakeEntry('AA-01','Neiry Alpha'),FakeEntry('BB-02','Neiry Beta')]),0)
         for device in FakeDevice.instances:
             if device.connecting and not device.connected:
                 device.pending_updates-=1
@@ -102,6 +122,28 @@ def until(predicate, timeout=3):
         if predicate():return True
         time.sleep(.05)
     return False
+
+
+class TestSdkNativeSafety(unittest.TestCase):
+    def setUp(self):
+        self.old = server.S
+        server.S = server.State()
+        server.S.scan_active = True
+
+    def tearDown(self):
+        server.S = self.old
+
+    def test_opaque_sdk_list_never_probe_index_equal_length(self):
+        entries = DangerousDeviceInfoList([FakeEntry('AA','First'),FakeEntry('BB','Second')])
+        server._make_device_list_handler()(None, entries, 0)
+        self.assertEqual(entries.indices, [0, 1])
+        self.assertEqual(len(server.S.discovered_devices), 2)
+
+    def test_zero_devices_never_access_null_pointer(self):
+        entries = DangerousDeviceInfoList([])
+        server._make_device_list_handler()(None, entries, 0)
+        self.assertEqual(entries.indices, [])
+        self.assertEqual(server.S.discovered_devices, [])
 
 
 class TestNoDevice(unittest.TestCase):

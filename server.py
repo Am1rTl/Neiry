@@ -822,7 +822,13 @@ def _make_device_list_handler(locator=None, lib=None):
     def on_devices(_locator, info, fail_reason):
         found = []
         try:
-            for entry in info:
+            # Capsule SDK DeviceInfoList exposes __len__ and __getitem__ but
+            # does NOT implement bounds checking. Python's implicit sequence
+            # iterator probes info[len(info)], resulting in a NULL native
+            # DeviceInfo pointer and SIGSEGV in clCDeviceInfo_GetName.
+            # Never use ``for entry in info`` or ``list(info)`` here.
+            for index in range(len(info)):
+                entry = info[index]
                 serial = str(entry.get_serial()).strip()
                 if serial and serial not in {d["serial"] for d in found}:
                     found.append({"serial": serial, "name": str(entry.get_name() or "Neiry Headband")})
@@ -894,7 +900,9 @@ def capsule_worker() -> None:
     try:
         cap = Capsule(LIB_PATH)
         lib = cap.get_lib()
-        locator = DeviceLocator("Logs", lib)
+        sdk_log_dir = Path(HERE) / ".runtime" / "capsule-logs"
+        sdk_log_dir.mkdir(parents=True, exist_ok=True)
+        locator = DeviceLocator(str(sdk_log_dir), lib)
         locator.set_on_devices_list(_make_device_list_handler(locator, lib))
         with STATE_LOCK:
             S.library_version = str(cap.get_version())
@@ -1539,11 +1547,37 @@ async def api_records_delete(session_id: str) -> dict[str, Any]:
     if RECORDER is not None and RECORDER.active and RECORDER.session_id == session_id:
         raise HTTPException(status_code=409, detail="session is being recorded")
     target = _session_path(session_id)
-    try:
-        shutil.rmtree(target)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"delete failed: {exc}")
-    return {"deleted": session_id}
+    if REPLAY is not None and REPLAY.active and REPLAY.status()['session_id'] == session_id:
+        raise HTTPException(status_code=409, detail="Остановите replay перед удалением")
+    if target.parent == LAB_STORE.records:
+        store = LAB_STORE
+    else:
+        # Compatibility with installations/test harnesses that change RECORDS_DIR
+        # at runtime; do not accidentally remove a session from another directory.
+        from lab_api import AnalysisStore
+        store = AnalysisStore(target.parent, LAB_STORE.reports, lambda: RECORDER.session_id if RECORDER and RECORDER.active else None)
+    return await asyncio.to_thread(store.delete, session_id)
+
+
+@app.get("/api/live/quality")
+async def api_live_quality() -> dict[str, Any]:
+    """Advisory engineering flags; works for replay, too."""
+    from live_quality import assess_eeg
+    with STATE_LOCK:
+        samples = [list(x) for x in list(S.eeg)[-int(4*(S.eeg_sample_rate or 250)):]]
+        names=list(S.channel_names)
+        sr=S.eeg_sample_rate or DEFAULT_EEG_SR
+    return finite_json(await asyncio.to_thread(assess_eeg, samples, sr, names))
+
+
+@app.get("/api/live/spectrogram")
+async def api_live_spectrogram(seconds: float = Query(20, ge=3, le=30)) -> dict[str, Any]:
+    from live_quality import live_spectrogram
+    with STATE_LOCK:
+        sr=S.eeg_sample_rate or DEFAULT_EEG_SR
+        values=[list(x) for x in list(S.eeg)[-int(seconds*sr):]]
+        names=list(S.channel_names)
+    return finite_json(await asyncio.to_thread(live_spectrogram, values, sr, names, seconds))
 
 
 @app.post("/api/recording/start")
@@ -1554,6 +1588,8 @@ async def api_recording_start() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="recording module unavailable")
     if not _live_connected():
         raise HTTPException(status_code=409, detail="Сначала подключите устройство и дождитесь живых данных.")
+    if (_data_age_s() is None or _data_age_s() > LOST_TIMEOUT_S):
+        raise HTTPException(status_code=409, detail="Данные с повязки пока не поступают: проверьте контакт и поток перед записью.")
     if RECORDER is not None and RECORDER.active:
         raise HTTPException(status_code=409, detail="recording already active")
     with STATE_LOCK:
@@ -1666,6 +1702,30 @@ async def api_replay_stop() -> dict[str, Any]:
     if REPLAY is None:
         raise HTTPException(status_code=503, detail="playback module unavailable")
     return REPLAY.stop()
+
+
+@app.post("/api/replay/pause")
+async def api_replay_pause() -> dict[str, Any]:
+    if REPLAY is None:raise HTTPException(503, "Replay недоступен")
+    try:return REPLAY.pause()
+    except RuntimeError as exc:raise HTTPException(409,str(exc))
+
+
+@app.post("/api/replay/resume")
+async def api_replay_resume() -> dict[str, Any]:
+    if REPLAY is None:raise HTTPException(503, "Replay недоступен")
+    try:return REPLAY.resume()
+    except RuntimeError as exc:raise HTTPException(409,str(exc))
+
+
+@app.post("/api/replay/seek")
+async def api_replay_seek(payload: dict[str, Any]) -> dict[str, Any]:
+    if REPLAY is None:raise HTTPException(503,"Replay недоступен")
+    try:
+        offset=float(payload.get('offset_s',-1))
+        return REPLAY.seek(offset)
+    except (TypeError,ValueError) as exc:raise HTTPException(400,str(exc))
+    except RuntimeError as exc:raise HTTPException(409,str(exc))
 
 
 @app.get("/api/replay/status")
@@ -2091,6 +2151,31 @@ LAB_ROUTER, LAB_STORE = create_lab_router(
     Path(RECORDS_DIR), Path(HERE) / "reports", Path(STATIC_DIR),
     lambda: RECORDER.session_id if RECORDER is not None and RECORDER.active else None)
 app.include_router(LAB_ROUTER)
+
+from experiments import ExperimentManager, TEMPLATES
+EXPERIMENTS = ExperimentManager(lambda: RECORDER)
+
+@app.get("/api/experiments/templates")
+async def experiment_templates():
+    return {"templates": TEMPLATES, "notice":"Маркеры протокола используют серверное время; не аппаратные триггеры."}
+
+@app.get("/api/experiments/status")
+async def experiment_status():
+    return EXPERIMENTS.status()
+
+@app.post("/api/experiments/start")
+async def experiment_start(payload: dict[str, Any]):
+    if not _live_connected() or RECORDER is None or not RECORDER.active:
+        raise HTTPException(409,"Сначала подключите повязку и начните запись")
+    try:
+        return EXPERIMENTS.start(payload.get('protocol_id',''), payload.get('phases'))
+    except ValueError as exc:raise HTTPException(400,str(exc))
+    except RuntimeError as exc:raise HTTPException(409,str(exc))
+
+@app.post("/api/experiments/stop")
+async def experiment_stop():
+    return EXPERIMENTS.stop()
+
 
 
 if __name__ == "__main__":
