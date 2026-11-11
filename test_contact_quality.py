@@ -137,7 +137,11 @@ class TestLiveValidity(unittest.TestCase):
             server.S.latest_cardio['skinContact']=False
             self.assertFalse(server._validity_locked()['cardio'])
             server.S.latest_cardio['skinContact']=True
+            # SDK may publish psychophysiological estimates far less often than EEG.
+            # A 20-second gap is normal; two minutes of silence is not a 0.1s dropout.
             server.S.metrics_updated_at['emotions']=time.monotonic()-20
+            self.assertTrue(server._validity_locked()['emotions'])
+            server.S.metrics_updated_at['emotions']=time.monotonic()-181
             self.assertFalse(server._validity_locked()['emotions'])
 
     def test_failed_contact_resets_after_disconnect(self):

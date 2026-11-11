@@ -9,6 +9,10 @@
   const n = v => v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
   const fmt = (v, digits=1) => n(v) == null ? '—' : Number(v).toLocaleString('ru-RU',{maximumFractionDigits:digits});
   const blank = '—';
+  const graphCore = window.NeuroLiveChartsCore;
+  let calibrationAudio = null, calibrationPulse = null, calibrationSoundEnabled = false;
+  let calibrationSoundPhase = 'idle', lastCalibrationSeconds = 0, calibrationDialog = null;
+  let smoothScale = true, yRanges = {}, previousTickTime = 0;
   let ctx = {}, view = null, preview = false, pollTimer = null, ws = null, wsRetry = null, wsEpoch = 0;
   let status = null, replay = {active:false}, charts = [], chartClock = 0, statusFingerprint = '', sessionRows = [], liveRange = 15, metricRange = 300, allowRaw = false;
   const samples = {};
@@ -54,7 +58,7 @@
       const value=n(r.kohm),max=n(c.ready_below_kohm)||1000;
       const fill=value===null?0:Math.max(0,Math.min(100,value/max*100));
       return `<div class="contact-electrode ${r.good?'good':'bad'}">
-         <div class="contact-electrode-head"><strong>${esc(r.channel||`Электрод ${i+1}`)}</strong><span>${value===null?'Нет измерения':`${fmt(value,1)} кОм${c.state==='stale'?' · устарело':''}`}</span></div>
+         <div class="contact-electrode-head"><strong>${esc(r.channel||`Электрод ${i+1}`)}</strong><span>${value===null?'Нет измерения':`${fmt(value,1)} кОм${c.state==='stale'?' · нет свежих измерений':''}`}</span></div>
          <div class="contact-meter"><span style="width:${fill}%"></span></div>
          <small>${value===null?'Нет достоверного значения':r.good?(r.preferred?'Хороший контакт по порогу приложения':'Контакт допустим, можно улучшить'): `Сопротивление выше порога ${fmt(max,0)} кОм`}</small></div>`;
     }).join('');
@@ -62,7 +66,7 @@
     return `<div class="contact-panel ${c.state==='ready'?'ready':c.state==='poor'?'poor':''}">
       <div class="contact-overview"><span class="contact-flag ${esc(c.state)}">${esc(stateLabel)}</span><strong>${esc(c.message||'Ожидаем данные')}</strong></div>
       ${channelRows?`<div class="contact-electrodes">${channelRows}</div>`:'<p class="chart-caption">Нет актуальных измерений сопротивления. Значения не моделируются.</p>'}
-      ${progress}<p class="chart-caption">Только настоящие отсчёты сопротивления Capsule SDK · порог ${fmt(c.ready_below_kohm,0)} кОм по каждому каналу; желательнее ниже ${fmt(c.preferred_below_kohm,0)} кОм. Возраст данных: ${c.updated_age_s==null?'—':`${fmt(c.updated_age_s,1)} с`}. Это проверка контакта, а не подтверждение нахождения на голове или чистоты ЭЭГ.</p>
+      ${progress}<p class="chart-caption">Только настоящие отсчёты сопротивления Capsule SDK · порог ${fmt(c.ready_below_kohm,0)} кОм по каждому каналу; желательнее ниже ${fmt(c.preferred_below_kohm,0)} кОм. Это проверка контакта, а не подтверждение нахождения на голове или чистоты ЭЭГ.</p>
       ${compact?'':'<p class="chart-caption">Поправьте посадку, раздвиньте волосы под электродами. Не давите слишком сильно. При снятии или потере данных отсчёт стабильности начинается заново.</p>'}
     </div>`;
   }
@@ -86,13 +90,15 @@
     const cal = s.connected ? `${contactPanel(s.contact)}<div class="cal-box"><div class="cal-state"><strong>${s.calibrated?'Калибровка выполнена':{
       ready:'Калибровка доступна',running:'Калибровка выполняется',failed:'Калибровка не удалась',
       skipped:'Калибровка пропущена',unavailable:'Калибратор недоступен',complete:'Калибровка выполнена'}[s.calibration_phase]||'Нет калибровки'}</strong><small>${s.contact?.ready?'Контакт стабилен — калибровку можно запустить.':'Калибровка заблокирована до стабильных показаний всех каналов.'} Калибровка нужна для персонализированных показателей SDK.</small></div>
-      <div class="cal-actions">${pButton(s.calibration_phase==='complete'?'Повторить калибровку':'Начать калибровку','calibration','subtle',!s.calibration_available||s.calibration_phase==='running')}${s.calibration_phase==='ready'?pButton('Пропустить','skip-cal','subtle'):''}</div></div>`:
+      <div class="cal-actions">${pButton(s.calibration_phase==='complete'?'Повторить калибровку':'Начать калибровку','calibration','subtle',!s.calibration_available||s.calibration_phase==='running')}${s.calibration_phase==='ready'?pButton('Пропустить','skip-cal','subtle'):''}</div>
+      ${s.calibration_phase==='running'?`<div class="cal-running" role="status"><span class="cal-sound-pulse" aria-hidden="true"></span><div><strong>Калибровка идёт · глаза закрыты</strong><p>Не двигайтесь. Откройте глаза только после завершения. Тихий звуковой сигнал повторяется, пока SDK выполняет калибровку.</p></div>${pButton(calibrationSoundEnabled?'Выключить звук':'Включить звук','toggle-cal-sound')}</div>`:''}
+      </div>`:
       `<div class="no-device small">Калибровка недоступна: сначала подключите реальное устройство. Она никогда не запускается сама.</div>`;
     return `${statusBox(s)}<div class="device-two-col">
       <section class="card">${heading('Обнаруженные устройства','Сначала поиск, затем явный выбор и проверка соединения')}${found}
       <div class="connection-options"><label class="toggle-row"><input type="checkbox" id="auto-reconnect" ${s.auto_reconnect?'checked':''} ${!s.sdk_ready?'disabled':''}><span><strong>Автоматическое переподключение</strong><small>По умолчанию выключено; после потери связи повторить поиск и попытаться подключить прежнее устройство</small></span></label></div></section>
       <section class="card">${heading('Контакт электродов и калибровка','Сначала измерения сопротивления, затем стабильный контакт и калибровка')}${cal}
-      <div class="steps-list"><div><b>01</b><span>Включите повязку и Bluetooth на компьютере.</span></div><div><b>02</b><span>Нажмите «Найти устройство», дождитесь окончания поиска.</span></div><div><b>03</b><span>Выберите найденный Neiry Headband. Приложение подтвердит связь через SDK.</span></div><div><b>04</b><span>Наденьте повязку, дождитесь снижения реального сопротивления каждого канала и стабильности показаний.</span></div><div><b>05</b><span>После проверки контакта запустите калибровку. При пропуске персональные метрики SDK не отображаются.</span></div></div></section>
+      <div class="steps-list"><div><b>01</b><span>Включите повязку и Bluetooth на компьютере.</span></div><div><b>02</b><span>Нажмите «Найти устройство», дождитесь окончания поиска.</span></div><div><b>03</b><span>Выберите найденный Neiry Headband. Приложение подтвердит связь через SDK.</span></div><div><b>04</b><span>Наденьте повязку, дождитесь снижения реального сопротивления каждого канала и стабильности показаний.</span></div><div><b>05</b><span>Подтвердите начало, закройте глаза и сохраняйте неподвижность до сигнала завершения. При пропуске персональные метрики SDK не отображаются.</span></div></div></section>
     </div>${!s.sdk_ready?`<section class="card device-warning">${heading('SDK не готов','Это не значит, что записи недоступны')}<p>Живое подключение требует поставку Capsule SDK и нативную библиотеку для вашей системы. Укажите <code>CAPSULE_SDK_DIR</code> перед запуском и проверьте, что Bluetooth доступен приложению.</p><p class="device-error">${esc(s.sdk_error || 'При отсутствии SDK аппаратный поиск недоступен.')}</p><a href="#sessions" data-go="sessions" class="button subtle">Открыть сохранённые записи</a></section>`:''}`;
   }
   function heading(title,subtitle='') {return `<div class="card-header"><div><h2>${esc(title)}</h2>${subtitle?`<p class="card-subtitle">${esc(subtitle)}</p>`:''}</div></div>`;}
@@ -102,10 +108,11 @@
       <div class="live-metrics"><section class="metric-card"><div class="metric-label">Пульс · SDK</div><div class="metric-value" id="live-hr">—</div><div class="metric-note">уд/мин · если доступно</div></section>
       <section class="metric-card"><div class="metric-label">Внимание · SDK</div><div class="metric-value" id="live-attention">—</div><div class="metric-note">Индекс производителя, не % концентрации</div></section>
       <section class="metric-card"><div class="metric-label">Расслабление · SDK</div><div class="metric-value" id="live-relax">—</div><div class="metric-note">Индекс производителя</div></section>
-      <section class="metric-card"><div class="metric-label">Возраст данных</div><div class="metric-value" id="live-age">—</div><div class="metric-note">с · время получения сервером</div></section></div>
-      <div class="studio-controls"><label style="max-width:200px">Сырые сигналы · окно<select id="live-time-range"><option value="5">5 секунд</option><option value="15" selected>15 секунд</option><option value="30">30 секунд</option><option value="60">60 секунд</option></select></label><label style="max-width:210px">Индексы SDK · окно<select id="metric-time-range"><option value="60">1 минута</option><option value="300" selected>5 минут</option><option value="900">15 минут</option></select></label><label class="toggle-row raw-toggle"><input type="checkbox" id="show-unverified-raw"><span><strong>Показывать сырой поток без контакта</strong><small>Только для диагностики шума, не для выводов о работе мозга</small></span></label></div>
+      <section class="metric-card"><div class="metric-label">Состояние калибровки</div><div class="metric-value small-value" id="live-cal-state">—</div><div class="metric-note">Показатели SDK доступны после завершения</div></section></div>
+      <div class="studio-controls"><label style="max-width:200px">Сырые сигналы · окно<select id="live-time-range"><option value="5">5 секунд</option><option value="15" selected>15 секунд</option><option value="30">30 секунд</option><option value="60">60 секунд</option></select></label><label style="max-width:210px">Индексы SDK · окно<select id="metric-time-range"><option value="60">1 минута</option><option value="300" selected>5 минут</option><option value="900">15 минут</option></select></label><label class="toggle-row"><input type="checkbox" id="stable-chart-scale" checked><span><strong>Устойчивый масштаб графиков</strong><small>Снижает влияние единичных выбросов на ось Y; отключите для полного диапазона</small></span></label><label class="toggle-row raw-toggle"><input type="checkbox" id="show-unverified-raw"><span><strong>Показывать сырой поток без контакта</strong><small>Только для диагностики шума, не для выводов о работе мозга</small></span></label></div>
       <p class="chart-caption">До подтверждения контакта мозговые показатели и графики ЭЭГ/ФПГ скрыты. В режиме диагностики показываются реальные необработанные отсчёты SDK, даже если повязка лежит на столе.</p>
       <div class="live-graphs">
+        <section class="card wide">${heading('Связность отведений · 3D-монтаж','Оценки MSC, ImCoh, wPLI и относительной мощности только из реальной ЭЭГ')}${window.NeuroPairedPanel?.markup()||''}</section>
         <section class="card wide">${heading('ЭЭГ · живой сигнал','Два биполярных отведения, значения в единицах SDK')}<div class="live-canvas"><canvas id="live-eeg" aria-label="График живой ЭЭГ"></canvas></div><p class="chart-caption"><span id="live-channels">Каналы: —</span> · <span id="live-eeg-sr">—</span> Гц. График сигнала не является оценкой мыслей или функций отдельных областей мозга.</p></section>
         <section class="card">${heading('ФПГ · пульсовая волна','Оптический сигнал, не ЭКГ')}<div class="live-canvas"><canvas id="live-ppg" aria-label="Живой график ФПГ"></canvas></div></section>
         <section class="card">${heading('Движение · акселерометр','Модуль ускорения, единицы SDK')}<div class="live-canvas"><canvas id="live-motion" aria-label="График движения"></canvas></div></section>
@@ -116,7 +123,7 @@
         <section class="card">${heading('Пульс во времени','Только при подтверждённом контакте ФПГ без флагов артефактов')}<div class="live-canvas"><canvas id="live-hr-chart" aria-label="Подтверждённый пульс SDK"></canvas></div></section>
         <section class="card">${heading('Индекс стресса SDK','Производный кардиопоказатель, не психологический стресс')}<div class="live-canvas"><canvas id="live-si-chart" aria-label="Индекс стресса SDK"></canvas></div></section>
         <section class="card">${heading('Индекс Каплана · SDK','Только если SDK считает показатели доступными')}<div class="live-canvas"><canvas id="live-ki-chart" aria-label="Индекс Каплана SDK"></canvas></div></section>
-        <section class="card wide">${heading('Оценки внимания и состояний SDK','Пять отдельных выходов алгоритма производителя, не проценты мышления')}<div class="live-canvas"><canvas id="live-emotions" aria-label="Пять метрик SDK: внимание и состояния"></canvas></div></section>
+        <section class="card wide">${heading('Оценки внимания и состояний SDK','Пять отдельных выходов алгоритма производителя, не проценты мышления')}<div class="live-canvas"><canvas id="live-emotions" aria-label="Пять метрик SDK: внимание и состояния"></canvas></div><div id="live-emotions-state" class="emotion-state" role="status">Ожидаем данные SDK. Показатели появляются только после успешной калибровки.</div><div id="live-emotions-values" class="emotion-values"></div></section>
         <section class="card">${heading('Физиологические оценки SDK','Расслабление, концентрация, утомление, стресс, вовлечённость')}<div class="live-canvas"><canvas id="live-phy" aria-label="Физиологические оценки SDK"></canvas></div></section>
         <section class="card">${heading('Продуктивность и связанные оценки SDK','Нет данных или не пройдена калибровка — пустой график')}<div class="live-canvas"><canvas id="live-prod" aria-label="Продуктивность SDK"></canvas></div></section>
         <section class="card">${heading('Контакт и поток','Проверка доступности сигналов')}<div id="live-sensors" class="sensor-summary"><p>Потоков пока нет.</p></div><div id="live-resistances" class="resistance-values"></div></section>
@@ -140,10 +147,97 @@
     badge.title=safeInfo(s);
   }
   async function api(path,opts={}) { return ctx.api(path,opts); }
+  function closeCalibrationDialog(){
+    if(calibrationDialog){calibrationDialog.remove();calibrationDialog=null;}
+  }
+  function audioReady(){
+    if(!calibrationAudio){
+      const Constructor=window.AudioContext||window.webkitAudioContext;
+      if(!Constructor)return null;
+      try{calibrationAudio=new Constructor();}catch(_){return null;}
+    }
+    if(calibrationAudio.state==='suspended')calibrationAudio.resume().catch(()=>{});
+    return calibrationAudio;
+  }
+  function chime(complete=false){
+    if(!calibrationSoundEnabled)return;
+    const audio=audioReady();if(!audio)return;
+    try {
+      const t=audio.currentTime+.018;
+      const notes=complete?[[523.25,0],[659.25,.16],[783.99,.32]]:[[523.25,0],[659.25,.14]];
+      for(const [hz,delay] of notes){
+        const oscillator=audio.createOscillator(),gain=audio.createGain();
+        oscillator.type='sine';oscillator.frequency.value=hz;
+        gain.gain.setValueAtTime(.0001,t+delay);
+        gain.gain.exponentialRampToValueAtTime(.012,t+delay+.018);
+        gain.gain.exponentialRampToValueAtTime(.0001,t+delay+.28);
+        oscillator.connect(gain);gain.connect(audio.destination);
+        oscillator.start(t+delay);oscillator.stop(t+delay+.3);
+      }
+    }catch(err){console.warn('Sound not supported:',err);}
+  }
+  function stopChime(){if(calibrationPulse){clearInterval(calibrationPulse);calibrationPulse=null;}}
+  function syncCalibrationSound(s){
+    const next=s?.connected?s?.calibration_phase:'idle';
+    if(next===calibrationSoundPhase)return;
+    const previous=calibrationSoundPhase;calibrationSoundPhase=next;
+    stopChime();
+    if(next==='running'&&calibrationSoundEnabled){
+      chime();calibrationPulse=setInterval(()=>{
+        if(calibrationSoundPhase==='running'&&calibrationSoundEnabled)chime();
+      },5300);
+    }else if(previous==='running'&&next==='complete'){
+      chime(true);calibrationSoundEnabled=false;
+      notice('Калибровка завершена. Теперь можно открыть глаза.','success');
+    }else if(previous==='running'&&next!=='running'){
+      calibrationSoundEnabled=false;
+      if(next==='failed')notice('Калибровка не завершилась. Проверьте контакт электродов.','error');
+    }
+  }
+  function confirmCalibration(){
+    if(!status?.connected||!status?.calibration_available){notice('Сначала дождитесь стабильного контакта электродов.','error');return;}
+    closeCalibrationDialog();
+    const wrap=document.createElement('div');wrap.className='cal-confirm-backdrop';wrap.id='calibration-confirm-dialog';
+    wrap.innerHTML=`<div class="cal-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="cal-title" aria-describedby="cal-help">
+      <div class="cal-confirm-mark" aria-hidden="true">◉</div><h2 id="cal-title">Калибровка с закрытыми глазами</h2>
+      <p id="cal-help">Наденьте повязку, сядьте удобно и уберите внешние отвлекающие факторы. Непосредственно перед нажатием «Начать» <strong>закройте глаза</strong> и оставайтесь неподвижно до сообщения о завершении.</p>
+      <label class="cal-confirm-check"><input type="checkbox" id="cal-closed-confirm"> <span>Повязка надета. Я готов(а) закрыть глаза на всё время калибровки.</span></label>
+      <label class="cal-confirm-check"><input type="checkbox" id="cal-sound-check" checked> <span>Тихий звуковой индикатор каждые несколько секунд</span></label>
+      <div class="cal-confirm-actions"><button type="button" class="button subtle" data-cal-modal="cancel">Отмена</button><button type="button" class="button primary" data-cal-modal="confirm" disabled>Закрыть глаза и начать</button></div>
+    </div>`;
+    document.body.append(wrap);calibrationDialog=wrap;
+    const consent=$('#cal-closed-confirm',wrap),start=$('[data-cal-modal="confirm"]',wrap);
+    consent.addEventListener('change',()=>{start.disabled=!consent.checked;});
+    function key(e){if(e.key==='Escape'){closeCalibrationDialog();document.removeEventListener('keydown',key);}}
+    document.addEventListener('keydown',key);
+    wrap.addEventListener('click',async e=>{
+      if(e.target===wrap||e.target.closest('[data-cal-modal="cancel"]')){
+        closeCalibrationDialog();document.removeEventListener('keydown',key);return;
+      }
+      if(!e.target.closest('[data-cal-modal="confirm"]')||start.disabled)return;
+      start.disabled=true;
+      calibrationSoundEnabled=Boolean($('#cal-sound-check',wrap)?.checked);
+      if(calibrationSoundEnabled)audioReady();  // gesture unlocks browser audio
+      try{
+        await api('/api/device/calibration/start',{method:'POST',body:JSON.stringify({confirmed_closed_eyes:true})});
+        notice('Калибровка запрошена. Держите глаза закрытыми до завершения.','success');
+        closeCalibrationDialog();document.removeEventListener('keydown',key);
+        await poll();
+      }catch(err){calibrationSoundEnabled=false;notice(err.message||'Не удалось начать калибровку.','error');start.disabled=false;}
+    });
+    consent.focus();
+  }
   async function act(action, extra) {
-    const map={scan:'/api/device/scan',disconnect:'/api/device/disconnect',calibration:'/api/device/calibration/start','skip-cal':'/api/device/calibration/skip',
+    const map={scan:'/api/device/scan',disconnect:'/api/device/disconnect','skip-cal':'/api/device/calibration/skip',
       'start-record':'/api/recording/start','stop-record':'/api/recording/stop','stop-replay':'/api/replay/stop','pause-replay':'/api/replay/pause','resume-replay':'/api/replay/resume'};
     try {
+      if(action==='calibration'){confirmCalibration();return;}
+      if(action==='toggle-cal-sound'){
+        calibrationSoundEnabled=!calibrationSoundEnabled;
+        if(calibrationSoundEnabled)audioReady();
+        calibrationSoundPhase='idle';syncCalibrationSound(status);
+        return;
+      }
       if (action==='marker') {
         const input=$('#live-marker');const value=input?.value.trim();if(!value){notice('Введите название метки.','error');input?.focus();return;}
         await api('/api/markers',{method:'POST',body:JSON.stringify({label:value})}); input.value='';notice('Метка добавлена к текущей записи.','success');
@@ -159,7 +253,7 @@
         await api(`/api/records/${encodeURIComponent(id)}`,{method:'DELETE'});
         await loadSessions(); await ctx.reloadSessions?.(); notice('Запись удалена.','success');return;
       } else if(map[action]) {
-        await api(map[action],{method:'POST'});notice(({scan:'Поиск запущен.',disconnect:'Отключение запрошено.',calibration:'Калибровка запрошена.','skip-cal':'Калибровка пропущена.','start-record':'Запись начата.','stop-record':'Запись остановлена.','stop-replay':'Воспроизведение остановлено.'})[action]||'Готово.','success');
+        await api(map[action],{method:'POST'});notice(({scan:'Поиск запущен.',disconnect:'Отключение запрошено.','skip-cal':'Калибровка пропущена.','start-record':'Запись начата.','stop-record':'Запись остановлена.','stop-replay':'Воспроизведение остановлено.'})[action]||'Готово.','success');
       }
       await poll();
     } catch (error) { notice(error.message||'Не удалось выполнить действие.','error'); }
@@ -176,6 +270,7 @@
     root.addEventListener('change', async e=>{
       if(e.target.id==='live-time-range'){liveRange=Number(e.target.value)||15;return;}
       if(e.target.id==='metric-time-range'){metricRange=Number(e.target.value)||300;return;}
+      if(e.target.id==='stable-chart-scale'){smoothScale=e.target.checked;yRanges={};return;}
       if(e.target.id==='show-unverified-raw'){
         allowRaw=Boolean(e.target.checked);
         if(!allowRaw){for(const key of ['eeg1','eeg2','ppg']) samples[key].length=0;}
@@ -194,7 +289,8 @@
       type: 'line',
       data: {datasets: datasets.map(([label, color]) => ({
         label, data: [], borderColor: color, backgroundColor: color,
-        borderWidth: 1.65, pointRadius: 0, tension: 0, spanGaps: false
+        borderWidth: 1.45, pointRadius: 0, tension: 0, spanGaps: false,
+        borderJoinStyle:'round'
       }))},
       options: {
         responsive: true, maintainAspectRatio: false, animation: false,
@@ -207,8 +303,9 @@
         },
         scales: {
           x: {type: 'linear', grid: {color: '#25324566'},
-              ticks: {color: '#71839e', maxTicksLimit: 7},
-              title: {display: true, text: 'Время, с', color: '#71839e'}},
+              ticks: {color: '#71839e', maxTicksLimit: 7,
+                      callback: value => Math.round(Number(value)-(previousTickTime||0))+' с'},
+              title: {display: true, text: 'Относительно текущего момента', color: '#71839e'}},
           y: {grid: {color: '#25324566'}, ticks: {color: '#71839e', maxTicksLimit: 6}}
         }
       }
@@ -217,33 +314,14 @@
     charts.push(instance);
     return instance;
   }
-  function clearGraphs() {charts.forEach(c=>c.destroy());charts=[];Object.values(samples).forEach(a=>a.length=0);chartClock=0;}
-  function addSeries(key,packet,values,max=8500) {
-    if(!packet||!Array.isArray(values)||!values.length)return;
-    const sr=n(packet.sr)||1,t0=n(packet.t0)||0;
-    // Peak-preserving decimation, unlike stride-only subsampling.
-    const stride=Math.max(1,Math.ceil(sr/70),Math.ceil(values.length/500));
-    const dst=samples[key];
-    for(let i=0;i<values.length;i+=stride){
-      const bucket=[];
-      for(let j=i;j<Math.min(values.length,i+stride);j++){
-        const y=n(values[j]);if(y!==null)bucket.push({x:t0+j/sr,y});
-      }
-      if(!bucket.length)continue;
-      let lo=bucket[0],hi=bucket[0];
-      for(const point of bucket){if(point.y<lo.y)lo=point;if(point.y>hi.y)hi=point;}
-      if(lo.x<hi.x){dst.push(lo);if(hi!==lo)dst.push(hi);}else{dst.push(hi);if(hi!==lo)dst.push(lo);}
-    }
-    const newest=dst[dst.length-1]?.x||0;
-    while(dst.length && dst[0].x<newest-65)dst.shift();
-    if(dst.length>max)dst.splice(0,dst.length-max);
+  function clearGraphs() {charts.forEach(c=>c.destroy());charts=[];Object.values(samples).forEach(a=>a.length=0);chartClock=0;yRanges={};previousTickTime=0;}
+  function addSeries(key,packet,values) {
+    if(!graphCore)return;
+    graphCore.appendWave(samples[key],packet,values);
   }
-  function addPoint(key,time,value,max=2500){
-    const t=n(time),v=n(value);if(t===null||v===null)return;
-    const dst=samples[key] || (samples[key]=[]);
-    if(dst.length && t<=dst[dst.length-1].x)return;
-    dst.push({x:t,y:v});
-    if(dst.length>max)dst.splice(0,dst.length-max);
+  function addPoint(key,time,value){
+    if(!graphCore)return;
+    graphCore.appendMetric(samples[key]||(samples[key]=[]),time,value);
   }
   function appendMetrics(tick,qualified){
     const allowArchived=replay?.active||tick.validity?.source_mode==='replay';
@@ -251,8 +329,13 @@
       const c=tick.cardio;
       for(const [key,prop] of [['hr','heartRate'],['stressIndex','stressIndex'],['kaplanIndex','kaplanIndex']])addPoint(key,c.t,c[prop]);
     }
-    if(tick.emotions&&(qualified?.emotions||allowArchived))
-      for(const key of ['attention','relaxation','cognitiveLoad','cognitiveControl','selfControl'])addPoint(key,tick.emotions.t,tick.emotions[key]);
+    if((qualified?.emotions||allowArchived)){
+      const emotionRows=[...(Array.isArray(tick.emotions_history)?tick.emotions_history:[]),tick.emotions].filter(Boolean);
+      for(const entry of emotionRows){
+        for(const key of ['attention','relaxation','cognitiveLoad','cognitiveControl','selfControl'])
+          addPoint(key,entry.t,entry[key]);
+      }
+    }
     if(tick.phy&&(qualified?.phy||allowArchived))
       for(const [key,prop] of [['phyRelax','relaxation'],['phyConcentration','concentration'],['phyFatigue','fatigue'],['phyStress','stress'],['phyInvolvement','involvement']])addPoint(key,tick.phy.t,tick.phy[prop]);
     if(tick.prod&&(qualified?.prod||allowArchived))
@@ -293,10 +376,12 @@
       const box=$('#live-quality-state');if(box)box.textContent='ЭЭГ пока не подтверждена контактом. Включите диагностический показ сырого сигнала, если хотите изучить аппаратный шум.';
       const note=$('#live-spectrogram-note');if(note)note.textContent='Спектрограмма скрыта: контакт электродов не подтверждён.';
       for(let i=0;i<2;i++)drawHeatmap(`live-spectrogram-${i}`,null);
+      window.NeuroPairedPanel?.attach($('#content [data-pair-panel]'),{available:false,reason:'Парные метрики скрыты: контакт/качество сигнала не подтверждены.',bands:{}});
       return;
     }
     try{
-      const [quality,tiles]=await Promise.all([api('/api/live/quality'),api('/api/live/spectrogram?seconds=20')]);
+      const [quality,tiles,paired]=await Promise.all([api('/api/live/quality'),api('/api/live/spectrogram?seconds=20'),api('/api/live/paired')]);
+      window.NeuroPairedPanel?.attach($('#content [data-pair-panel]'),paired);
       if(view!=='live')return;
       const box=$('#live-quality-state');if(box){
         box.innerHTML=quality.available?quality.channels.map(c=>`<div class="studio-state"><strong>${esc(c.name)} · ${c.status==='screened'?'Без обнаруженных флагов':esc(c.status)}</strong><span>${(c.reasons||[]).map(esc).join('; ')||'Проверки не выявили заданных инженерных предупреждений; это не оценка здоровья.'}</span><small>Различных уровней: ${fmt(c.unique_levels,0)} · Помеха: ${c.line_power_fraction==null?'—':fmt(c.line_power_fraction*100)}%</small></div>`).join(''):`<p class="chart-caption">${esc(quality.reason||'Нет данных')}</p>`;
@@ -313,20 +398,24 @@
     const eegVisible=archived||valid.eeg||allowRaw && tick.connected;
     const ppgVisible=archived||valid.ppg||allowRaw && tick.connected;
     if(eegVisible&&eeg){addSeries('eeg1',eeg,eeg.ch1);addSeries('eeg2',eeg,eeg.ch2);}
-    else{samples.eeg1.length=0;samples.eeg2.length=0;}
+    else if(!archived&&(!tick.connected||!tick.contact?.ready)){samples.eeg1.length=0;samples.eeg2.length=0;}
     if(ppgVisible&&ppg)addSeries('ppg',ppg,ppg.samples);
-    else samples.ppg.length=0;
+    else if(!archived&&(!tick.connected||!tick.contact?.ready))samples.ppg.length=0;
     if(mems&&Array.isArray(mems.acc)) {
       const magnitude=v=>Array.isArray(v)&&v.every(x=>n(x)!==null)?Math.hypot(...v.map(Number)):null;
       addSeries('motion',mems,mems.acc.map(magnitude));
       for(let i=0;i<3;i++)addSeries(['accX','accY','accZ'][i],mems,mems.acc.map(v=>Array.isArray(v)?v[i]:null));
       if(Array.isArray(mems.gyro))for(let i=0;i<3;i++)addSeries(['gyroX','gyroY','gyroZ'][i],mems,mems.gyro.map(v=>Array.isArray(v)?v[i]:null));
     }
-    if(!valid.cardio&&!archived)for(const key of ['hr','stressIndex','kaplanIndex'])samples[key].length=0;
-    if(!valid.emotions&&!archived)for(const key of ['attention','relaxation','cognitiveLoad','cognitiveControl','selfControl'])samples[key].length=0;
-    if(!valid.phy&&!archived)for(const key of ['phyRelax','phyConcentration','phyFatigue','phyStress','phyInvolvement'])samples[key].length=0;
-    if(!valid.prod&&!archived)for(const key of ['productivityScore','concentrationScore','relaxationScore','fatigueScore'])samples[key].length=0;
-    if(!valid.nfb&&!archived)for(const key of ['alpha','beta','theta','delta','smr'])samples[key].length=0;
+    // Brief delivery gaps do not erase a five-minute history. Actual loss of
+    // electrode contact clears any formerly verified physiological estimates.
+    if(!archived && !valid.contact_verified){
+      for(const key of ['hr','stressIndex','kaplanIndex','attention','relaxation',
+          'cognitiveLoad','cognitiveControl','selfControl','phyRelax','phyConcentration',
+          'phyFatigue','phyStress','phyInvolvement','productivityScore',
+          'concentrationScore','relaxationScore','fatigueScore',
+          'alpha','beta','theta','delta','smr'])samples[key].length=0;
+    }
     appendMetrics(tick,valid);
     const liveContact=$('#live-contact-card');
     if(liveContact)liveContact.innerHTML=archived?'<div class="contact-panel"><strong>Архивное воспроизведение</strong><p class="chart-caption">Данные из сохранённого файла. Текущий контакт электродов не оценивается.</p></div>':contactPanel(tick.contact,true);
@@ -334,7 +423,21 @@
     field('live-hr',(valid.cardio||archived)?tick.cardio?.heartRate:null);
     field('live-attention',(valid.emotions||archived)?tick.emotions?.attention:null);
     field('live-relax',(valid.emotions||archived)?tick.emotions?.relaxation:null);
-    field('live-age',tick.data_age_s);
+    const cState=$('#live-cal-state');if(cState)cState.textContent=archived?'Архив':tick.calibrated?'Готово':
+      tick.calibration_phase==='running'?'Идёт…':tick.connected?'Не выполнена':'Нет устройства';
+    const emotionState=$('#live-emotions-state'),emotionValues=$('#live-emotions-values');
+    const emotionLabels={attention:'Внимание',relaxation:'Расслабление',cognitiveLoad:'Нагрузка',cognitiveControl:'Контроль',selfControl:'Самоконтроль'};
+    if(emotionState){
+      emotionState.textContent= !archived&&!tick.connected?'Устройство не подключено.':
+        !archived&&!tick.contact?.ready?'Нет подтверждённого контакта электродов.':
+        !archived&&!tick.calibrated?'Оценки SDK появятся после завершения калибровки с закрытыми глазами.':
+        tick.sdk_state?.emotions_processor==='unavailable'?'Компонент Emotions недоступен в этой сборке SDK. Проверьте журналы Capsule SDK.':
+        !tick.sdk_state?.emotions_received?'Компонент Emotions инициализирован, но пока не прислал ни одного числового поля. Показатели не моделируются.':
+        !tick.emotions?'SDK передал поля ('+(tick.sdk_state.emotions_fields||[]).join(', ')+'), но оценки пока не отвечают условиям качества.':
+        'Доступные поля: '+(tick.sdk_state?.emotions_fields||[]).join(', ')+'. Это индексы SDK, не диагностика эмоций.';
+    }
+    if(emotionValues)emotionValues.innerHTML=Object.entries(emotionLabels).map(([key,name])=>
+      `<span class="emotion-value">${esc(name)}: <strong>${fmt(tick.emotions?.[key],2)}</strong></span>`).join('');
     if($('#live-channels'))$('#live-channels').textContent=`Каналы: ${(tick.eeg_channels||[]).join(' / ')||'—'}`;
     if($('#live-eeg-sr'))$('#live-eeg-sr').textContent=fmt(tick.eeg_sr,0);
     if($('#live-recording-state'))$('#live-recording-state').textContent=tick.recording?`Идёт запись: ${tick.recording}`:'Нет активной записи';
@@ -344,14 +447,27 @@
       return `<span class="sensor-pill ${esc(v.state||'none')}"><span class="sensor-light"></span>${esc(name)}</span>`;
     }).join('');
     if($('#live-resistances'))$('#live-resistances').innerHTML=(tick.contact?.channels||[]).map(r=>`<span>${esc(r.channel)}: <strong>${n(r.kohm)!==null?`${fmt(r.kohm,1)} кОм`:'нет измерения'}</strong></span>`).join('')||'<span>Нет актуального измерения электродов</span>';
-    if(Date.now()-chartClock<550)return;
+    if(Date.now()-chartClock<420)return;
     chartClock=Date.now();
+    const serverNow=n(tick.t);
+    if(serverNow!==null){
+      if(previousTickTime && serverNow < previousTickTime-1){
+        // A new server/replay timeline must not connect to the old axis.
+        Object.values(samples).forEach(a=>a.length=0);yRanges={};
+      }
+      previousTickTime=Math.max(previousTickTime,serverNow);
+    }
     for(let idx=0;idx<chartDefs.length;idx++){
       const cfg=chartDefs[idx],ch=charts[idx];if(!ch)continue;
       cfg.keys.forEach((key,i)=>ch.data.datasets[i].data=samples[key]);
-      const current=Math.max(0,...cfg.keys.map(key=>samples[key]?.at(-1)?.x??0));
       const range=cfg.raw?liveRange:cfg.contact?Math.min(metricRange,300):metricRange;
-      const max=Math.max(range,current);ch.options.scales.x.min=Math.max(0,max-range);ch.options.scales.x.max=max;
+      const box=graphCore?.windowFor(previousTickTime,range)||{min:previousTickTime-range,max:previousTickTime};
+      ch.options.scales.x.min=box.min;ch.options.scales.x.max=box.max;
+      const limits=graphCore?.bounds(cfg.keys.map(key=>samples[key]||[]),box.min,box.max,yRanges[cfg.id],smoothScale);
+      if(limits){yRanges[cfg.id]=limits;ch.options.scales.y.min=limits.min;ch.options.scales.y.max=limits.max;}
+      // Avoid repainting all 13 graphs when most are below the fold.
+      const rect=ch.canvas?.getBoundingClientRect?.();
+      if(rect&& (rect.bottom<0||rect.top>window.innerHeight))continue;
       ch.update('none');
     }
   }
@@ -385,7 +501,7 @@
   async function poll() {
     if(preview)return;
     try {
-      const s=await api('/api/device/status');status=s;setTopStatus(s);
+      const s=await api('/api/device/status');status=s;setTopStatus(s);syncCalibrationSound(s);
       if(view==='device'&&$('#content')){
         const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,contact:s.contact,scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery});
         if(fingerprint!==statusFingerprint){statusFingerprint=fingerprint;$('#content').innerHTML=devicePanel(s);bind();}
@@ -420,6 +536,7 @@
     poll();
   }
   async function renderView(nextView) {
+    if(nextView!=='device')closeCalibrationDialog();
     closeWS();clearGraphs();view=nextView;
     const box=$('#content');if(!box)return;
     if(preview){box.innerHTML=previewPanel(view);bind();return;}
@@ -427,6 +544,7 @@
       statusFingerprint='';box.innerHTML=devicePanel(status);bind();await poll();
     }else if(view==='live'){
       box.innerHTML=livePanel();bind();
+      window.NeuroPairedPanel?.attach($('#content [data-pair-panel]'),{available:false,reason:'Ожидаем две пригодные ЭЭГ-дорожки.'});
       for(const cfg of chartDefs)makeChart(cfg.id,cfg.series);
       openWS(); await poll();
     }else if(view==='sessions'){

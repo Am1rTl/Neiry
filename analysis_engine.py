@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
-ANALYSIS_VERSION = "2.1.0"
+ANALYSIS_VERSION = "2.2.0"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -594,6 +594,21 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
     known_units={"V":"V","mV":"mV","uV":"µV","µV":"µV","μV":"µV"}
     unit_label=known_units.get(declared) if isinstance(declared,str) else None
     eeg=analyze_eeg(loaded["eeg"],motion,eeg_start-mems_start,cfg,unit_label)
+    # Paired channels from the same ordered CSV, with no timestamp sorting.
+    # Quality windows in analyze_eeg overlap (hop 2 s). Select indices 0,2,4,...
+    # for independent 4-second paired windows and intersect both channel screens.
+    from paired_eeg import analyze_pair
+    pair_data = loaded["eeg"]["values"]
+    pair_channels = eeg.get("channels", [])
+    paired_mask = None
+    if len(pair_channels) == 2:
+        e0 = pair_channels[0].get("timeline", [])
+        e1 = pair_channels[1].get("timeline", [])
+        paired_mask = [bool(e0[j]["usable"] and e1[j]["usable"])
+                       for j in range(0, min(len(e0), len(e1)), 2)]
+    paired = analyze_pair(pair_data, loaded["eeg"]["rate"], epoch_s=cfg.epoch_s,
+                          min_epochs=8, names=loaded["eeg"]["columns"],
+                          usable_window=paired_mask)
     ppg=analyze_ppg(loaded["ppg"],motion,ppg_start-mems_start,cfg)
     impedance=analyze_impedance(loaded["resistances"],origin,cfg)
     events=_read_events(p/"events.jsonl")
@@ -601,6 +616,8 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
     flags=[];observations=[]
     def flag(code,severity,title,detail):flags.append({"code":code,"severity":severity,"title":title,"detail":detail})
     def obs(title,detail,confidence="descriptive",category="data"):observations.append({"title":title,"detail":detail,"confidence":confidence,"category":category})
+    if not paired["available"] and eeg["available"]:
+        flag("paired_unavailable", "info", "Сравнение каналов ограничено", paired["reason"] or "Проверка качества не пройдена.")
     if not eeg["available"]:
         flag("no_eeg","critical","ЭЭГ отсутствует","eeg.csv пуст или не содержит доступного сигнала; выводы о ритмах мозга для этой сессии недоступны.")
         obs("В этой сессии нет записи ЭЭГ","Доступны только присутствующие периферические потоки; пульс и движение не заменяют измерение ЭЭГ.","high")
@@ -656,6 +673,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
        "alpha":"Локальный максимум строго внутри 8–13 Гц, log-PSD prominence≥3 dB и ≥15 прошедших окон. Если >50% соседних отсчётов одинаковы или медиана уровней в окне <20, alpha_peak_hz скрыт, численный кандидат только в alpha_peak. Это эвристика ограничения квантования. Отдельное моделирование апериодического фона и реактивность не выполнены.",
        "entropy":"Shannon entropy распределения мощности 1–45 Гц, нормированная на log(число частотных отсчётов); зависит от параметров PSD, шума и фильтрации, не мера интеллекта.",
        "advanced":"Исследовательские Hjorth и линейный log-PSD наклон по отобранным окнам без сильного квантования; это НЕ параметрическая модель specparam и не оценка возбуждения/торможения мозга.",
+       "paired_eeg":"Коэффициент когерентности MSC, |imaginary coherency| и wPLI между двумя биполярными каналами по независимым 4-секундным синхронным окнам, минимум 8 прошедших качество окон. Сдвигов и доминирующего полушария не оценивает.",
        "ppg":ppg.get("method","Недоступно"),
        "timestamps":"Сигналы анализируются по порядку строк и номинальной частоте. Legacy callback ts_unix имеет обратные скачки. Начальные метки только грубо совмещают MEMS и EEG/PPG; аппаратная синхронизация неизвестна.",
        "comparisons":"Описательное сравнение записей; перекрывающиеся окна и строки SDK зависимы. P-values, популяционные нормы, диагнозы и причинные выводы не вычисляются.",
@@ -668,7 +686,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
            "streams":audit,"sample_rates":rates,"markers_count":len(markers),"events":sanitize(events)},
        "quality":{"status":"limited" if eeg["available"] else "no_eeg","spectral_interpretability":eeg.get("spectral_interpretability","unavailable"),"flags":flags,"usable_eeg_pct":quality_pct,
                   "usable_eeg_denominator":"Среднее по каналам процентов перекрывающихся 4-секундных окон с шагом 2 с. Это не процент чистого времени, не независимые наблюдения и не оценка здоровья."},
-       "eeg":eeg,"ppg":ppg,"motion":motion,"impedance":impedance,"vendor":vendor,
+       "eeg":eeg,"paired_eeg":paired,"ppg":ppg,"motion":motion,"impedance":impedance,"vendor":vendor,
        "observations":observations,
        "limitations":[
           ("Два биполярных отведения O1–T3 и O2–T4 смешивают вклад нескольких источников. Отдельно локализовать затылочную или височную кору, глубокие структуры и работу всех отделов мозга нельзя." if set(loaded["eeg"]["columns"])=={"O1-T3","O2-T4"} else "Пространственная локализация по этому анализу не выполняется: нужны проверенный монтаж, референсы, достаточное число каналов и модель проводимости."),
