@@ -1,34 +1,18 @@
 #!/usr/bin/env bash
-# Stop the Capsule Neiry web dashboard.
+# Never kill an arbitrary port or unrelated python process.
 set -euo pipefail
-PID_FILE="/tmp/capsule-web.pid"
-
-if [[ ! -f "$PID_FILE" ]]; then
-  echo "No PID file; trying to kill any python3 server.py on port 8000…"
-  if command -v fuser >/dev/null 2>&1; then
-    fuser -k 8000/tcp 2>/dev/null || true
-  fi
-  if command -v pkill >/dev/null 2>&1; then
-    pkill -f "WebApp/server.py" 2>/dev/null || true
-  fi
-  echo "Done."
+NS_ROOT="$(cd "$(dirname "$0")" && pwd)"
+NS_PID_FILE="$NS_ROOT/.runtime/server.pid"
+if [[ ! -f "$NS_PID_FILE" ]]; then
+  echo "У этой копии NeuroScope нет PID-файла. Для foreground-сервера нажмите Ctrl+C."
   exit 0
 fi
-
-PID="$(cat "$PID_FILE")"
-if kill -0 "$PID" 2>/dev/null; then
-  echo "Stopping PID $PID…"
-  kill "$PID" || true
-  for _ in 1 2 3 4 5; do
-    sleep 0.4
-    if ! kill -0 "$PID" 2>/dev/null; then
-      break
-    fi
-  done
-  if kill -0 "$PID" 2>/dev/null; then
-    echo "  still alive, sending SIGKILL"
-    kill -9 "$PID" || true
-  fi
+NS_PID="$(cat "$NS_PID_FILE")"
+[[ "$NS_PID" =~ ^[0-9]+$ ]] || { echo "Некорректный PID-файл" >&2; exit 1; }
+NS_COMMAND="$(ps -p "$NS_PID" -o args= 2>/dev/null || true)"
+if [[ "$NS_COMMAND" != *"$NS_ROOT/run.py"* && "$NS_COMMAND" != *"$NS_ROOT/server.py"* ]]; then
+  echo "PID не принадлежит этому проекту; никакие процессы не остановлены." >&2
+  exit 1
 fi
-rm -f "$PID_FILE"
-echo "Stopped."
+kill -TERM "$NS_PID"
+echo "Отправлен сигнал завершения NeuroScope (PID $NS_PID)."

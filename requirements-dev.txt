@@ -1,0 +1,5 @@
+-r requirements.txt
+httpx==0.28.1
+matplotlib==3.10.8
+reportlab==4.4.9
+# Optional: pyedflib (EDF export only)

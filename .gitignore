@@ -5,3 +5,17 @@ state_snapshot.json
 Logs/
 logs/
 *.pyc
+
+.runtime/
+reports/cache/
+reports/context/
+
+# Local EEG/PPG recordings, generated analytical data, and personal documents
+reports/
+preview.html
+docs/NeuroScope_Research_Report.pdf
+docs/DATA_FINDINGS.md
+docs/INPUT_MANIFEST.json
+docs/figures/
+*.egg-info/
+.DS_Store

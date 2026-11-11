@@ -22,16 +22,18 @@ import tempfile
 import threading
 import time
 import zipfile
+from urllib.parse import urlsplit
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import find_sdk_dir, settings, setup_logging
+from json_utils import finite_json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -99,12 +101,17 @@ def _rec_start(device_name: str, serial: str, channels, sample_rates) -> None:
 def _rec_close() -> None:
     global RECORDER
     if RECORDER is not None:
+        closed_id = RECORDER.session_id
         try:
             summary = RECORDER.close()
             log.info("[rec] session closed: %s", summary.get("counts"))
         except Exception:
             pass
         RECORDER = None
+        # Analysis also runs lazily when an archived session is opened.
+        store = globals().get("LAB_STORE")
+        if store is not None and closed_id:
+            store.analyze_background(closed_id)
 
 
 def _rec_rotate() -> None:
@@ -278,7 +285,18 @@ class State:
         # Владение прокачкой SDK: update() нативного libCapsuleClient НЕ
         # потокобезопасен — его дёргает ровно один поток. Пока воркер
         # подключения активен, главный цикл сканирования locator не трогает.
-        self._worker_active: bool = False
+        self._worker_active: bool = False  # legacy compatibility; SDK now has a single owner thread
+        # Device discovery is opt-in. The user may browse archived recordings without hardware.
+        self.sdk_ready: bool = False
+        self.scan_requested: bool = False
+        self.scan_active: bool = False
+        self.scan_deadline: float = 0.0
+        self.discovered_devices: list[dict[str, str]] = []
+        self.connect_requested: str | None = None
+        self.disconnect_requested: bool = False
+        self.auto_reconnect: bool = False
+        self.last_device_serial: str = ""
+        self.last_error: str = ""
 
         # Calibration control (user-driven):
         self.calibration_phase: str = "idle"
@@ -381,22 +399,15 @@ def _load_snapshot() -> None:
         with open(SNAPSHOT_PATH, encoding="utf-8") as f:
             data = json.load(f)
         with STATE_LOCK:
-            S.battery = data.get("battery")
-            S.device_name = data.get("device_name") or ""
-            S.device_serial = data.get("device_serial") or ""
-            S.channel_names = data.get("channel_names") or []
-            S.calibrated = bool(data.get("calibrated"))
-            S.latest_calibration = data.get("latest_calibration")
-            S.latest_emotions = data.get("latest_emotions")
-            S.latest_cardio = data.get("latest_cardio")
-            S.latest_phy = data.get("latest_phy")
-            S.latest_prod = data.get("latest_prod")
-            S.latest_resistances = data.get("latest_resistances") or []
-            for key, attr in (("emotions_hist", "emotions_hist"),
-                              ("cardio_hist", "cardio_hist"),
-                              ("nfb_hist", "nfb_hist")):
-                for item in data.get(key) or []:
-                    getattr(S, attr).append(item)
+            # Do not populate live device fields from a historical snapshot.
+            # Their values are valid only after a fresh vendor SDK connection.
+            S.battery = None
+            S.device_name = ""
+            S.device_serial = ""
+            S.channel_names = []
+            S.calibrated = False
+            # Cached telemetry belongs to a PAST connection. Do not seed live
+            # sensor histories or pretend the device is connected after restart.
         log.info("[state] snapshot restored (saved_at=%s)", data.get("saved_at"))
     except FileNotFoundError:
         pass
@@ -763,197 +774,401 @@ def _attempt_failed(handler_state: dict) -> None:
 # Capsule worker thread
 # --------------------------------------------------------------------------- #
 
+def _clear_live_connection(reason: str, status: str = "idle", *, preserve_devices: bool = True) -> None:
+    """Drop *current* device state; cached sessions and replay remain independent.
+
+    Called by the single SDK owner thread, or at startup, never from a native callback.
+    """
+    with STATE_LOCK:
+        S._device_ready = False
+        S.status = status
+        S.status_message = reason
+        S.battery = None
+        S.device_name = ""
+        S.device_serial = ""
+        S.device_mode = None
+        S.channel_names = []
+        S.eeg_sample_rate = S.ppg_sample_rate = S.mems_sample_rate = 0
+        S.calibrated = False
+        S.calibration_phase = "idle"
+        S._calibration_started_at = 0.0
+        S._calibrator = None
+        S._calibration_requested = S._calibration_skip = False
+        S.latest_calibration = None
+        S.latest_emotions = S.latest_cardio = S.latest_phy = S.latest_prod = None
+        S.latest_resistances = []
+        S.res_channel_names = []
+        S.last_data_at = 0.0
+        for key in ("eeg", "eeg_t", "ppg", "ppg_t", "mems_acc", "mems_gyro", "mems_t",
+                    "resistances_hist", "resistances_t", "emotions_hist", "cardio_hist", "nfb_hist"):
+            getattr(S, key).clear()
+        if not preserve_devices:
+            S.discovered_devices.clear()
+
+
+def _device_is_connected(device) -> bool:
+    """Only the vendor's connection predicate is positive proof of connection.
+
+    A connection-status callback also fires for transitional/disconnected states.
+    """
+    try:
+        return bool(device is not None and device.is_connected())
+    except Exception:
+        return False
+
+
+def _make_device_list_handler(locator=None, lib=None):
+    """Copy discovery metadata from the callback; never connect or pump SDK here."""
+    def on_devices(_locator, info, fail_reason):
+        found = []
+        try:
+            for entry in info:
+                serial = str(entry.get_serial()).strip()
+                if serial and serial not in {d["serial"] for d in found}:
+                    found.append({"serial": serial, "name": str(entry.get_name() or "Neiry Headband")})
+        except Exception as exc:
+            log.warning("[capsule] invalid discovery reply: %r", exc)
+        with STATE_LOCK:
+            if not S.scan_active:  # late reply after scan/cancel is not a new scan
+                return
+            known = {d["serial"]: d for d in S.discovered_devices}
+            known.update({d["serial"]: d for d in found})
+            S.discovered_devices = list(known.values())
+            S.status_message = (f"Найдено устройств: {len(known)}" if known
+                                else "Поиск продолжается. Проверьте питание и Bluetooth.")
+    return on_devices
+
+
+def _prepare_device(device, lib) -> tuple[list[Any], list[Any]]:
+    """Called after verified connect() on the sole SDK pump thread."""
+    # Firmware may discard EEG/resistance subscriptions set before connection.
+    device.set_on_battery_charge_changed(on_battery)
+    device.set_on_mode_changed(on_mode_changed)
+    device.set_on_eeg(on_eeg)
+    device.set_on_resistances(on_resistances)
+    handles: list[Any] = []
+    baseline_handlers: list[Any] = []
+    for label, factory in (("Emotions", Emotions), ("Cardio", Cardio),
+                           ("PhysiologicalStates", PhysiologicalStates),
+                           ("Productivity", Productivity), ("MEMS", MEMS)):
+        try:
+            obj = factory(device, lib)
+            handles.append(obj)
+            if label == "Emotions":
+                obj.set_on_states_update(on_emotions_states)
+            elif label == "Cardio":
+                obj.set_on_indexes_update(on_cardio_indexes)
+                obj.set_on_ppg(on_ppg)
+            elif label == "PhysiologicalStates":
+                obj.set_on_states(on_phy_states)
+                obj.set_on_calibrated(on_phy_calibrated)
+                # Baseline calibration is deferred until the user explicitly asks.
+                baseline_handlers.append(obj)
+            elif label == "Productivity":
+                obj.set_on_metrics_update(on_prod_metrics)
+                try:
+                    obj.set_on_baseline_update(on_prod_baselines)
+                except Exception:
+                    pass
+                baseline_handlers.append(obj)
+            elif label == "MEMS":
+                obj.set_on_update(on_mems)
+        except Exception as exc:
+            log.warning("[capsule] optional stream %s unavailable: %s", label, exc)
+    return handles, baseline_handlers
+
+
 def capsule_worker() -> None:
+    """Only thread allowed to call locator.request_devices/update or Device methods.
+
+    Discovery -> user selection -> connection -> optional calibration. No scanning,
+    automatic connections or blocking calibration overlay at initial startup.
+    """
     if not SDK_AVAILABLE:
         with STATE_LOCK:
-            S.status = "error"
-            S.status_message = (f"Capsule SDK not available ({SDK_IMPORT_ERROR}); "
-                                "serving API without live device")
-        log.warning("[capsule] no SDK — API-only mode, worker parked")
-        _STOP.wait()  # ждём shutdown, API продолжает служить
+            S.status = "sdk_missing"
+            S.status_message = "Capsule SDK не установлен. Архив записей доступен без устройства."
+            S.last_error = SDK_IMPORT_ERROR or "SDK imports unavailable"
+        _STOP.wait()
         return
-    log.info("[capsule] STAGE 1: loading native library")
     try:
         cap = Capsule(LIB_PATH)
-        S.library_version = cap.get_version()
+        lib = cap.get_lib()
+        locator = DeviceLocator("Logs", lib)
+        locator.set_on_devices_list(_make_device_list_handler(locator, lib))
+        with STATE_LOCK:
+            S.library_version = str(cap.get_version())
+            S.sdk_ready = True
+            S.status = "idle"
+            S.status_message = "Устройство не подключено. Нажмите «Найти устройство»."
+            S.last_error = ""
     except Exception as exc:
         with STATE_LOCK:
-            S.status = "error"
-            S.status_message = f"Failed to load library: {exc}"
-        log.warning("[capsule] STAGE 1 FAILED: %s", exc)
+            S.status = "sdk_missing"
+            S.status_message = "Невозможно запустить Capsule SDK. Проверьте путь и библиотеку."
+            S.last_error = str(exc)
+        log.exception("[capsule] SDK initialization failed")
+        _STOP.wait()
         return
-    log.info("[capsule] STAGE 1 OK: %s", S.library_version)
 
-    lib = cap.get_lib()
-    log.info("[capsule] STAGE 2: creating DeviceLocator")
-    locator = DeviceLocator("Logs", lib)
-    log.info("[capsule] STAGE 2 OK")
+    active_device = None
+    handles: list[Any] = []  # Keep native callback owners alive until device release.
+    baseline_handlers: list[Any] = []
+    next_check = 0.0
+    negative_checks = 0
+    scan_window_s = 8.0
+    next_auto_scan_at = 0.0
 
-    log.info("[capsule] STAGE 3: setting on_devices_list callback")
-    locator.set_on_devices_list(_make_device_list_handler(locator, lib))
-    log.info("[capsule] STAGE 3 OK — entering scan loop")
-
-    SEARCH_WINDOW_S = 10
-    next_search_at = 0.0
-    last_status_message = ""
-    last_heartbeat = 0.0
-    iter_n = 0
+    def release_device(message: str, state: str = "idle", *, retry: bool = False) -> None:
+        nonlocal active_device, handles, baseline_handlers, negative_checks, next_auto_scan_at
+        old = active_device
+        active_device = None
+        try:
+            if old is not None:
+                try:
+                    old.stop()
+                except Exception:
+                    pass
+                try:
+                    old.release()
+                except Exception as exc:
+                    log.debug("[capsule] release: %s", exc)
+        finally:
+            handles = []
+            baseline_handlers = []
+            _rec_close()
+            _clear_live_connection(message, state)
+            negative_checks = 0
+            if retry:
+                with STATE_LOCK:
+                    S.scan_requested = True
+                next_auto_scan_at = time.monotonic() + 15.0
 
     while not _STOP.is_set():
-        iter_n += 1
+        # Capture commands atomically, keeping native operations exclusively here.
         with STATE_LOCK:
-            status = S.status
-            device_ready = S._device_ready
-        if status in ("stopped", "error"):
-            time.sleep(0.5)
-            continue
-
-        now = time.time()
-
-        if not _main_may_pump():
-            # Воркер подключения владеет прокачкой SDK — locator не трогаем,
-            # иначе параллельные update() из двух потоков роняют доставку событий.
-            if now - last_heartbeat >= 5.0:
-                last_heartbeat = now
-                with STATE_LOCK:
-                    log.debug("[capsule] heartbeat: worker owns pump, status=%s msg=%r batt=%s",
-                              S.status, S.status_message, S.battery)
+            disconnect = S.disconnect_requested
+            S.disconnect_requested = False
+            scan = S.scan_requested
+            S.scan_requested = False
+            serial = S.connect_requested
+            S.connect_requested = None
+            auto_reconnect = S.auto_reconnect
+            cal_start = S._calibration_requested
+            S._calibration_requested = False
+            cal_skip = S._calibration_skip
+            S._calibration_skip = False
+        if disconnect:
+            release_device("Устройство отключено пользователем.", "idle")
+            with STATE_LOCK:
+                S.scan_active = False
+                S.scan_requested = False
+                S.connect_requested = None
+            # Don't consume a concurrent scan until next iteration.
             time.sleep(0.04)
             continue
 
-        if device_ready:
-            try:
-                locator.update()
-            except Exception:
-                pass
-
-            # Таймаут калибровки: без ЭЭГ calibrate_quick не завершится никогда,
-            # и окно «Close your eyes» висело бы вечно. Через CAL_TIMEOUT_S — честный fail.
+        # Autoreconnect is opt-in, uses ONLY the previously verified serial,
+        # and retries periodically if it was not discovered this time.
+        if not scan and not serial and active_device is None and auto_reconnect:
             with STATE_LOCK:
-                if (S.calibration_phase == "running" and S._calibration_started_at
-                        and time.time() - S._calibration_started_at > CAL_TIMEOUT_S):
-                    S.calibration_phase = "failed"
-                    S.status_message = ("Calibration timed out: no EEG data received. "
-                                        "Make sure the headband is awake and worn, then retry.")
-                    log.warning("[capsule] STAGE 16: calibration TIMED OUT (no EEG)")
+                should_retry = bool(S.last_device_serial and not S.scan_active
+                                    and not S.scan_requested and not S.connect_requested
+                                    and S.status in ("idle", "disconnected", "error")
+                                    and time.monotonic() >= next_auto_scan_at)
+                if should_retry:
+                    S.scan_requested = True
+                    next_auto_scan_at = time.monotonic() + 15.0
 
-            # User-driven calibration control
+        if serial:
             with STATE_LOCK:
-                _req_start = S._calibration_requested
-                _req_skip = S._calibration_skip
-                S._calibration_requested = False
-                S._calibration_skip = False
-                _cal_phase = S.calibration_phase
-                _calibrator = S._calibrator
-
-                if _cal_phase == "idle":
-                    S.calibration_phase = "ready"
-                    _cal_phase = "ready"
-                    log.info("[capsule] fallback: promoted calibration_phase from idle to ready")
-
-            if _req_skip and _cal_phase in ("ready", "idle"):
+                candidate = next((d for d in S.discovered_devices if d["serial"] == serial), None)
+                S.scan_active = False
+                S.status = "connecting"
+                S.status_message = f"Подключаемся к {candidate['name'] if candidate else serial}…"
+            if candidate is None:
                 with STATE_LOCK:
-                    S.calibration_phase = "skipped"
-                    S.calibrated = True
-                log.info("[capsule] STAGE 16: calibration SKIPPED by user")
-            elif _req_start and _cal_phase in ("ready", "complete", "failed", "skipped") and _calibrator is not None:
-                # Включая перекалибровку после complete: кнопка «Перекалибровать»
-                # шлёт тот же start_calibration, фаза просто начинается заново.
+                    S.status = "error"
+                    S.last_error = "Устройство не найдено в результатах поиска. Запустите поиск снова."
+                    S.status_message = S.last_error
+                continue
+            try:
+                device = Device(locator, serial, lib)
+                # Do not infer connected from an event; confirm via is_connected().
+                device.set_on_connection_status_changed(lambda dev, status:
+                    log.debug("[capsule] connection event: %s", status))
+                device.connect(bipolarChannels=True)
+                deadline = time.monotonic() + 20.0
+                connected = False
+                cancelled = False
+                while time.monotonic() < deadline and not _STOP.is_set():
+                    with STATE_LOCK:
+                        cancelled = S.disconnect_requested
+                    if cancelled:
+                        break
+                    locator.update()
+                    if _device_is_connected(device):
+                        connected = True
+                        break
+                    time.sleep(0.04)
+                if not connected:
+                    try:
+                        device.release()
+                    except Exception:
+                        pass
+                    with STATE_LOCK:
+                        S.status = "idle" if cancelled else "error"
+                        S.last_error = "" if cancelled else "Не удалось установить соединение за 20 секунд. Проверьте питание, Bluetooth и попробуйте снова."
+                        S.status_message = "Подключение отменено." if cancelled else S.last_error
+                    continue
+                handles, baseline_handlers = _prepare_device(device, lib)
+                channel_names_obj = device.get_channel_names()
+                channels = [str(channel_names_obj.get_name_by_index(i)) for i in range(len(channel_names_obj))]
+                rates = {"eeg": _query_sample_rate(device, "get_eeg_sample_rate", DEFAULT_EEG_SR),
+                         "ppg": _query_sample_rate(device, "get_ppg_sample_rate", DEFAULT_PPG_SR),
+                         "mems": _query_sample_rate(device, "get_mems_sample_rate", DEFAULT_MEMS_SR)}
+                info_obj = device.get_info()
+                device.start()
+                # Optional, explicit quick calibration (never starts itself).
+                cal = None
                 try:
-                    _calibrator.calibrate_quick()
+                    cal = Calibrator(device, lib)
+                    cal.set_on_calibration_finished(_on_calibration)
+                    handles.append(cal)
+                except Exception as exc:
+                    log.info("[capsule] quick calibration unavailable: %s", exc)
+                try:
+                    nfb = NFB(device, lib, calibrator=None)
+                    nfb.set_on_user_state(on_nfb_user_state)
+                    handles.append(nfb)
+                except Exception as exc:
+                    log.info("[capsule] NFB unavailable: %s", exc)
+                if REPLAY is not None:
+                    REPLAY.stop()
+                with STATE_LOCK:
+                    S.device_name = str(info_obj.get_name() or candidate["name"])
+                    S.device_serial = str(info_obj.get_serial() or serial)
+                    S.last_device_serial = serial
+                    S.channel_names = channels
+                    S.eeg_sample_rate, S.ppg_sample_rate, S.mems_sample_rate = (rates["eeg"], rates["ppg"], rates["mems"])
+                    S._calibrator = cal
+                    S.calibration_phase = "ready" if cal is not None else "unavailable"
+                    S.calibrated = False
+                    S._device_ready = True
+                    S.status = "connected"
+                    S.status_message = f"Подключено: {S.device_name}. Калибровка по желанию."
+                    S.last_error = ""
+                active_device = device
+                negative_checks = 0
+                next_check = time.monotonic() + 2.0
+                _rec_start(S.device_name, S.device_serial, channels, rates)
+                if RECORDER:
+                    RECORDER.event("device_connected", device=S.device_name, serial=S.device_serial)
+                log.info("[capsule] connected to %s (channels: %s)", S.device_name, channels)
+            except Exception as exc:
+                log.exception("[capsule] connect/setup failed")
+                try:
+                    device.release()
+                except Exception:
+                    pass
+                release_device(f"Не удалось подключиться: {exc}", "error")
+                with STATE_LOCK:
+                    S.last_error = str(exc)
+                next_auto_scan_at = time.monotonic() + 15.0
+            continue
+
+        if scan and active_device is None:
+            with STATE_LOCK:
+                S.discovered_devices.clear()
+                S.scan_active = True
+                S.scan_deadline = time.monotonic() + scan_window_s + 1.0
+                S.status = "searching"
+                S.status_message = "Ищем повязку… Включите устройство и держите рядом."
+                S.last_error = ""
+            try:
+                locator.request_devices(DeviceType.Band, int(scan_window_s))
+            except Exception as exc:
+                with STATE_LOCK:
+                    S.scan_active = False
+                    S.status = "error"
+                    S.last_error = f"Ошибка поиска: {exc}"
+                    S.status_message = S.last_error
+                log.warning("[capsule] scan failed: %s", exc)
+
+        try:
+            locator.update()
+        except Exception as exc:
+            log.warning("[capsule] update failed: %s", exc)
+            # A transient native error must not freeze the UI or leave a false connection.
+            if active_device is not None and not _device_is_connected(active_device):
+                release_device("Связь с устройством прервана.", "disconnected", retry=auto_reconnect)
+            time.sleep(0.2)
+            continue
+
+        with STATE_LOCK:
+            if S.scan_active and time.monotonic() >= S.scan_deadline:
+                S.scan_active = False
+                S.status = "found" if S.discovered_devices else "idle"
+                S.status_message = (f"Найдено устройств: {len(S.discovered_devices)}. Выберите устройство."
+                                    if S.discovered_devices else "Устройства не обнаружены. Проверьте Bluetooth и повторите поиск.")
+                # Only reconnect automatically to the explicitly connected
+                # device, never to an arbitrary first device in discovery.
+                if S.auto_reconnect and S.last_device_serial and any(
+                    d["serial"] == S.last_device_serial for d in S.discovered_devices
+                ):
+                    S.connect_requested = S.last_device_serial
+                    S.status = "connecting"
+                    S.status_message = "Повторное подключение к прежнему устройству…"
+                elif S.auto_reconnect and S.last_device_serial:
+                    next_auto_scan_at = time.monotonic() + 15.0
+
+        if active_device is not None:
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + 2.0
+                if _device_is_connected(active_device):
+                    negative_checks = 0
+                else:
+                    negative_checks += 1
+                    if negative_checks >= 2:
+                        log.warning("[capsule] device.is_connected() false twice — disconnected")
+                        release_device("Устройство потеряло связь.", "disconnected", retry=auto_reconnect)
+            with STATE_LOCK:
+                phase = S.calibration_phase
+                cal = S._calibrator
+                ready = S._device_ready
+                age = _data_age_s()
+                started_at = S._calibration_started_at
+            if ready and phase == "running" and started_at and time.time()-started_at > CAL_TIMEOUT_S:
+                with STATE_LOCK:
+                    S.calibration_phase = "failed"
+                    S.status_message = "Калибровка превысила лимит времени: проверьте контакт ЭЭГ."
+            if ready and cal_start and cal is not None and phase in ("ready", "complete", "failed", "skipped"):
+                try:
+                    # Baseline algorithms are also opt-in, never run on discovery or connection.
+                    for processor in baseline_handlers:
+                        try:
+                            processor.calibrate_baselines()
+                        except Exception as exc:
+                            log.warning("[capsule] baseline calibration failed: %s", exc)
+                    cal.calibrate_quick()
                     with STATE_LOCK:
                         S.calibration_phase = "running"
                         S.calibrated = False
                         S._calibration_started_at = time.time()
                     if RECORDER:
                         RECORDER.event("calibration_started")
-                    log.info("[capsule] STAGE 16: calibration STARTED by user")
                 except Exception as exc:
                     with STATE_LOCK:
                         S.calibration_phase = "failed"
-                        S.status_message = f"Calibration start failed: {exc}"
-                    log.warning("[capsule] STAGE 16: calibration start FAILED: %s", exc)
-
-            time.sleep(0.04)
-            if iter_n % 125 == 0:
+                        S.status_message = f"Не удалось начать калибровку: {exc}"
+            elif ready and cal_skip and phase == "ready":
                 with STATE_LOCK:
-                    log.debug("[capsule] idle: eeg=%d ppg=%d mems=%d emot=%s cardio=%s cal=%s",
-                              len(S.eeg), len(S.ppg), len(S.mems_acc),
-                              S.latest_emotions is not None, S.latest_cardio is not None,
-                              S.calibration_phase)
-            continue
-
-        if now >= next_search_at:
-            with STATE_LOCK:
-                S.status = "searching"
-                if S.status_message != last_status_message:
-                    log.info("[capsule] STAGE 4: scanning… (%s) iter=%d", S.status_message, iter_n)
-                    last_status_message = S.status_message
-            try:
-                log.info("[capsule] STAGE 4: locator.request_devices(Band, %d)", SEARCH_WINDOW_S)
-                locator.request_devices(DeviceType.Band, SEARCH_WINDOW_S)
-                log.info("[capsule] STAGE 4: request returned")
-            except Exception as exc:
-                with STATE_LOCK:
-                    S.status = "error"
-                    S.status_message = f"request_devices failed: {exc}"
-                log.warning("[capsule] STAGE 4 FAILED: %s", exc)
-                time.sleep(2.0)
-                continue
-            next_search_at = now + SEARCH_WINDOW_S
-            time.sleep(0.1)
-
-        if now - last_heartbeat >= 5.0:
-            last_heartbeat = now
-            with STATE_LOCK:
-                log.debug("[capsule] heartbeat: status=%s msg=%r batt=%s eeg=%d ppg=%d mems=%d",
-                          S.status, S.status_message, S.battery,
-                          len(S.eeg), len(S.ppg), len(S.mems_acc))
-
-        try:
-            locator.update()
-        except Exception as exc:
-            log.warning("[capsule] STAGE 4 update() raised: %s", exc)
+                    S.calibration_phase = "skipped"
+                    S.calibrated = False  # Skipping is NOT a completed calibration.
         time.sleep(0.04)
 
-
-def _make_device_list_handler(locator, lib):
-    state = {"done": False}
-
-    def on_device_list(loc, info, fail_reason) -> None:
-        if state["done"]:
-            return
-        try:
-            _on_device_list_inner(loc, info, fail_reason, locator, lib, state)
-        except Exception as exc:
-            log.warning("[capsule] EXCEPTION in on_device_list: %r", exc)
-            with STATE_LOCK:
-                S.status = "error"
-                S.status_message = f"Device-list handler error: {exc}"
-    return on_device_list
-
-
-def _on_device_list_inner(loc, info, fail_reason, locator, lib, state) -> None:
-    try:
-        n = len(info)
-    except Exception:
-        n = 0
-    try:
-        fail_v = int(getattr(fail_reason, "value", fail_reason))
-    except Exception:
-        fail_v = "?"
-    with STATE_LOCK:
-        if not S._device_ready:
-            S.status_message = f"Found {n} device(s), fail={fail_v}"
-    if n > 0 and not state["done"]:
-        if not _worker_claim_pump():
-            return  # попытка подключения уже идёт
-        state["done"] = True
-        threading.Thread(
-            target=_handle_devices_in_worker,
-            args=(locator, lib, [(str(info[0].get_serial()), str(info[0].get_name()))], 0, n, state),
-            daemon=True,
-        ).start()
+    if active_device is not None:
+        release_device("Приложение завершает работу.", "idle")
 
 
 def _query_sample_rate(device, getter: str, default: int) -> int:
@@ -968,200 +1183,6 @@ def _query_sample_rate(device, getter: str, default: int) -> int:
     return default
 
 
-def _handle_devices_in_worker(locator, lib, devices, fail_reason_val, n, state) -> None:
-    log.info("[capsule] HW-A: worker thread started (n=%d)", n)
-    # Колбэк списка устройств fired внутри чужого locator.update() — даём ему
-    # вернуться, прежде чем качать SDK из этого потока.
-    time.sleep(0.2)
-    try:
-        with STATE_LOCK:
-            S.status_message = f"Found {n} device(s)"
-
-        if n == 0 or not devices:
-            _attempt_failed(state)
-            return
-
-        serial, name = devices[0]
-        log.info("[capsule] HW-B: first device = serial=%r name=%r", serial, name)
-
-        log.info("[capsule] STAGE 5: Device(locator, serial, lib)")
-        device = Device(locator, serial, lib)
-        log.info("[capsule] STAGE 5 OK: Device created")
-
-        connected_flag = {"hit": False}
-
-        def on_conn(dev, status):
-            log.info("[capsule] STAGE 6 EVENT: connection_status = %s", status)
-            with STATE_LOCK:
-                S.device_mode = int(status) if not hasattr(status, "value") else int(status.value)
-            connected_flag["hit"] = True
-        device.set_on_connection_status_changed(on_conn)
-
-        device.set_on_battery_charge_changed(on_battery)
-        device.set_on_mode_changed(on_mode_changed)
-        device.set_on_resistances(on_resistances)
-        device.set_on_eeg(on_eeg)
-        log.info("[capsule] STAGE 6: device-level callbacks set")
-
-        log.info("[capsule] STAGE 7: device.connect(bipolarChannels=True)")
-        device.connect(bipolarChannels=True)
-        log.info("[capsule] STAGE 7: connect() returned")
-
-        log.info("[capsule] STAGE 8: waiting for connection event (up to 30s)")
-        connected = False
-        for i in range(750):
-            if _STOP.is_set():
-                _worker_release_pump()
-                return
-            locator.update()
-            time.sleep(0.04)
-            if connected_flag["hit"]:
-                connected = True
-                break
-            try:
-                if device.is_connected():
-                    connected = True
-                    connected_flag["hit"] = True
-                    break
-            except Exception:
-                pass
-        if not connected:
-            log.warning("[capsule] STAGE 8 TIMEOUT: no connection event — releasing, will retry on next scan")
-            with STATE_LOCK:
-                S.status_message = "Device found, but did not connect in 30s — retrying…"
-            try:
-                device.release()
-            except Exception:
-                pass
-            _attempt_failed(state)
-            return
-
-        # Повторная подписка ПОСЛЕ соединения: подписки, выставленные до
-        # connect() (STAGE 6), на этой прошивке теряются — PPG/MEMS идут,
-        # а EEG и resistances не приходили вообще (diag.py подписывается
-        # после коннекта, и официальный example делает так же для PSD).
-        try:
-            device.set_on_eeg(on_eeg)
-            device.set_on_resistances(on_resistances)
-            log.info("[capsule] STAGE 8b: re-subscribed EEG/resistances after connect")
-        except Exception as exc:
-            log.warning("[capsule] STAGE 8b re-subscribe failed: %r", exc)
-
-        log.info("[capsule] STAGE 9: querying channel names and sample rates")
-        channel_names_obj = device.get_channel_names()
-        channels = [channel_names_obj.get_name_by_index(i) for i in range(len(channel_names_obj))]
-        # API позволяет запросить все три частоты у устройства; дефолты ниже —
-        # только на случай, если конкретная прошивка их не отдала.
-        eeg_sr = _query_sample_rate(device, "get_eeg_sample_rate", DEFAULT_EEG_SR)
-        ppg_sr = _query_sample_rate(device, "get_ppg_sample_rate", DEFAULT_PPG_SR)
-        mems_sr = _query_sample_rate(device, "get_mems_sample_rate", DEFAULT_MEMS_SR)
-        info_obj = device.get_info()
-        log.info("[capsule] STAGE 9 OK: channels=%s eeg_sr=%d ppg_sr=%d mems_sr=%d",
-                 channels, eeg_sr, ppg_sr, mems_sr)
-
-        # Живое подключение вытесняет replay: иначе данные повязки и записи
-        # перемешаются в одних деках.
-        if REPLAY is not None:
-            REPLAY.stop()
-
-        with STATE_LOCK:
-            S.device_name = info_obj.get_name()
-            S.device_serial = info_obj.get_serial()
-            S.channel_names = channels
-            S.eeg_sample_rate = eeg_sr
-            S.ppg_sample_rate = ppg_sr
-            S.mems_sample_rate = mems_sr
-            S.status = "connected"
-            S.status_message = f"Connected to {S.device_name}"
-            S._device_ready = True
-        # Сессия записи в records/ на всё время подключения устройства.
-        _rec_start(S.device_name, S.device_serial, channels,
-                   {"eeg": S.eeg_sample_rate, "ppg": S.ppg_sample_rate, "mems": S.mems_sample_rate})
-        if RECORDER:
-            RECORDER.event("device_connected", device=S.device_name, serial=S.device_serial)
-
-        try:
-            emotions = Emotions(device, lib)
-            emotions.set_on_states_update(on_emotions_states)
-            log.info("[capsule] STAGE 10: Emotions ready")
-        except Exception as exc:
-            log.warning("emotions: %s", exc)
-
-        try:
-            cardio = Cardio(device, lib)
-            cardio.set_on_indexes_update(on_cardio_indexes)
-            cardio.set_on_ppg(on_ppg)
-            log.info("[capsule] STAGE 11: Cardio ready")
-        except Exception as exc:
-            log.warning("cardio: %s", exc)
-
-        try:
-            phy = PhysiologicalStates(device, lib)
-            phy.set_on_states(on_phy_states)
-            phy.set_on_calibrated(on_phy_calibrated)
-            # В обёртке метод называется calibrate_baselines(), а не
-            # start_baseline_calibration(): из-за hasattr-проверки базовая
-            # калибровка никогда не запускалась, и phy/prod молчали вечно.
-            phy.calibrate_baselines()
-            log.info("[capsule] STAGE 12: PhysiologicalStates ready (baseline calibration started)")
-        except Exception as exc:
-            log.warning("phy: %s", exc)
-
-        try:
-            prod = Productivity(device, lib)
-            prod.set_on_metrics_update(on_prod_metrics)
-            try:
-                prod.set_on_baseline_update(on_prod_baselines)
-            except Exception:
-                pass
-            prod.calibrate_baselines()
-            log.info("[capsule] STAGE 13: Productivity ready (baseline calibration started)")
-        except Exception as exc:
-            log.warning("prod: %s", exc)
-
-        try:
-            mems = MEMS(device, lib)
-            mems.set_on_update(on_mems)
-            log.info("[capsule] STAGE 14: MEMS ready")
-        except Exception as exc:
-            log.warning("mems: %s", exc)
-
-        log.info("[capsule] STAGE 15: device.start()")
-        device.start()
-        log.info("[capsule] STAGE 15 OK")
-
-        cal = None
-        try:
-            cal = Calibrator(device, lib)
-            cal.set_on_calibration_finished(_on_calibration)
-            with STATE_LOCK:
-                S._calibrator = cal
-                S.calibration_phase = "ready"
-            log.info("[capsule] STAGE 16: calibrator prepared")
-        except Exception as exc:
-            log.warning("calibrator init failed: %s", exc)
-            with STATE_LOCK:
-                S.calibration_phase = "ready"
-                S.status_message = f"Connected to {S.device_name} (calibration unavailable)"
-
-        try:
-            nfb = NFB(device, lib, calibrator=None)
-            nfb.set_on_user_state(on_nfb_user_state)
-            log.info("[capsule] STAGE 17: NFB ready (uncalibrated)")
-        except Exception as exc:
-            log.warning("nfb: %s", exc)
-
-        state["done"] = True
-        _worker_release_pump()
-        log.info("[capsule] HW-Z: ALL STAGES DONE")
-    except BaseException as exc:
-        _worker_release_pump()
-        with STATE_LOCK:
-            S.status = "error"
-            S.status_message = f"Worker crashed: {exc!r}"
-        log.warning("[capsule] WORKER CRASHED: %r", exc)
-
-
 def _on_calibration(calibrator, data) -> None:
     try:
         d = {n: float(getattr(data, n)) for n in
@@ -1170,10 +1191,12 @@ def _on_calibration(calibrator, data) -> None:
               "individualBandwidth", "individualNormalizedPower",
               "lowerFrequency", "upperFrequency"]}
         with STATE_LOCK:
+            if not (S._device_ready and S.status == "connected" and S.calibration_phase == "running"):
+                return
             S.latest_calibration = d
             S.calibrated = True
             S.calibration_phase = "complete"
-            S.status_message = "Calibration complete"
+            S.status_message = "Калибровка завершена"
         if RECORDER:
             RECORDER.set_calibration(d)
         log.info("[cb] calibration finished: %s", d)
@@ -1188,22 +1211,16 @@ def _on_calibration(calibrator, data) -> None:
 # --------------------------------------------------------------------------- #
 
 def _watchdog_tick() -> None:
+    """Warn on stale streams, but never conclude Bluetooth disconnect from silence.
+
+    Actual link health is checked with device.is_connected() on SDK owner thread.
+    """
     with STATE_LOCK:
         age = _data_age_s()
-        status = S.status
-    if age is not None and age > LOST_TIMEOUT_S and status not in ("disconnected", "lost", "error"):
-        with STATE_LOCK:
-            S.status = "disconnected"
-            S.status_message = f"Device lost — no data for {age:.0f}+ seconds"
-            S._device_ready = False  # скан-цикл вернётся в searching
-        log.warning("[watchdog] device lost (data age %.1fs) — recorder closed", age)
-        if RECORDER:
-            try:
-                RECORDER.event("device_lost")
-            except Exception:
-                pass
-        _rec_close()
-        return
+        connected = S._device_ready and S.status == "connected"
+        if connected and age is not None and age > LOST_TIMEOUT_S:
+            S.status_message = (f"Устройство подключено, но данные не обновлялись {age:.0f} с. "
+                                "Проверьте посадку и контакт электродов.")
     rec = RECORDER
     if rec is not None and rec.active:
         try:
@@ -1250,29 +1267,165 @@ async def lifespan(app: FastAPI):
     log.info("[web] shutdown complete")
 
 
-app = FastAPI(title="Capsule Neiry Dashboard", lifespan=lifespan)
+class StrictJSONResponse(JSONResponse):
+    def render(self, content: Any) -> bytes:
+        return super().render(finite_json(content))
+
+
+app = FastAPI(title="NeuroScope · Neiry Research", version="2.0.0",
+              lifespan=lifespan, default_response_class=StrictJSONResponse)
+
+
+@app.middleware("http")
+async def local_origin_guard(request, call_next):
+    origin = request.headers.get("origin")
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and origin:
+        if urlsplit(origin).netloc != request.headers.get("host"):
+            return StrictJSONResponse({"detail": "Изменения доступны только из интерфейса этого сервера"}, status_code=403)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "same-origin"
+    response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
+    return response
 STATIC_DIR = os.path.join(HERE, "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    return FileResponse(os.path.join(STATIC_DIR, "lab.html"))
+
+
+from fastapi.responses import RedirectResponse
+
+
+@app.get("/live")
+async def live() -> RedirectResponse:
+    return RedirectResponse(url="/#live", status_code=307)
 
 
 @app.get("/charts")
-async def charts() -> FileResponse:
-    return FileResponse(os.path.join(STATIC_DIR, "charts.html"))
+async def charts() -> RedirectResponse:
+    return RedirectResponse(url="/#live", status_code=307)
 
 
 @app.get("/more")
-async def more() -> FileResponse:
-    return FileResponse(os.path.join(STATIC_DIR, "more.html"))
+async def more() -> RedirectResponse:
+    return RedirectResponse(url="/#overview", status_code=307)
 
 
 @app.get("/sessions")
-async def sessions() -> FileResponse:
-    return FileResponse(os.path.join(STATIC_DIR, "sessions.html"))
+async def sessions() -> RedirectResponse:
+    return RedirectResponse(url="/#sessions", status_code=307)
+
+
+def _device_status_payload() -> dict[str, Any]:
+    with STATE_LOCK:
+        age = _data_age_s()
+        ready = S._device_ready and S.status == "connected"
+        return {
+            "status": S.status, "message": S.status_message,
+            "connected": ready, "sdk_available": SDK_AVAILABLE,
+            "sdk_ready": S.sdk_ready, "sdk_error": S.last_error if S.status == "sdk_missing" else None,
+            "device": S.device_name if ready else None,
+            "serial": S.device_serial if ready else None,
+            "battery": S.battery if ready else None,
+            "channels": list(S.channel_names) if ready else [],
+            "discovered": list(S.discovered_devices),
+            "scanning": S.scan_active or S.scan_requested,
+            "auto_reconnect": S.auto_reconnect,
+            "last_device_serial": S.last_device_serial,
+            "calibration_phase": S.calibration_phase if ready else "unavailable",
+            "calibration_available": ready and S._calibrator is not None,
+            "calibrated": S.calibrated if ready else False,
+            "recording": RECORDER.session_id if ready and RECORDER and RECORDER.active else None,
+            "data_age_s": round(age, 2) if ready and age is not None else None,
+            "stream_stale": ready and (age is None or age > LOST_TIMEOUT_S),
+        }
+
+
+@app.get("/api/device/status")
+async def api_device_status() -> dict[str, Any]:
+    return _device_status_payload()
+
+
+@app.post("/api/device/scan")
+async def api_device_scan() -> dict[str, Any]:
+    if not SDK_AVAILABLE or not S.sdk_ready:
+        raise HTTPException(503, "Capsule SDK недоступен. Проверьте установку и путь CAPSULE_SDK_DIR.")
+    with STATE_LOCK:
+        if S._device_ready or S.status == "connecting":
+            raise HTTPException(409, "Сначала отключите текущее устройство.")
+        if S.scan_active or S.scan_requested:
+            raise HTTPException(409, "Поиск уже выполняется.")
+        S.scan_requested = True
+        S.status = "searching"
+        S.status_message = "Подготовка поиска устройства…"
+    return _device_status_payload()
+
+
+@app.post("/api/device/connect")
+async def api_device_connect(payload: dict[str, Any]) -> dict[str, Any]:
+    serial = payload.get("serial") if isinstance(payload, dict) else None
+    if not isinstance(serial, str) or not serial.strip():
+        raise HTTPException(400, "Укажите серийный номер из результатов поиска.")
+    with STATE_LOCK:
+        if not S.sdk_ready:
+            raise HTTPException(503, "Capsule SDK недоступен.")
+        if S._device_ready or S.status == "connecting" or S.connect_requested:
+            raise HTTPException(409, "Подключение уже выполняется или устройство подключено.")
+        if serial not in {d["serial"] for d in S.discovered_devices}:
+            raise HTTPException(404, "Устройство не найдено. Повторите поиск.")
+        S.connect_requested = serial
+        S.status = "connecting"
+        S.status_message = "Подключение запрошено…"
+    return _device_status_payload()
+
+
+@app.post("/api/device/disconnect")
+async def api_device_disconnect() -> dict[str, Any]:
+    with STATE_LOCK:
+        if S.status not in ("connected", "connecting") and not S._device_ready:
+            raise HTTPException(409, "Нет активного подключения.")
+        S.disconnect_requested = True
+        # Explicit manual disconnect must never be overridden by autoreconnect.
+        S.auto_reconnect = False
+        S.status_message = "Отключаем устройство…"
+    return _device_status_payload()
+
+
+@app.post("/api/device/reconnect-settings")
+async def api_device_reconnect_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    enabled = payload.get("enabled") if isinstance(payload, dict) else None
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, "Поле enabled должно быть true или false.")
+    with STATE_LOCK:
+        S.auto_reconnect = enabled
+    return _device_status_payload()
+
+
+@app.post("/api/device/calibration/start")
+async def api_calibration_start() -> dict[str, Any]:
+    with STATE_LOCK:
+        if not S._device_ready or S.status != "connected":
+            raise HTTPException(409, "Калибровка возможна только после подключения устройства.")
+        if S._calibrator is None:
+            raise HTTPException(503, "Калибратор недоступен для этого устройства.")
+        if S.calibration_phase == "running":
+            raise HTTPException(409, "Калибровка уже выполняется.")
+        S._calibration_requested = True
+    return {"accepted": True, "calibration_phase": "queued"}
+
+
+@app.post("/api/device/calibration/skip")
+async def api_calibration_skip() -> dict[str, Any]:
+    with STATE_LOCK:
+        if not S._device_ready or S.status != "connected":
+            raise HTTPException(409, "Устройство не подключено.")
+        if S.calibration_phase not in ("ready",):
+            raise HTTPException(409, "Калибровка недоступна для пропуска в этом состоянии.")
+        S._calibration_skip = True
+    return {"accepted": True, "calibration_phase": "skipped", "calibrated": False}
 
 
 @app.get("/api/status")
@@ -1293,7 +1446,9 @@ async def api_status() -> dict[str, Any]:
             "calibrated": S.calibrated,
             "calibration_phase": S.calibration_phase,
             "calibration_started_at": S._calibration_started_at,
-            "calibration": S.latest_calibration,
+            "calibration": S.latest_calibration,  # historical field for legacy API; use /api/device/status for live eligibility
+            "connected": S._device_ready and S.status == "connected",
+            "sdk_available": SDK_AVAILABLE and S.sdk_ready,
         }
 
 
@@ -1323,9 +1478,14 @@ def _session_path(session_id: str) -> Path:
     if not session_id or "/" in session_id or "\\" in session_id or ".." in session_id:
         raise HTTPException(status_code=400, detail=f"bad session id: {session_id!r}")
     base = Path(RECORDS_DIR).resolve()
-    target = (base / session_id).resolve()
+    candidate = base / session_id
+    if candidate.is_symlink():
+        raise HTTPException(status_code=400, detail="session directory must not be a symlink")
+    target = candidate.resolve()
     if target.parent != base or not target.is_dir():
         raise HTTPException(status_code=404, detail=f"no such session: {session_id}")
+    if any(child.is_symlink() for child in target.iterdir()):
+        raise HTTPException(status_code=400, detail="session files must not be symlinks")
     return target
 
 
@@ -1336,7 +1496,7 @@ async def api_records() -> dict[str, Any]:
     base = Path(RECORDS_DIR)
     if base.exists():
         for d in sorted(base.iterdir(), reverse=True):
-            if not d.is_dir():
+            if not d.is_dir() or d.is_symlink() or any(child.is_symlink() for child in d.iterdir()):
                 continue
             item: dict[str, Any] = {"session_id": d.name,
                                     "active": bool(RECORDER and RECORDER.session_id == d.name)}
@@ -1392,6 +1552,8 @@ async def api_recording_start() -> dict[str, Any]:
     global RECORDER
     if SessionRecorder is None:
         raise HTTPException(status_code=503, detail="recording module unavailable")
+    if not _live_connected():
+        raise HTTPException(status_code=409, detail="Сначала подключите устройство и дождитесь живых данных.")
     if RECORDER is not None and RECORDER.active:
         raise HTTPException(status_code=409, detail="recording already active")
     with STATE_LOCK:
@@ -1431,7 +1593,8 @@ async def api_markers(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.get("/api/spectrum")
-async def api_spectrum(window_s: float = 4.0, fmax: float = 50.0) -> dict[str, Any]:
+async def api_spectrum(window_s: float = Query(4.0, ge=0.5, le=300.0),
+                       fmax: float = Query(50.0, gt=0.0, le=125.0)) -> dict[str, Any]:
     if compute_psd is None:
         raise HTTPException(status_code=503, detail="analytics module unavailable")
     with STATE_LOCK:
@@ -1452,7 +1615,7 @@ async def api_spectrum(window_s: float = 4.0, fmax: float = 50.0) -> dict[str, A
 
 
 @app.get("/api/hrv")
-async def api_hrv(window_s: float = 30.0) -> dict[str, Any]:
+async def api_hrv(window_s: float = Query(30.0, ge=5.0, le=300.0)) -> dict[str, Any]:
     if compute_hrv is None:
         raise HTTPException(status_code=503, detail="analytics module unavailable")
     with STATE_LOCK:
@@ -1462,22 +1625,27 @@ async def api_hrv(window_s: float = 30.0) -> dict[str, Any]:
     if not vals:
         raise HTTPException(status_code=404, detail="no PPG data in buffer")
     try:
-        return compute_hrv(vals, sr)
+        result = compute_hrv(vals, sr)
+        result.update({"method": "legacy_peak_detector", "signal": "PPG",
+                       "metric_type": "PRV", "validated": False,
+                       "notice": "Экспериментальная PRV по ФПГ, не ЭКГ-HRV. Используйте анализ архивной сессии с контролем качества."})
+        if len(vals) / sr < 60:
+            result["rmssd_ms"] = None
+            result["sdnn_ms"] = None
+            result["quality_reason"] = "Менее 60 секунд: вариабельность не показывается в live-режиме."
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
 def _live_connected() -> bool:
-    """True — идёт live-коннект со свежими данными (replay в это время запрещён)."""
+    """Hardware link is active, even when streams temporarily produce no data."""
     with STATE_LOCK:
-        if not S._device_ready:
-            return False
-        age = _data_age_s()
-    return age is not None and age <= LOST_TIMEOUT_S
+        return S._device_ready and S.status == "connected"
 
 
 @app.post("/api/replay/{session_id}/start")
-async def api_replay_start(session_id: str, speed: float = 1.0) -> dict[str, Any]:
+async def api_replay_start(session_id: str, speed: float = Query(1.0, ge=0.1, le=100.0)) -> dict[str, Any]:
     if REPLAY is None:
         raise HTTPException(status_code=503, detail="playback module unavailable")
     if _live_connected():
@@ -1709,6 +1877,7 @@ def _build_tick_snapshot() -> dict[str, Any]:
     with STATE_LOCK:
         age = _data_age_s()
         return {
+            "connected": S._device_ready and S.status == "connected",
             "t": S.now(),
             "t_server": time.time(),
             "status": S.status,
@@ -1791,6 +1960,7 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "t": snap["t"],
         "t_server": snap["t_server"],
         "status": snap["status"],
+        "connected": snap["connected"],
         "message": snap["message"],
         "data_age_s": snap["data_age_s"],
         "stale": snap["stale"],
@@ -1850,7 +2020,7 @@ async def _ws_broadcast_loop() -> None:
                     delta = _WS_DELTAS[ws] = _WSDelta()
                 try:
                     payload = _build_client_tick(snap, delta)
-                    _sanitize(payload)
+                    payload = finite_json(payload)
                     await ws.send_json(payload)
                 except Exception:
                     dead.append(ws)
@@ -1874,10 +2044,12 @@ async def _ws_receiver(ws: WebSocket) -> None:
             action = (data or {}).get("action")
             if action == "start_calibration":
                 with STATE_LOCK:
-                    S._calibration_requested = True
+                    if S._device_ready and S.status == "connected" and S._calibrator is not None and S.calibration_phase != "running":
+                        S._calibration_requested = True
             elif action == "skip_calibration":
                 with STATE_LOCK:
-                    S._calibration_skip = True
+                    if S._device_ready and S.status == "connected" and S.calibration_phase == "ready":
+                        S._calibration_skip = True
             elif action == "add_marker":
                 label = (data or {}).get("label")
                 if not isinstance(label, str) or not label.strip():
@@ -1899,6 +2071,10 @@ async def _ws_receiver(ws: WebSocket) -> None:
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
+    origin = ws.headers.get("origin")
+    if origin and urlsplit(origin).netloc != ws.headers.get("host"):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     S.connected_clients.add(ws)
     _WS_DELTAS[ws] = _WSDelta()
@@ -1907,6 +2083,14 @@ async def ws_endpoint(ws: WebSocket) -> None:
     finally:
         S.connected_clients.discard(ws)
         _WS_DELTAS.pop(ws, None)
+
+
+from lab_api import create_lab_router
+
+LAB_ROUTER, LAB_STORE = create_lab_router(
+    Path(RECORDS_DIR), Path(HERE) / "reports", Path(STATIC_DIR),
+    lambda: RECORDER.session_id if RECORDER is not None and RECORDER.active else None)
+app.include_router(LAB_ROUTER)
 
 
 if __name__ == "__main__":

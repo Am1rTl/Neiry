@@ -86,6 +86,8 @@ footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px; border
   <div id="info" style="color:var(--text-dim); font-size:11px;"></div>
   <button id="lang-toggle" class="chip">RU</button>
 </header>
+<div class="research-banner"><div><strong>Мониторинг устройства</strong><small> · «Эмоции» и «продуктивность» — оценки алгоритмов SDK. Научный анализ и ограничения доступны в NeuroScope.</small></div><a href="/">Открыть NeuroScope →</a></div>
+
 
 <div class="tabs">
   <span class="tab-label" data-i18n="tabWindow">WINDOW</span>
@@ -223,17 +225,17 @@ const streams = {
 
 // Разделили единую конфигурацию cardio на 3 отдельных графика с указанием родительского фида stream: 'cardio'
 const STREAMS_CFG = {
-  eeg:         { fast: true, label: 'EEG (Ch1, Ch2)',  unit: 'µV', ymin: -150, ymax: 150, datasets: [{ key: 'eeg_ch1', label: 'Ch1 · O1–T3', color: '#00f0ff' }, { key: 'eeg_ch2', label: 'Ch2 · O2–T4', color: '#ff2bd6' }] },
+  eeg:         { fast: true, label: 'ЭЭГ · исходные единицы SDK', unit: 'ед. SDK', datasets: [{ key: 'eeg_ch1', label: 'Ch1 · O1–T3', color: '#00f0ff' }, { key: 'eeg_ch2', label: 'Ch2 · O2–T4', color: '#ff2bd6' }] },
   ppg:         { fast: true, label: 'PPG (photoplethysmogram)', unit: '', datasets: [{ key: 'ppg', label: 'PPG', color: '#aaff00' }] },
-  mems:        { fast: true, label: 'Head motion — Accel (m/s²) + Gyro (°/s)', unit: '', datasets: [{ key: 'accX', label: 'acc · X', color: '#00f0ff' }, { key: 'accY', label: 'acc · Y', color: '#ff2bd6' }, { key: 'accZ', label: 'acc · Z', color: '#aaff00' }, { key: 'accMag', label: '|a| total', color: '#ffffff', width: 1.6 }, { key: 'gyrX', label: 'gyro · X', color: '#ff8a00', dash: [3,3] }, { key: 'gyrY', label: 'gyro · Y', color: '#b66bff', dash: [3,3] }, { key: 'gyrZ', label: 'gyro · Z', color: '#ffea00', dash: [3,3] }, { key: 'gyrMag', label: '|ω| total', color: '#ffffff', dash: [3,3], width: 1.4 }] },
+  mems:        { fast: true, label: 'Движение · акселерометр + гироскоп (ед. SDK)', unit: '', datasets: [{ key: 'accX', label: 'acc · X', color: '#00f0ff' }, { key: 'accY', label: 'acc · Y', color: '#ff2bd6' }, { key: 'accZ', label: 'acc · Z', color: '#aaff00' }, { key: 'accMag', label: '|a| total', color: '#ffffff', width: 1.6 }, { key: 'gyrX', label: 'gyro · X', color: '#ff8a00', dash: [3,3] }, { key: 'gyrY', label: 'gyro · Y', color: '#b66bff', dash: [3,3] }, { key: 'gyrZ', label: 'gyro · Z', color: '#ffea00', dash: [3,3] }, { key: 'gyrMag', label: '|ω| total', color: '#ffffff', dash: [3,3], width: 1.4 }] },
   heartRate:   { stream: 'cardio', label: 'Cardio · Heart Rate (Частота пульса)', unit: 'bpm', ymin: 40, ymax: 160, datasets: [{ key: 'heartRate', label: 'ЧСС (bpm)', color: '#ff3e7f' }] },
-  stressIndex: { stream: 'cardio', label: 'Cardio · Stress Index (Индекс стресса)', unit: 'у.е.', ymin: 0, ymax: 100, datasets: [{ key: 'stressIndex', label: 'Индекс стресса', color: '#ffea00' }] },
-  kaplanIndex: { stream: 'cardio', label: 'Cardio · HRV Kaplan Index (Вариабельность ритма)', unit: 'у.е.', ymin: 0, ymax: 100, datasets: [{ key: 'kaplanIndex', label: 'Индекс Каплана', color: '#00f0ff' }] },
-  emotions:    { label: 'Эмоции', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'attention', label: 'Фокус', color: '#00f0ff' }, { key: 'relaxation', label: 'Азарт', color: '#aaff00' }, { key: 'cognitiveLoad', label: 'Когнитивная нагрузка', color: '#ff3e7f' }, { key: 'cognitiveControl', label: 'Волнение', color: '#ffea00' }, { key: 'selfControl', label: 'Самоконтроль', color: '#b66bff' }] },
-  phy:         { label: 'Physiological states', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'relaxation', label: 'Relaxation', color: '#aaff00' }, { key: 'concentration', label: 'Concentration', color: '#00f0ff' }, { key: 'fatigue', label: 'Fatigue', color: '#ff8a00' }, { key: 'stress', label: 'Stress', color: '#ff3e7f' }, { key: 'involvement', label: 'Involvement', color: '#b66bff' }] },
-  prod:        { label: 'Productivity', unit: 'score', ymin: 0, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
+  stressIndex: { stream: 'cardio', label: 'Индекс стресса SDK · не оценка психического состояния', unit: 'ед. SDK', ymin: 0, datasets: [{ key: 'stressIndex', label: 'Индекс стресса', color: '#ffea00' }] },
+  kaplanIndex: { stream: 'cardio', label: 'Индекс Каплана (SDK)', unit: 'ед. SDK', ymin: 0, datasets: [{ key: 'kaplanIndex', label: 'Индекс Каплана', color: '#00f0ff' }] },
+  emotions:    { label: 'Оценки SDK', unit: 'шкала SDK 0–100', ymin: 0, ymax: 100, datasets: [{ key: 'attention', label: 'Фокус', color: '#00f0ff' }, { key: 'relaxation', label: 'Релаксация SDK', color: '#aaff00' }, { key: 'cognitiveLoad', label: 'Когнитивная нагрузка SDK', color: '#ff3e7f' }, { key: 'cognitiveControl', label: 'Когнитивный контроль SDK', color: '#ffea00' }, { key: 'selfControl', label: 'Самоконтроль', color: '#b66bff' }] },
+  phy:         { label: 'Оценки состояний SDK', unit: '0–1', ymin: 0, ymax: 1, datasets: [{ key: 'relaxation', label: 'Relaxation', color: '#aaff00' }, { key: 'concentration', label: 'Concentration', color: '#00f0ff' }, { key: 'fatigue', label: 'Fatigue', color: '#ff8a00' }, { key: 'stress', label: 'Stress', color: '#ff3e7f' }, { key: 'involvement', label: 'Involvement', color: '#b66bff' }] },
+  prod:        { label: 'Скоринги SDK', unit: 'ед. SDK', ymin: 0, datasets: [{ key: 'productivityScore', label: 'Productivity', color: '#ffea00' }, { key: 'concentrationScore', label: 'Concentration', color: '#00f0ff' }, { key: 'relaxationScore', label: 'Relaxation', color: '#aaff00' }, { key: 'fatigueScore', label: 'Fatigue', color: '#ff8a00' }] },
   nfb:         { label: 'NFB band powers (α, β, θ, δ, SMR)', unit: '', datasets: [{ key: 'alpha', label: 'α alpha', color: '#00f0ff' }, { key: 'beta', label: 'β beta', color: '#ff2bd6' }, { key: 'theta', label: 'θ theta', color: '#ffea00' }, { key: 'delta', label: 'δ delta', color: '#ff8a00' }, { key: 'smr', label: 'SMR', color: '#b66bff' }] },
-  gamma:       { label: 'Gamma band power (30–100 Hz)', unit: 'µV', ymin: 0, datasets: [{ key: 'ch1_gamma', label: 'Ch1 Gamma · O1–T3', color: '#00f0ff' }, { key: 'ch2_gamma', label: 'Ch2 Gamma · O2–T4', color: '#ff2bd6' }] },
+  gamma:       { label: '30–100 Гц · амплитуда сигнала (не показатель мозговой гаммы)', unit: 'ед. SDK', ymin: 0, datasets: [{ key: 'ch1_gamma', label: 'Ch1 Gamma · O1–T3', color: '#00f0ff' }, { key: 'ch2_gamma', label: 'Ch2 Gamma · O2–T4', color: '#ff2bd6' }] },
 };
 
 const state = { windowSec: 900, layout: 'allinone', smooth: 3, charts: {}, maxRenderPts: 400 };
@@ -412,10 +414,10 @@ function buildGrid() {
       const subKey = 'emotions_' + d.key;
       STREAMS_CFG[subKey] = {
         stream: 'emotions',
-        label: `Эмоции · ${d.label}`,
-        unit: '0–1',
+        label: `Оценки SDK · ${d.label}`,
+        unit: 'шкала SDK 0–100',
         ymin: 0,
-        ymax: 1,
+        ymax: 100,
         datasets: [{ key: d.key, label: d.label, color: d.color }]
       };
       keys.push(subKey);
@@ -471,7 +473,8 @@ function buildGrid() {
     keys.push('nfb');
   }
 
-  keys.push('gamma');
+  // Unvalidated 1-second gamma heuristic is intentionally not exposed.
+  // Use the quality-screened spectrum in NeuroScope for exploratory analysis.
 
   // Отрендерить получившийся массив графиков в сетку
   for (const k of keys) {
