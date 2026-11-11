@@ -108,3 +108,25 @@
 .live-metrics .metric-value{font-size:24px}.live-banner{flex-wrap:wrap}.live-banner-actions{width:100%;margin-left:24px}
 .live-graphs .card.wide .live-canvas{height:230px}.live-canvas{height:205px}.session-list-actions{margin-left:0;width:100%}
 .device-status-top{font-size:10px;max-width:170px}.found-device{flex-wrap:wrap}.found-device .button{width:100%}}
+
+/* Research Studio: accessible typography and compact, consistent controls */
+.studio-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px; margin:20px 0; }
+.studio-controls { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:15px 0; }
+.studio-controls label { display:flex; flex-direction:column; gap:7px; font-size:13px; color:var(--muted,#9aaac0); flex:1; min-width:135px; }
+.studio-controls label.studio-confirm { flex-direction:row; align-items:center; min-width:220px; }
+.studio-controls input:not([type=checkbox]), .studio-controls select {
+ background:#0c1623; border:1px solid var(--line,#2d3c52); border-radius:8px;
+ color:var(--text,#e7f1ff); font-size:14px; padding:10px 12px; min-height:42px; width:100%; }
+.studio-controls input:focus-visible,.studio-controls select:focus-visible {outline:2px solid #7ce3cb;outline-offset:2px;}
+.studio-plot{height:310px;min-height:220px;}
+.studio-state { padding:14px 16px;border:1px solid var(--line,#2d3c52);border-radius:12px;background:rgba(15,25,40,.65); margin:10px 0;display:flex;flex-direction:column;gap:6px;font-size:13px;line-height:1.5;}
+.studio-state strong {font-size:14px;}
+.studio-state span,.studio-state p {color:var(--muted,#9aaac0);}
+.studio-list {padding-left:22px;line-height:1.8;font-size:13px;margin:12px 0;}
+.studio-grid > .card {min-width:0;}
+/* Critical numerical legends and captions must remain readable at 100% zoom. */
+.chart-caption,.card-subtitle,.metric-note,.table-caption,.sidebar-label,.sources-list small {font-size:max(12px, .82rem);line-height:1.5;}
+.data-table th {font-size:12px;}
+.data-table td {font-size:13px;}
+@media (max-width:700px){.studio-controls{display:flex;flex-direction:column;align-items:stretch}.studio-controls label{min-width:0;width:100%;}.studio-grid{grid-template-columns:1fr;}}
+.studio-spectrogram {width:100%;height:auto;aspect-ratio:660/180;border-radius:9px;border:1px solid var(--line,#2d3c52);background:#071121;image-rendering:auto;}

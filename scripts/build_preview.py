@@ -53,14 +53,17 @@ def build(root: Path | None = None) -> Path:
     html = html.replace('<script defer src="/static/vendor/chart.umd.min.js"></script>', '')
     html = html.replace('<script defer src="/static/lab.js"></script>', '')
     html = html.replace('<script defer src="/static/live.js"></script>', '')
+    html = html.replace('<script defer src="/static/studio.js"></script>', '')
     chart = (static / "vendor" / "chart.umd.min.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
     script = (static / "lab.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
     live_script = (static / "live.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
+    studio_script = (static / "studio.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
     assets = (
         '<script id="neuroscope-data" type="application/json">' + data + '</script>'
         '<script>window.NEUROSCOPE_PREVIEW=JSON.parse(document.getElementById("neuroscope-data").textContent);</script>'
         '<script>' + chart + '</script>'
         '<script>' + live_script + '</script>'
+        '<script>' + studio_script + '</script>'
         '<script>' + script + '</script>'
     )
     html = html.replace('</body>', assets + '</body>')

@@ -14,5 +14,7 @@ if [[ "$NS_COMMAND" != *"$NS_ROOT/run.py"* && "$NS_COMMAND" != *"$NS_ROOT/server
   echo "PID не принадлежит этому проекту; никакие процессы не остановлены." >&2
   exit 1
 fi
-kill -TERM "$NS_PID"
-echo "Отправлен сигнал завершения NeuroScope (PID $NS_PID)."
+# Capsule SDK installs a native SIGTERM crash/backtrace handler; its
+# normal shutdown path is SIGINT (same as Ctrl+C in the foreground).
+kill -INT "$NS_PID"
+echo "Отправлен SIGINT для штатного завершения NeuroScope (PID $NS_PID)."

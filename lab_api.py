@@ -9,6 +9,7 @@ import json
 import os
 import re
 import threading
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -58,6 +59,8 @@ class SessionContext(BaseModel):
     eye_state: Literal["unknown", "open", "closed", "mixed"] = "unknown"
     task: str = Field(default="", max_length=240)
     notes: str = Field(default="", max_length=4000)
+    participant_code: str = Field(default="", max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
+    protocol_id: str = Field(default="", max_length=80, pattern=r"^[A-Za-z0-9_-]*$")
 
 
 class AnalysisStore:
@@ -90,6 +93,7 @@ class AnalysisStore:
         self.session(ident)
         return _read_json(self.reports / "context" / f"{ident}.json", {
             "eye_state": "unknown", "task": "", "notes": "",
+            "participant_code": "", "protocol_id": "",
             "provenance": "retrospective_user_context",
             "notice": "Описание добавлено после записи; оно не заменяет временные метки событий."
         })
@@ -125,6 +129,66 @@ class AnalysisStore:
                 self._verified[ident] = stats
             # Context is explicitly separate from computed observations.
             return {**result, "context": self.context(ident)}
+
+    def delete(self, ident: str) -> dict:
+        """Erase raw recording AND all derived analysis/context artifacts atomically
+        with respect to concurrent get() / refresh() calls in this process.
+        """
+        with self._lock(ident):
+            path = self.session(ident)
+            if self.active() == ident:
+                raise HTTPException(409, "Завершите запись перед удалением сессии")
+            outputs = (self.reports / f"{ident}.json",
+                       self.reports / "cache" / f"{ident}.json",
+                       self.reports / "context" / f"{ident}.json",
+                       self.reports / "annotations" / f"{ident}.json")
+            # Validate *all* sidecars before deleting the recording; a poisoned
+            # symlink must not cause a partial raw-data deletion followed by 500.
+            if any(output.is_symlink() for output in outputs):
+                raise HTTPException(400, "Производный файл не может быть символической ссылкой")
+            shutil.rmtree(path)
+            for output in outputs:
+                output.unlink(missing_ok=True)
+            self._verified.pop(ident, None)
+            return {"deleted": ident, "derived_removed": True}
+
+    def history(self) -> dict:
+        """Comparisons must be conditioned on a nonempty participant code.
+
+        Missing participant identity is never treated as evidence of same person.
+        """
+        rows=[]
+        for item in self.summaries()['sessions']:
+            ident=item['id']
+            cached=_read_json(self.reports/f'{ident}.json',{})
+            context=self.context(ident)
+            eeg=cached.get('eeg') or {}
+            channels=eeg.get('channels') or []
+            q=cached.get('quality') or {}
+            ppg=cached.get('ppg') or {}
+            row={**item, 'participant_code':context.get('participant_code') or None,
+                 'protocol_id':context.get('protocol_id') or None,
+                 'eye_state':context.get('eye_state','unknown'),
+                 'task':context.get('task',''),
+                 'alpha_peak_hz':(channels[0].get('alpha_peak_hz') if channels else None),
+                 'pulse_rate_bpm':ppg.get('pulse_rate_bpm'),
+                 'channel_labels':[c.get('name') for c in channels],
+                 'sample_rate_hz':eeg.get('sample_rate_hz')}
+            rows.append(row)
+        comparable={}
+        for row in rows:
+            code=row.get('participant_code')
+            if not code:continue
+            key=(code,row.get('protocol_id'),row.get('eye_state'),
+                 (row.get('task') or '').strip().casefold(),
+                 tuple(row.get('channel_labels') or []),row.get('sample_rate_hz'))
+            comparable.setdefault(key,[]).append(row['id'])
+        groups=[{'participant_code':key[0],'protocol_id':key[1],
+                 'eye_state':key[2],'sessions':ids,'count':len(ids),
+                 'notice':'Сопоставимость предварительная; проверьте качество и условия каждой записи.'}
+                for key,ids in comparable.items() if len(ids)>=2]
+        return {'sessions':rows,'comparable_groups':groups,
+                'notice':'Без явного кода участника приложение не считает записи принадлежащими одному человеку.'}
 
     def analyze_background(self, ident: str) -> None:
         def work():
@@ -261,15 +325,86 @@ def create_lab_router(records: Path, reports: Path, static: Path, active: Callab
         await run_in_threadpool(save)
         return result
 
+    @router.post("/bids/{ident}")
+    async def bids(ident: str, payload: dict):
+        """Only explicitly confirmed voltage scales; no fake µV conversion."""
+        folder=store.session(ident)
+        if store.active()==ident:raise HTTPException(409,'Завершите запись перед экспортом')
+        from bids_export import export_bids
+        try:
+            content=await run_in_threadpool(export_bids,folder,
+                subject=payload.get('subject','01'),units=payload.get('units',''),
+                confirmed=payload.get('confirmed') is True,
+                task=payload.get('task','rest'))
+        except ValueError as exc:raise HTTPException(409,str(exc))
+        except RuntimeError as exc:raise HTTPException(503,str(exc))
+        return Response(content,media_type='application/zip',
+                        headers={'Content-Disposition':f'attachment; filename="{ident}_bids.zip"'})
+
+    @router.get("/history")
+    async def history():
+        return finite_json(await run_in_threadpool(store.history))
+
+    @router.get("/segment/{ident}")
+    async def segment_window(ident: str,
+                             start_s: float = Query(0,ge=0,le=72000),
+                             duration_s: float = Query(10,ge=2,le=120)):
+        folder=store.session(ident)
+        from segments import segment
+        try: return finite_json(await run_in_threadpool(segment,folder,start_s,duration_s))
+        except (ValueError,OSError) as exc:raise HTTPException(400,str(exc))
+
+    @router.get("/annotations/{ident}")
+    async def annotations(ident: str):
+        store.session(ident)
+        obj=_read_json(reports/'annotations'/f'{ident}.json',{'items':[]})
+        return obj if isinstance(obj,dict) else {'items':[]}
+
+    @router.post("/annotations/{ident}")
+    async def add_annotation(ident: str, payload: dict):
+        store.session(ident)
+        start,duration=payload.get('start_s'),payload.get('duration_s')
+        category=payload.get('category','note')
+        label=payload.get('label','')
+        if (not isinstance(start,(int,float)) or isinstance(start,bool) or not 0 <= start <= 72000
+                or not isinstance(duration,(int,float)) or isinstance(duration,bool) or not 0 <= duration <= 120
+                or category not in ('note','artifact','event') or not isinstance(label,str) or not 1<=len(label.strip())<=120):
+            raise HTTPException(400,'Некорректная аннотация')
+        def save():
+            with store._lock(ident):
+                items=_read_json(reports/'annotations'/f'{ident}.json',{'items':[]})
+                values=items.get('items',[])
+                if len(values)>=2000:raise HTTPException(400,'Достигнут лимит аннотаций')
+                import uuid
+                new={'id':uuid.uuid4().hex[:12],'start_s':float(start),
+                     'duration_s':float(duration),'category':category,
+                     'label':label.strip(),'provenance':'retrospective_annotation'}
+                values.append(new)
+                _atomic_json(reports/'annotations'/f'{ident}.json',{'items':values})
+                return new
+        return await run_in_threadpool(save)
+
     @router.get("/knowledge")
     async def knowledge():
         return _read_json(static / "knowledge.json", {"sections": [], "sources": [], "protocol": []})
 
     @router.get("/report")
     async def research_report():
-        path = reports.parent / "docs" / "NeuroScope_Research_Report.pdf"
-        if not path.is_file():
-            raise HTTPException(404, "Общий PDF-отчёт не найден; экспорт сессий доступен в HTML и JSON")
-        return FileResponse(path, media_type="application/pdf", filename=path.name)
+        """Generate from currently available recordings on a fresh git clone."""
+        def build():
+            from pdf_report import generate_research_pdf
+            summaries=store.summaries()['sessions'][:50]
+            analyses=[]
+            for item in summaries:
+                if item.get('active'):continue
+                try: analyses.append(store.get(item['id']))
+                except Exception: continue  # Broken files must not block all exports.
+            return generate_research_pdf(analyses,_read_json(static/'knowledge.json',{}))
+        try:
+            content=await run_in_threadpool(build)
+        except (ImportError,RuntimeError) as exc:
+            raise HTTPException(503,f"PDF-генератор недоступен: {exc}")
+        return Response(content,media_type="application/pdf",
+                        headers={'Content-Disposition':'attachment; filename="NeuroScope_Report.pdf"'})
 
     return router, store

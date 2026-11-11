@@ -23,6 +23,12 @@ def main() -> int:
         return 1
     if not 1 <= args.port <= 65535:
         parser.error("порт должен быть от 1 до 65535")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        if os.environ.get("NEUROSCOPE_ALLOW_REMOTE") != "1":
+            parser.error("Внешнее сетевое подключение запрещено без NEUROSCOPE_ALLOW_REMOTE=1. "
+                         "Данные мозга чувствительны: используйте SSH-туннель для удалённого доступа.")
+        print("ПРЕДУПРЕЖДЕНИЕ: сервер без аутентификации доступен в сети! "
+              "Не открывайте его в интернет.", file=sys.stderr)
     base = Path(__file__).resolve().parent
     os.environ["HOST"], os.environ["PORT"] = args.host, str(args.port)
     from server import app, LAB_STORE

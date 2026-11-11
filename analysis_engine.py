@@ -21,7 +21,7 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
-ANALYSIS_VERSION = "2.0.2"
+ANALYSIS_VERSION = "2.1.0"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -327,6 +327,9 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
             for point in timeline:
                 point["candidate_alpha_peak_hz"]=point.get("candidate_alpha_peak_hz",point["alpha_peak_hz"])
                 point["alpha_peak_hz"]=None
+        from advanced_metrics import summarize_advanced
+        advanced=summarize_advanced(x,fs,starts,accepted,freq,clean,coarse,
+                                   config.minimum_spectral_windows)
         chstat=stats(x)
         chstat.update(quantization_step_observed=_quantization(x), adjacent_repeat_pct=adjacent_repeat_pct,
                       unique_levels=int(len(np.unique(x[np.isfinite(x)]))), median_window_unique_levels=median_levels,
@@ -342,6 +345,7 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
              "band_power_raw":absraw,"relative_power_raw":relraw,
              "alpha_peak_hz":reported_peak,"alpha_peak":peak,
              "entropy":spectral_entropy(freq,clean),
+             "advanced":advanced,
              "line_noise_fraction_48_52_of_1_100":linepower/widepower if widepower and widepower>0 else None,
              "line_noise_fraction_screened_48_52_of_1_100":clean_line/clean_wide if clean_wide and clean_wide>0 else None,
              "psd":{"freq_hz":freq[freqmask].tolist(),"power":clean[freqmask].tolist(),
@@ -651,6 +655,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
        "quality":"Отбор окон по NaN/Infinity, flatline, повторяющимся ±0.8 (legacy observed rail), экстремальному RMS/производной (max(median+6×1.4826×MAD,8×median)), выраженному движению (gyro RMS > max(median+6×1.4826×MAD,3×median)) и доминирующей компоненте 48–52 Гц (>50% мощности 1–100 Гц при Nyquist≥100 Гц). Последний порог — инженерная эвристика, не опубликованная клиническая норма. Пороговые эвристики не валидированы клинически; прошедшие окна всё ещё могут содержать артефакты.",
        "alpha":"Локальный максимум строго внутри 8–13 Гц, log-PSD prominence≥3 dB и ≥15 прошедших окон. Если >50% соседних отсчётов одинаковы или медиана уровней в окне <20, alpha_peak_hz скрыт, численный кандидат только в alpha_peak. Это эвристика ограничения квантования. Отдельное моделирование апериодического фона и реактивность не выполнены.",
        "entropy":"Shannon entropy распределения мощности 1–45 Гц, нормированная на log(число частотных отсчётов); зависит от параметров PSD, шума и фильтрации, не мера интеллекта.",
+       "advanced":"Исследовательские Hjorth и линейный log-PSD наклон по отобранным окнам без сильного квантования; это НЕ параметрическая модель specparam и не оценка возбуждения/торможения мозга.",
        "ppg":ppg.get("method","Недоступно"),
        "timestamps":"Сигналы анализируются по порядку строк и номинальной частоте. Legacy callback ts_unix имеет обратные скачки. Начальные метки только грубо совмещают MEMS и EEG/PPG; аппаратная синхронизация неизвестна.",
        "comparisons":"Описательное сравнение записей; перекрывающиеся окна и строки SDK зависимы. P-values, популяционные нормы, диагнозы и причинные выводы не вычисляются.",
