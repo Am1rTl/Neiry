@@ -55,20 +55,28 @@ def compute_psd(samples_2d: Sequence[Sequence[float]], sr: float,
     должен усреднять несколько окон. Требует numpy.
     """
     _need_numpy()
-    if sr <= 0:
+    if not math.isfinite(sr) or sr <= 0:
         raise ValueError(f"sr должен быть > 0, получено {sr}")
-    if fmax <= 0:
+    if not math.isfinite(fmax) or fmax <= 0:
         raise ValueError(f"fmax должен быть > 0, получено {fmax}")
     rows = [list(map(float, r)) for r in samples_2d]
     if not rows or not rows[0]:
         raise ValueError("пустой вход: нет сэмплов или каналов")
 
     data = np.asarray(rows, dtype=float)  # (n_samples, n_channels)
+    if data.ndim != 2 or not np.isfinite(data).all():
+        raise ValueError("PSD требует прямоугольный массив конечных чисел")
     n = data.shape[0]
     data = data - data.mean(axis=0, keepdims=True)
     spectrum = np.fft.rfft(data, axis=0)
     # Нормировка periodogram: |X|^2 / (sr * N) → мощность/Гц.
     psd = (spectrum.real ** 2 + spectrum.imag ** 2) / (sr * n)
+    # rFFT keeps only nonnegative frequencies: interior bins contain both
+    # positive and negative frequency energy. DC/Nyquist must not double.
+    if n % 2 == 0:
+        psd[1:-1] *= 2.0
+    else:
+        psd[1:] *= 2.0
     freqs = np.fft.rfftfreq(n, d=1.0 / sr)
 
     mask = freqs <= fmax
@@ -127,9 +135,11 @@ def compute_hrv(ppg_values: Sequence[float], sr: float) -> dict[str, Any]:
     амплитуда пульса снижают точность; окно короче ~10 с даёт мало
     RR-интервалов и нестабильные RMSSD/SDNN; аритмия не обрабатывается.
     """
-    if sr <= 0:
+    if not math.isfinite(sr) or sr <= 0:
         raise ValueError(f"sr должен быть > 0, получено {sr}")
     vals = [float(v) for v in ppg_values]
+    if not all(math.isfinite(v) for v in vals):
+        raise ValueError("PPG содержит NaN/Inf; пропуски нельзя склеивать")
     empty = {"mean_hr": None, "rmssd_ms": None, "sdnn_ms": None, "n_beats": 0}
     if not vals:
         return dict(empty)

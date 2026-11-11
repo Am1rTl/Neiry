@@ -1,9 +1,11 @@
-# Neiry Capsule WebApp — runtime dependencies.
-# Versions pinned from .venv via `pip freeze` (2026-10-27).
-fastapi==0.162.0
-uvicorn[standard]==0.54.0
-websockets==17.3
-numpy==2.5.4  # /api/spectrum (compute_psd); без него эндпоинт вернёт 503
+# NeuroScope: versions actually tested on Python 3.12.
+# Capsule SDK remains a separate, optional vendor installation.
+fastapi==0.141.1
+uvicorn==0.52.1
+websockets==16.0
+numpy==2.3.5
+scipy==1.17.0
+pandas==2.2.3
 
 # Optional (offline analysis / export, not needed by the server):
 # pandas      # session_loader: DataFrame-выгрузка сессий

@@ -49,7 +49,7 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
 .value-big.pink { background: linear-gradient(180deg, var(--neon-pink), #802040); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
 .unit { font-size: 14px; color: var(--text-dim); margin-left: 6px; }
 .bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
-.bar-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); width: 140px; flex-shrink: 0; }
+.bar-label { overflow-wrap:anywhere; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); width: 140px; flex-shrink: 0; }
 .bar-track { flex: 1; height: 14px; background: rgba(20, 30, 60, 0.6); border: 1px solid var(--panel-border); border-radius: 3px; position: relative; overflow: hidden; }
 .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, var(--neon-cyan), var(--neon-magenta)); box-shadow: 0 0 12px var(--neon-cyan); transition: width 0.3s ease-out; }
 .bar-fill.lime { background: linear-gradient(90deg, var(--neon-lime), var(--neon-cyan)); box-shadow: 0 0 12px var(--neon-lime); }
@@ -146,6 +146,8 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
     <a href="/more" class="nav-link solid" data-i18n="navMore"> MORE </a>
   </div>
 </header>
+<div class="research-banner"><div><strong>Мониторинг устройства</strong><small> · «Эмоции» и «продуктивность» — оценки алгоритмов SDK. Научный анализ и ограничения доступны в NeuroScope.</small></div><a href="/">Открыть NeuroScope →</a></div>
+
 
 <main>
   <section class="panel col-7">
@@ -195,12 +197,12 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   </section>
 
   <section class="panel col-4 panel-magenta">
-    <h3 id="title-emotions"><span class="accent"></span><span data-i18n="emotionsTitle">Эмоции</span><span class="live">LIVE</span></h3>
+    <h3 id="title-emotions"><span class="accent"></span><span data-i18n="emotionsTitle">Оценки SDK</span><span class="live">LIVE</span></h3>
     <div id="emotions-bars">
       <div class="bar-row"><span class="bar-label" id="lbl-focus" data-i18n="attention">Фокус</span><div class="bar-track"><div class="bar-fill" id="em-focus" style="width:0%"></div></div><span class="bar-val" id="em-focus-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-chill" data-i18n="relaxation">Азарт</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-stress" data-i18n="cogLoad">Когнитивная нагрузка</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
-      <div class="bar-row"><span class="bar-label" id="lbl-anger" data-i18n="cogControl">Волнение</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-chill" data-i18n="relaxation">Релаксация SDK</span><div class="bar-track"><div class="bar-fill lime" id="em-chill" style="width:0%"></div></div><span class="bar-val" id="em-chill-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-stress" data-i18n="cogLoad">Когнитивная нагрузка SDK</span><div class="bar-track"><div class="bar-fill pink" id="em-stress" style="width:0%"></div></div><span class="bar-val" id="em-stress-v">—</span></div>
+      <div class="bar-row"><span class="bar-label" id="lbl-anger" data-i18n="cogControl">Когнитивный контроль SDK</span><div class="bar-track"><div class="bar-fill yellow" id="em-anger" style="width:0%"></div></div><span class="bar-val" id="em-anger-v">—</span></div>
       <div class="bar-row"><span class="bar-label" id="lbl-sc" data-i18n="selfControl">Самоконтроль</span><div class="bar-track"><div class="bar-fill purple" id="em-sc" style="width:0%"></div></div><span class="bar-val" id="em-sc-v">—</span></div>
     </div>
   </section>
@@ -221,6 +223,7 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
 
   <section class="panel col-6 panel-pink">
     <h3><span class="accent"></span><span data-i18n="prodTitle">Productivity</span><span class="live">LIVE</span></h3>
+    <p style="font-size:11px;line-height:1.6;color:var(--text-dim)">Числовые выходы SDK, не проценты. Не подтверждают продуктивность или психологическое состояние.</p>
     <div id="prod-rows">
       <div class="bar-row"><span class="bar-label" data-i18n="prodProductivity">Productivity</span><div class="bar-track"><div class="bar-fill" id="pr-prod" style="width:0%"></div></div><span class="bar-val" id="pr-prod-v">—</span></div>
       <div class="bar-row"><span class="bar-label" data-i18n="prodConcentration">Concentration</span><div class="bar-track"><div class="bar-fill lime" id="pr-conc" style="width:0%"></div></div><span class="bar-val" id="pr-conc-v">—</span></div>
@@ -255,15 +258,15 @@ const lang = Capsule.createLang({
     mode: "mode", calibrated: "calibrated", notCalibrated: "not calibrated", recording: "recording",
     recalibrate: "↻ Recalibrate", markerBtn: "marker", markerPrompt: "Marker label:",
     eegTitle: "EEG Signal", ch: "ch:", sr: "sr:",
-    cardioTitle: "Cardio", stressIdx: "Stress Idx", kaplanIdx: "Kaplan Idx",
-    hrNoContact: "⚠ no skin contact", hrMotion: "⚠ motion artifact", hrGood: "♡ good signal · HRV ",
+    cardioTitle: "Cardio", stressIdx: "Stress index SDK", kaplanIdx: "Kaplan index SDK",
+    hrNoContact: "⚠ no skin contact", hrMotion: "⚠ motion artifact", hrGood: "♡ contact present · Kaplan SDK ",
     ppgTitle: "PPG (Photoplethysmogram)", memsTitle: "Head motion · Accel (m/s²) + Gyro (°/s)",
     memsHelpHtml: `<div class="help-row"><b>3-axis accelerometer</b> — measures head <u>linear</u> acceleration (m/s²)</div><div class="help-row"><span style="color:#00f0ff">━ accX</span> tilt left/right</div><div class="help-row"><span style="color:#ff2bd6">━ accY</span> nod forward/back</div><div class="help-row"><span style="color:#aaff00">━ accZ</span> lean up/down</div><div class="help-row" style="margin-top:6px"><b>3-axis gyroscope</b> — measures <u>angular</u> velocity (°/s, dashed)</div>`,
-    emotionsTitle: "Emotions", attention: "Focus", relaxation: "Excitement", cogLoad: "Cognitive load", cogControl: "Anxiety", selfControl: "Self-control",
+    emotionsTitle: "SDK estimates", attention: "Attention (SDK)", relaxation: "Relaxation (SDK)", cogLoad: "Cognitive load (SDK)", cogControl: "Cognitive control (SDK)", selfControl: "Self-control (SDK)",
     resTitle: "Electrode Resistance", resFooterHtml: "good: &lt; 500 kΩ · bad: &gt; 1000 kΩ",
     resBad: "✗ bad contact — ", resWarn: "⚠ some channels elevated — ", resGood: "✓ good — ",
-    prodTitle: "Productivity", prodProductivity: "Productivity", prodConcentration: "Concentration", prodRelaxation: "Relaxation", prodFatigue: "Fatigue", prodGravity: "Gravity (Load)",
-    phyTitle: "Physiological States", phyRelaxation: "Relaxation", phyConcentration: "Concentration", phyFatigue: "Fatigue", phyStress: "Stress", phyInvolvement: "Involvement",
+    prodTitle: "SDK productivity scores", prodProductivity: "Productivity", prodConcentration: "Concentration", prodRelaxation: "Relaxation", prodFatigue: "Fatigue", prodGravity: "Gravity (Load)",
+    phyTitle: "SDK physiological estimates", phyRelaxation: "Relaxation", phyConcentration: "Concentration", phyFatigue: "Fatigue", phyStress: "Stress", phyInvolvement: "Involvement",
     calTitle: "Calibration / Device", calWaiting: "waiting for headband…", calScanning: "scanning…",
     calInfoHtml: (f1, f2, s) => `α-frequency: <b style="color:var(--neon-cyan)">${f1} Hz</b> · peak: <b style="color:var(--neon-cyan)">${f2} Hz</b> · serial: <b>${s}</b>`,
     calWaitingFor: (d) => `${d} — waiting for calibration...`,
@@ -272,15 +275,15 @@ const lang = Capsule.createLang({
     mode: "режим", calibrated: "калибровано", notCalibrated: "не калибровано", recording: "запись",
     recalibrate: "↻ Перекалибровать", markerBtn: "маркер", markerPrompt: "Название маркера:",
     eegTitle: "ЭЭГ-сигнал", ch: "кан.:", sr: "чд:",
-    cardioTitle: "Кардио", stressIdx: "Стресс", kaplanIdx: "Каплан",
-    hrNoContact: "⚠ нет контакта с кожей", hrMotion: "⚠ артефакт движения", hrGood: "♡ хороший сигнал · ВСР ",
+    cardioTitle: "Кардио", stressIdx: "Индекс стресса SDK", kaplanIdx: "Индекс Каплана SDK",
+    hrNoContact: "⚠ нет контакта с кожей", hrMotion: "⚠ артефакт движения", hrGood: "♡ контакт есть · Каплан SDK ",
     ppgTitle: "PPG (фотоплетизмограмма)", memsTitle: "Движение головы · аксель (м/с²) + гиро (°/с)",
     memsHelpHtml: `<div class="help-row"><b>3-осевой акселерометр</b> — <u>линейное</u> ускорение головы (м/с²)</div><div class="help-row"><span style="color:#00f0ff">━ accX</span> наклоны влево/вправо</div><div class="help-row"><span style="color:#ff2bd6">━ accY</span> кивки вперёд/назад</div><div class="help-row"><span style="color:#aaff00">━ accZ</span> наклоны вверх/вниз</div><div class="help-row" style="margin-top:6px"><b>3-осевой гироскоп</b> — <u>угловая</u> скорость (°/с, пунктир)</div>`,
-    emotionsTitle: "Эмоции", attention: "Фокус", relaxation: "Азарт", cogLoad: "Когнитивная нагрузка", cogControl: "Волнение", selfControl: "Самоконтроль",
+    emotionsTitle: "Оценки SDK", attention: "Внимание SDK", relaxation: "Релаксация SDK", cogLoad: "Когнитивная нагрузка SDK", cogControl: "Когнитивный контроль SDK", selfControl: "Самоконтроль SDK",
     resTitle: "Сопротивление электродов", resFooterHtml: "норма: &lt; 500 кОм · плохо: &gt; 1000 кОм",
     resBad: "✗ плохой контакт — ", resWarn: "⚠ каналы повышены — ", resGood: "✓ норма — ",
-    prodTitle: "Продуктивность", prodProductivity: "Продуктивность", prodConcentration: "Концентрация", prodRelaxation: "Релаксация", prodFatigue: "Усталость", prodGravity: "Нагрузка",
-    phyTitle: "Физиологические состояния", phyRelaxation: "Расслабление", phyConcentration: "Концентрация", phyFatigue: "Усталость", phyStress: "Стресс", phyInvolvement: "Вовлечённость",
+    prodTitle: "Скоринги SDK", prodProductivity: "Продуктивность", prodConcentration: "Концентрация", prodRelaxation: "Релаксация", prodFatigue: "Усталость", prodGravity: "Нагрузка",
+    phyTitle: "Оценки состояний SDK", phyRelaxation: "Расслабление", phyConcentration: "Концентрация", phyFatigue: "Усталость", phyStress: "Стресс", phyInvolvement: "Вовлечённость",
     calTitle: "Калибровка / Устройство", calWaiting: "ожидание повязки…", calScanning: "сканирование…",
     calInfoHtml: (f1, f2, s) => `α-частота: <b style="color:var(--neon-cyan)">${f1} Гц</b> · пик: <b style="color:var(--neon-cyan)">${f2} Гц</b> · серийный: <b>${s}</b>`,
     calWaitingFor: (d) => `${d} — ожидание калибровки…`,
@@ -348,11 +351,9 @@ const nfbChart = new Chart(document.getElementById('nfb-chart').getContext('2d')
 });
 
 function setBar(id, value, max = 100) { const v = (value || 0) / max * 100; document.getElementById(id).style.width = Math.max(0, Math.min(100, v)) + '%'; }
-// Для безграничных скорингов (Productivity: типично 0–10, выбросы до сотен):
-// мягкая нормировка v/(v+half) — монотонна, не уходит в насыщение, точное
-// значение всё равно показывает подпись рядом. half — значение на 50% шкалы.
-function setBarSoft(id, value, half = 5) { const v = value || 0; document.getElementById(id).style.width = (v <= 0 ? 0 : Math.min(100, 100 * v / (v + half))) + '%'; }
-function setVal(id, value, digits = 1) { document.getElementById(id).textContent = (value === null || value === undefined) ? '—' : Number(value).toFixed(digits); }
+// Unbounded vendor scores are displayed numerically; no invented percentage scale.
+function setBarSoft(id, value) { const el = document.getElementById(id); el.style.width = '0%'; el.parentElement.style.visibility = 'hidden'; el.parentElement.setAttribute('aria-hidden', 'true'); }
+function setVal(id, value, digits = 1) { document.getElementById(id).textContent = (value === null || value === undefined || !Number.isFinite(Number(value))) ? '—' : Number(value).toFixed(digits); }
 function setStatus(s) { document.getElementById('chip-status').className = 'chip ' + s; document.getElementById('status-text').textContent = t('status_' + s) ?? s; }
 
 let lastTickData = null;
@@ -520,12 +521,12 @@ function handleTick(d) {
     memsChart.update('none');
   }
   if (d.cardio) {
-    const c = d.cardio; document.getElementById('hr-val').textContent = c.heartRate > 0 ? c.heartRate.toFixed(0) : '—';
+    const c = d.cardio; document.getElementById('hr-val').textContent = c.skinContact && !c.motionArtifacts && Number.isFinite(c.heartRate) && c.heartRate > 0 ? c.heartRate.toFixed(0) : '—';
     const q = document.getElementById('hr-quality');
-    q.textContent = !c.skinContact ? t('hrNoContact') : c.motionArtifacts ? t('hrMotion') : t('hrGood') + c.kaplanIndex.toFixed(0);
+    q.textContent = !c.skinContact ? t('hrNoContact') : c.motionArtifacts ? t('hrMotion') : t('hrGood') + (Number.isFinite(c.kaplanIndex) ? c.kaplanIndex.toFixed(0) : '—');
     q.style.color = !c.skinContact ? 'var(--bad)' : c.motionArtifacts ? 'var(--neon-yellow)' : 'var(--good)';
-    setBar('stress-bar', c.stressIndex); setVal('stress-val', c.stressIndex, 1);
-    setBar('kaplan-bar', c.kaplanIndex); setVal('kaplan-val', c.kaplanIndex, 1);
+    setBarSoft('stress-bar', c.stressIndex); setVal('stress-val', c.stressIndex, 1);
+    setBarSoft('kaplan-bar', c.kaplanIndex); setVal('kaplan-val', c.kaplanIndex, 1);
   }
   if (d.emotions) {
     const e = d.emotions; setBar('em-focus', e.attention); setVal('em-focus-v', e.attention, 1);

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b111b">
+  <meta name="description" content="NeuroScope: воспроизводимый анализ ЭЭГ, пульса и движения с прозрачными ограничениями.">
+  <title>NeuroScope — лаборатория сигналов</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b111b'/%3E%3Cpath d='M10 33h10l5-15 10 29 6-14h13' fill='none' stroke='%237ce3cb' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/lab.css">
+  <script defer src="/static/vendor/chart.umd.min.js"></script>
+  <script defer src="/static/live.js"></script>
+  <script defer src="/static/lab.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Перейти к содержимому</a>
+  <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 12h4l3-8 6 16 3-8h4"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-signal" viewBox="0 0 24 24"><path d="M3 19V5m0 14h18M6 13l3-5 4 8 3-6 5 2"/></symbol>
+    <symbol id="i-compare" viewBox="0 0 24 24"><path d="M5 4v16m7-16v16m7-16v16M2 8h6m1 8h6m1-10h6"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5C8 2 3 4 3 4v15s5-2 9 1c4-3 9-1 9-1V4s-5-2-9 1Zm0 0v15"/></symbol>
+    <symbol id="i-checklist" viewBox="0 0 24 24"><path d="m3 6 2 2 3-4m4 2h9M3 13l2 2 3-4m4 2h9M3 20l2 2 3-4m4 2h9"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 8a9 9 0 0 0-15-3L3 8m0-5v5h5m-4 8a9 9 0 0 0 15 3l2-3m-5 0h5v5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.1"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V4h7l3 3h8v13H3V7Z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+  </defs></svg>
+
+  <aside class="sidebar" id="sidebar" aria-label="Основная навигация">
+    <a href="/" class="brand" aria-label="NeuroScope, главная"><span class="brand-mark"><svg class="icon"><use href="#i-wave"/></svg></span><span>NeuroScope<small>ЛАБОРАТОРИЯ СИГНАЛОВ</small></span></a>
+    <div class="sidebar-label">УСТРОЙСТВО И ПОТОК</div>
+    <nav class="nav-main" aria-label="Работа с устройством">
+      <a href="#device" class="nav-item" data-view="device"><svg class="icon"><use href="#i-signal"/></svg><span>Подключение</span></a>
+      <a href="#live" class="nav-item" data-view="live"><svg class="icon"><use href="#i-wave"/></svg><span>Живой монитор</span></a>
+      <a href="#sessions" class="nav-item" data-view="sessions"><svg class="icon"><use href="#i-folder"/></svg><span>Записи и replay</span></a>
+    </nav>
+    <div class="sidebar-label">АНАЛИЗ</div>
+    <nav class="nav-main" aria-label="Анализ записей">
+      <a href="#overview" class="nav-item active" data-view="overview" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>Обзор записей</span><span class="nav-dot"></span></a>
+      <a href="#signals" class="nav-item" data-view="signals"><svg class="icon"><use href="#i-signal"/></svg><span>Сигналы и метрики</span></a>
+      <a href="#compare" class="nav-item" data-view="compare"><svg class="icon"><use href="#i-compare"/></svg><span>Сравнить сессии</span></a>
+    </nav>
+    <div class="sidebar-label">СПРАВОЧНИК</div>
+    <nav class="nav-main" aria-label="Научная база">
+      <a href="#knowledge" class="nav-item" data-view="knowledge"><svg class="icon"><use href="#i-book"/></svg><span>Как это работает</span></a>
+      <a href="#protocol" class="nav-item" data-view="protocol"><svg class="icon"><use href="#i-checklist"/></svg><span>Протокол записи</span></a>
+    </nav>
+    <div class="sidebar-foot"><span class="local-dot"></span><div>Локальный анализ<small>Обработка на этом сервере</small></div><svg class="icon"><use href="#i-shield"/></svg></div>
+  </aside>
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+
+  <main class="main-shell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="menu-button" aria-label="Открыть меню" aria-controls="sidebar" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button>
+      <div class="breadcrumbs"><span>Рабочее пространство</span><span>/</span><strong id="breadcrumb-current">Обзор записей</strong></div>
+      <div class="topbar-right"><a id="device-top-status" class="device-status-top" href="#device" title="Открыть подключение устройства"><span class="status-pin neutral"></span>Проверка устройства…</a><a class="top-help" href="#knowledge" data-view="knowledge" aria-label="Справка по анализу"><svg class="icon"><use href="#i-info"/></svg></a></div>
+    </header>
+
+    <div class="workspace">
+      <section class="page-heading">
+        <div><div class="eyebrow" id="page-eyebrow">NEIRY / ИССЛЕДОВАТЕЛЬСКИЙ АНАЛИЗ</div><h1 id="page-title">Лаборатория сигналов<span class="title-dot">.</span></h1><p id="page-subtitle">Отдельные измерения. Общая картина. Проверяемые выводы.</p></div>
+        <div class="heading-actions" id="analysis-actions">
+          <button class="button subtle" id="refresh-button"><svg class="icon"><use href="#i-refresh"/></svg><span>Пересчитать</span></button>
+          <details class="export-menu" id="export-menu"><summary class="button primary"><svg class="icon"><use href="#i-download"/></svg>Экспорт<svg class="icon small"><use href="#i-chevron"/></svg></summary><div class="export-dropdown"><a href="/api/lab/report" target="_blank" rel="noopener">Полное исследование PDF <span>Все записи и научная база</span></a><a id="export-html" href="#">Отчёт HTML <span>Для чтения и печати</span></a><a id="export-json" href="#" download>Данные JSON <span>Полный результат анализа</span></a><a id="export-csv" href="#" download>Метрики CSV <span>Таблица показателей</span></a></div></details>
+        </div>
+      </section>
+      <div class="session-selector" id="session-selector" aria-label="Выбор записи"></div>
+      <div id="notification" class="notification" role="status" aria-live="polite" hidden></div>
+      <div id="content" tabindex="-1"><div class="loading-panel"><span class="loader"></span><h2>Открываем записи</h2><p>Проверяем доступность данных и результатов анализа…</p></div></div>
+      <footer class="workspace-footer"><span>NeuroScope <span class="footer-separator">/</span> <span id="analysis-version">Воспроизводимый анализ</span></span><span>Исследовательские показатели · не медицинское заключение</span></footer>
+    </div>
+  </main>
+</body>
+</html>

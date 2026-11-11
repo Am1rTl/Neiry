@@ -48,7 +48,8 @@ def _read_col(path: Path, col: str) -> list[float]:
         return out
 
 
-def export_edf(session_dir: str | Path, out_path: str | Path) -> Path:
+def export_edf(session_dir: str | Path, out_path: str | Path, *,
+               allow_approximate_timing: bool = False) -> Path:
     """Экспортировать сессию в EDF. Возвращает путь к файлу.
 
     Сигналы: каналы ЭЭГ из meta.json + PPG + 6 каналов MEMS.
@@ -67,6 +68,8 @@ def export_edf(session_dir: str | Path, out_path: str | Path) -> Path:
     if not meta_path.exists():
         raise FileNotFoundError(f"нет meta.json сессии: {meta_path}")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if not allow_approximate_timing:
+        raise ValueError("В архиве нет аппаратной синхронизации потоков. Для исследовательского EDF с приблизительной общей осью явно укажите --allow-approximate-timing. Исходные CSV сохраняют больше информации.")
     channels: list[str] = list(meta.get("channels") or [])
     rates: dict[str, float] = dict(meta.get("sample_rates") or {})
 
@@ -109,7 +112,9 @@ def export_edf(session_dir: str | Path, out_path: str | Path) -> Path:
     # EDF пишет целое число секундных (точнее, datarecord-) блоков на сигнал,
     # поэтому длительность округляем вниз до целых секунд (минимум 1 с).
     duration_s = min(len(v) / sr for _, sr, v in signals)
-    whole_s = max(1, int(duration_s))
+    whole_s = int(duration_s)
+    if whole_s < 1:
+        raise ValueError("Для EDF необходимо не менее одной полной секунды в каждом потоке")
     trimmed = [(label, sr, v[:int(whole_s * sr)])
                for label, sr, v in signals]
     trimmed = [(label, sr, v) for label, sr, v in trimmed if v]
@@ -121,13 +126,31 @@ def export_edf(session_dir: str | Path, out_path: str | Path) -> Path:
     n_chan = len(trimmed)
     writer = EdfWriter(str(out), n_chan, file_type=2)  # EDF+, contiguity
     try:
-        for i, (label, sr, _) in enumerate(trimmed):
+        for i, (label, sr, values) in enumerate(trimmed):
+            a = np.asarray(values, dtype=float)
+            if not np.isfinite(a).all():
+                raise ValueError("EDF: NaN/Inf требуют явной обработки, автоматическая подмена нулями запрещена")
             writer.setLabel(i, label[:16])
             writer.setSamplefrequency(i, int(sr))
-            writer.setPhysicalDimension(i, "uV" if label not in _MEMS_LABELS + ["PPG"] else "-")
+            # The legacy archive does not specify EEG units. Never label raw
+            # SDK values as microvolts or use the writer's +/-1 default range.
+            raw_unit = (meta.get("units") or {}).get("eeg", "a.u.")
+            unit = raw_unit if raw_unit in ("V", "mV", "uV") and label not in _MEMS_LABELS + ["PPG"] else "a.u."
+            writer.setPhysicalDimension(i, unit)
+            lo, hi = float(a.min()), float(a.max())
+            pad = max((hi-lo)*0.01, abs(hi)*1e-6, 1e-8)
+            writer.setPhysicalMinimum(i, lo-pad)
+            writer.setPhysicalMaximum(i, hi+pad)
+            writer.setDigitalMinimum(i, -32768)
+            writer.setDigitalMaximum(i, 32767)
         writer.writeSamples([np.asarray(v, dtype=np.float64) for _, _, v in trimmed])
     finally:
         writer.close()
+    out.with_suffix(out.suffix + ".json").write_text(json.dumps({
+        "source_session": d.name, "nominal_duration_s": whole_s,
+        "approximate_timing": True, "physical_unit_policy": "SDK units retained; a.u. when unverified",
+        "notice": "Streams start at their first saved sample. Acquisition offsets, jitter and gaps are not restored in this EDF. Use CSV for timing-sensitive research."
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
     return out
 
 
@@ -135,9 +158,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Экспорт сессии в EDF")
     parser.add_argument("session_dir", help="каталог вида records/session_*")
     parser.add_argument("out_edf", help="куда записать .edf")
+    parser.add_argument("--allow-approximate-timing", action="store_true",
+                        help="явно принять приблизительное совмещение потоков; сохраняется JSON с ограничениями")
     args = parser.parse_args(argv)
     try:
-        out = export_edf(args.session_dir, args.out_edf)
+        out = export_edf(args.session_dir, args.out_edf,
+                         allow_approximate_timing=args.allow_approximate_timing)
     except (RuntimeError, FileNotFoundError, ValueError) as exc:
         print(f"ошибка: {exc}", file=sys.stderr)
         return 1

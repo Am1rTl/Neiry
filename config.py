@@ -53,7 +53,7 @@ class Settings:
     HIST_LEN: int = 256       # emotions/cardio/nfb истории
     LOST_TIMEOUT_S: float = 3.0   # возраст данных, после которого устройство потеряно
     CAL_TIMEOUT_S: float = 180.0  # таймаут ожидания ЭЭГ для калибровки
-    RECORD_ENABLED: bool = True   # автозапись сессий; ручной /api/recording/start работает всегда
+    RECORD_ENABLED: bool = False  # по умолчанию запуск записи только вручную
     RECORDS_DIR: str = ""
     MAX_SESSION_HOURS: float = 6.0  # ротация сессии по длительности
     MAX_CSV_MB: float = 500.0       # ротация сессии по размеру eeg.csv
@@ -79,7 +79,7 @@ class Settings:
             HIST_LEN=_env_int("HIST_LEN", 256),
             LOST_TIMEOUT_S=_env_float("LOST_TIMEOUT_S", 3.0),
             CAL_TIMEOUT_S=_env_float("CAL_TIMEOUT_S", 180.0),
-            RECORD_ENABLED=_env_bool("RECORD_ENABLED", True),
+            RECORD_ENABLED=_env_bool("RECORD_ENABLED", False),
             # RECORDS_DIR — новое имя; NEIRY_RECORDS_DIR — старое, для совместимости.
             RECORDS_DIR=(_env_str("RECORDS_DIR", "")
                          or _env_str("NEIRY_RECORDS_DIR", "") or records_default),

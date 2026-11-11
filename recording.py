@@ -25,6 +25,7 @@ import json
 import math
 import threading
 import time
+from json_utils import finite_json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -139,7 +140,15 @@ class SessionRecorder:
         meta = {"session_id": self.session_id, "device": self.device_name,
                 "serial": self.device_serial, "channels": self.channel_names,
                 "sample_rates": self.sample_rates,
-                "started_at": _iso(self._started_ts)}
+                "started_at": _iso(self._started_ts),
+                "recording_format_version": 2,
+                "units": {"eeg": "sdk_native_unverified", "ppg": "sdk_native_unverified",
+                          "mems": "sdk_native_unverified", "resistances": "ohm_as_sdk"},
+                "sample_time_basis": "sample_index / nominal_sample_rate",
+                "timestamp_source": "host_callback_arrival_backfilled_per_packet",
+                "hardware_clock_available": False,
+                "eeg_rounding_decimals": None,
+                "montage": "SDK channel labels; no source localization"}
         if ended:
             meta["ended_at"] = _iso(time.time())
         try:
@@ -172,10 +181,10 @@ class SessionRecorder:
             if self.session_dir:
                 try:
                     (self.session_dir / "summary.json").write_text(
-                        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+                        json.dumps(finite_json(summary), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
                     if self.calibration:
                         (self.session_dir / "calibration.json").write_text(
-                            json.dumps(self.calibration, ensure_ascii=False, indent=2), encoding="utf-8")
+                            json.dumps(finite_json(self.calibration), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
                 except Exception:
                     pass
             self._write_meta(ended=True)
@@ -252,7 +261,7 @@ class SessionRecorder:
     def _jsonl(self, key: str, fname: str, rec: Mapping[str, Any], counter: str) -> None:
         if self._closed or not self.session_dir:
             return
-        line = json.dumps(rec, ensure_ascii=False, default=str) + "\n"
+        line = json.dumps(finite_json(rec), ensure_ascii=False, default=str, allow_nan=False) + "\n"
         try:
             with self._lock:
                 f = self._files.get(key)
@@ -295,16 +304,17 @@ class SessionRecorder:
         n_ch = len(self.channel_names) or 2
         for sample, ts in zip(samples, timestamps):
             vals = [float(v) for v in sample]
-            vals += [0.0] * (n_ch - len(vals))
+            # An absent channel is missing data, never a physiological zero.
+            vals += [float("nan")] * (n_ch - len(vals))
             self._row("eeg", [f"{ts:.6f}", _iso(ts), self._sample_index,
-                              *[round(v, 4) for v in vals[:n_ch]]], "eeg_samples")
+                              *[format(v, ".17g") for v in vals[:n_ch]]], "eeg_samples")
             self._sample_index += 1
 
     def record_ppg(self, values: Iterable[float], timestamps: Iterable[float]) -> None:
         if self._closed:
             return
         for v, ts in zip(values, timestamps):
-            self._row("ppg", [f"{ts:.6f}", _iso(ts), self._ppg_index, round(float(v), 4)], "ppg_samples")
+            self._row("ppg", [f"{ts:.6f}", _iso(ts), self._ppg_index, format(float(v), ".17g")], "ppg_samples")
             self._ppg_index += 1
 
     def record_mems(self, acc: Iterable[Sequence[float]], gyro: Iterable[Sequence[float]],
@@ -313,8 +323,8 @@ class SessionRecorder:
             return
         for a, g, ts in zip(acc, gyro, timestamps):
             row = [f"{ts:.6f}", _iso(ts), self._mems_index,
-                   *[round(float(x), 5) for x in list(a)[:3]],
-                   *[round(float(x), 5) for x in list(g)[:3]]]
+                   *[format(float(x), ".17g") for x in list(a)[:3]],
+                   *[format(float(x), ".17g") for x in list(g)[:3]]]
             self._row("mems", row, "mems_samples")
             self._mems_index += 1
 
@@ -375,7 +385,7 @@ class SessionRecorder:
             if self.session_dir is not None and not self._closed:
                 try:
                     (self.session_dir / "calibration.json").write_text(
-                        json.dumps(self.calibration, ensure_ascii=False, indent=2), encoding="utf-8")
+                        json.dumps(finite_json(self.calibration), ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
                 except Exception:
                     self.write_errors += 1
         self.event("calibration", **self.calibration)
