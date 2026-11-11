@@ -14,6 +14,7 @@ capsule_worker при отсутствии SDK ставит status error и жд
 import asyncio
 import ctypes
 import json
+import math
 import os
 import re
 import shutil
@@ -35,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from config import find_sdk_dir, settings, setup_logging
 from json_utils import finite_json
 from contact_quality import ElectrodeContact, ContactOptions
+from live_clock import batch_times
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -306,6 +308,7 @@ class State:
         self._calibration_requested: bool = False  # set by WS command, consumed by capsule thread
         self._calibration_skip: bool = False
 
+        self.sdk_processors: dict[str,str] = {}
         self.latest_emotions: dict[str, Any] | None = None
         self.latest_cardio: dict[str, Any] | None = None
         self.latest_phy: dict[str, Any] | None = None
@@ -389,8 +392,10 @@ def _validity_locked(contact: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "raw_source": "Capsule SDK", "contact_verified": bool(contact["ready"]),
         "eeg": eeg, "ppg": cardio, "cardio": cardio,
-        "emotions": sdk and fresh("emotions"), "phy": sdk and fresh("phy"),
-        "prod": sdk and fresh("prod"), "nfb": sdk and fresh("nfb"),
+        "emotions": sdk and fresh("emotions", settings.SDK_STATE_STALE_SECONDS),
+        "phy": sdk and fresh("phy", settings.SDK_STATE_STALE_SECONDS),
+        "prod": sdk and fresh("prod", settings.SDK_STATE_STALE_SECONDS),
+        "nfb": sdk and fresh("nfb"),
         "source_mode": "live" if S._device_ready and S.status == "connected" else "none",
         "notice": ("Оценки SDK скрыты: контакт не подтверждён или данные устарели. "
                    "Сырые отсчёты могут поступать без надетой повязки."
@@ -580,18 +585,18 @@ def on_eeg(device, eeg) -> None:
         if n_samples == 0:
             return
         sr = max(S.eeg_sample_rate, 1)
-        dt = 1.0 / sr
         now = S.now()
         unix_now = time.time()
         rec_rows, rec_ts = [], []
         with STATE_LOCK:
+            software_times = batch_times(S.eeg_t[-1] if S.eeg_t else None, now, n_samples, sr)
             for i in range(n_samples):
-                ts_back = (n_samples - 1 - i) * dt
                 sample = [eeg.get_raw_value(c, i) for c in range(n_ch)]
                 S.eeg.append(sample)
-                S.eeg_t.append(now - ts_back)
+                S.eeg_t.append(software_times[i])
                 rec_rows.append(sample)
-                rec_ts.append(unix_now - ts_back)
+                # Preserve one monotonic timeline across packet boundaries.
+                rec_ts.append(unix_now + (software_times[i] - now))
             _stamp_metric("eeg")
             _touch_data()
         if RECORDER:
@@ -607,21 +612,20 @@ def on_mems(mems, mems_data) -> None:
         if n == 0:
             return
         sr = max(S.mems_sample_rate, 1)
-        dt = 1.0 / sr
         now = S.now()
         unix_now = time.time()
         rec_acc, rec_gyro, rec_ts = [], [], []
         with STATE_LOCK:
+            software_times = batch_times(S.mems_t[-1] if S.mems_t else None, now, n, sr)
             for i in range(n):
-                ts_back = (n - 1 - i) * dt
                 acc = mems_data.get_accelerometer(i)
                 gyro = mems_data.get_gyroscope(i)
                 S.mems_acc.append([acc.x, acc.y, acc.z])
                 S.mems_gyro.append([gyro.x, gyro.y, gyro.z])
-                S.mems_t.append(now - ts_back)
+                S.mems_t.append(software_times[i])
                 rec_acc.append([acc.x, acc.y, acc.z])
                 rec_gyro.append([gyro.x, gyro.y, gyro.z])
-                rec_ts.append(unix_now - ts_back)
+                rec_ts.append(unix_now + (software_times[i] - now))
             _touch_data()
         if RECORDER:
             RECORDER.record_mems(rec_acc, rec_gyro, rec_ts)
@@ -636,17 +640,17 @@ def on_ppg(cardio, ppg) -> None:
         if n == 0:
             return
         sr = max(S.ppg_sample_rate, 1)
-        dt = 1.0 / sr
         now = S.now()
         unix_now = time.time()
         rec_vals, rec_ts = [], []
         with STATE_LOCK:
+            software_times = batch_times(S.ppg_t[-1] if S.ppg_t else None, now, n, sr)
             for i in range(n):
-                ts_back = (n - 1 - i) * dt
-                S.ppg.append(float(ppg.get_value(i)))
-                S.ppg_t.append(now - ts_back)
-                rec_vals.append(float(ppg.get_value(i)))
-                rec_ts.append(unix_now - ts_back)
+                value = float(ppg.get_value(i))
+                S.ppg.append(value)
+                S.ppg_t.append(software_times[i])
+                rec_vals.append(value)
+                rec_ts.append(unix_now + (software_times[i] - now))
             _stamp_metric("ppg")
             _touch_data()
         if RECORDER:
@@ -657,17 +661,39 @@ def on_ppg(cardio, ppg) -> None:
 
 
 def on_emotions_states(emotion, states) -> None:
+    """Retain independently available vendor scores (one absent field must not drop all)."""
     try:
-        d = {dst: float(getattr(states, src)) for dst, src in _EMOTION_MAP.items()}
+        d: dict[str, Any] = {}
+        aliases = {"attention": ("focus", "attention"),
+                   "relaxation": ("chill", "relaxation"),
+                   "cognitiveLoad": ("stress", "cognitiveLoad"),
+                   "cognitiveControl": ("anger", "cognitiveControl"),
+                   "selfControl": ("selfControl",)}
+        for dst, keys in aliases.items():
+            for src in keys:
+                try:
+                    raw = states.get(src) if isinstance(states, dict) else getattr(states, src)
+                    value = float(raw)
+                except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(value):
+                    d[dst] = value
+                    break
+        if not d:
+            log.debug("[cb] emotions: SDK reported no finite, supported state fields")
+            return
         d["t"] = S.now()
         with STATE_LOCK:
+            # Historical items are labelled so that a reconnect cannot make
+            # off-head readings look like validated measurements.
+            d["verified"] = bool(S.calibrated and _contact_locked()["ready"])
             S.latest_emotions = d
             _stamp_metric("emotions")
             S.emotions_hist.append(d)
             _touch_data()
         if RECORDER:
             RECORDER.record_metric("emotions", d)
-        _cb_log("emot", f"attn={d['attention']:.2f} relax={d['relaxation']:.2f} cogL={d['cognitiveLoad']:.2f} cogC={d['cognitiveControl']:.2f}")
+        _cb_log("emot", "fields=" + ",".join(k for k in d if k not in ("t", "verified")))
     except BaseException as exc:
         log.warning("[cb] on_emotions_states EXC: %r", exc)
 
@@ -859,6 +885,7 @@ def _clear_live_connection(reason: str, status: str = "idle", *, preserve_device
         S._calibration_requested = S._calibration_skip = False
         S.latest_calibration = None
         S.latest_emotions = S.latest_cardio = S.latest_phy = S.latest_prod = None
+        S.sdk_processors.clear()
         S.latest_resistances = []
         S.res_channel_names = []
         S.contact_tracker.reset()
@@ -925,6 +952,8 @@ def _prepare_device(device, lib) -> tuple[list[Any], list[Any]]:
         try:
             obj = factory(device, lib)
             handles.append(obj)
+            with STATE_LOCK:
+                S.sdk_processors[label] = "initialized"
             if label == "Emotions":
                 obj.set_on_states_update(on_emotions_states)
             elif label == "Cardio":
@@ -945,6 +974,8 @@ def _prepare_device(device, lib) -> tuple[list[Any], list[Any]]:
             elif label == "MEMS":
                 obj.set_on_update(on_mems)
         except Exception as exc:
+            with STATE_LOCK:
+                S.sdk_processors[label] = "unavailable"
             log.warning("[capsule] optional stream %s unavailable: %s", label, exc)
     return handles, baseline_handlers
 
@@ -1303,7 +1334,7 @@ def _watchdog_tick() -> None:
         age = _data_age_s()
         connected = S._device_ready and S.status == "connected"
         if connected and age is not None and age > LOST_TIMEOUT_S:
-            S.status_message = (f"Устройство подключено, но данные не обновлялись {age:.0f} с. "
+            S.status_message = ("Устройство подключено, но поток приостановлен. "
                                 "Проверьте посадку и контакт электродов.")
     rec = RECORDER
     if rec is not None and rec.active:
@@ -1491,7 +1522,7 @@ async def api_device_reconnect_settings(payload: dict[str, Any]) -> dict[str, An
 
 
 @app.post("/api/device/calibration/start")
-async def api_calibration_start() -> dict[str, Any]:
+async def api_calibration_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     with STATE_LOCK:
         if not S._device_ready or S.status != "connected":
             raise HTTPException(409, "Калибровка возможна только после подключения устройства.")
@@ -1501,6 +1532,8 @@ async def api_calibration_start() -> dict[str, Any]:
             raise HTTPException(409, "Калибровка уже выполняется.")
         if not _contact_locked()["calibration_allowed"]:
             raise HTTPException(409, "Контакт электродов ещё не стабилен. Наденьте повязку, дождитесь измерений ниже порога по всем каналам и повторите.")
+        if not isinstance(payload, dict) or payload.get("confirmed_closed_eyes") is not True:
+            raise HTTPException(400, "Перед началом подтвердите закрытые глаза и готовность сохранять неподвижность.")
         S._calibration_requested = True
     return {"accepted": True, "calibration_phase": "queued"}
 
@@ -1666,6 +1699,30 @@ async def api_live_spectrogram(seconds: float = Query(20, ge=3, le=30)) -> dict[
         values=[list(x) for x in list(S.eeg)[-int(seconds*sr):]]
         names=list(S.channel_names)
     return finite_json(await asyncio.to_thread(live_spectrogram, values, sr, names, seconds))
+
+
+@app.get("/api/live/paired")
+async def api_live_paired() -> dict[str, Any]:
+    """Two bipolar lead coupling, not interhemispheric neuronal connectivity.
+
+    No inferred off-head brain statistics; replay is clearly marked archival.
+    The calculation uses the actual SDK sample order, not arrival times.
+    """
+    from paired_eeg import analyze_pair
+    with STATE_LOCK:
+        archived = bool(REPLAY and REPLAY.active and not S._device_ready)
+        connected = bool(S._device_ready and S.status == "connected")
+        valid = _validity_locked() if connected else {}
+        sr = S.eeg_sample_rate or DEFAULT_EEG_SR
+        names = list(S.channel_names)
+        if not (archived or connected and valid.get("eeg")):
+            return {"available": False, "status": "contact_required", "bands": {},
+                    "reason": "Нет подтверждённого контакта и пригодного потока ЭЭГ. Сырые значения не превращаются в связность мозга.",
+                    "channels": names}
+        data = [list(row[:2]) for row in S.eeg if len(row) >= 2]
+    result = await asyncio.to_thread(analyze_pair, data, sr, epoch_s=2., min_epochs=8, names=names[:2])
+    result["source_mode"] = "replay" if archived else "live"
+    return finite_json(result)
 
 
 @app.post("/api/recording/start")
@@ -2002,7 +2059,8 @@ class _WSDelta:
         self.is_first: bool = True
 
 
-def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, first_sync_max: int = 500):
+def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int,
+                 first_sync_max: int = 500, *, include_times: bool = False):
     if not times or not samples:
         return None, last_t
     if last_t is None:
@@ -2027,10 +2085,13 @@ def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, 
         "sr": sr,
         "n": len(new_t),
     }
+    if include_times:
+        # Actual SOFTWARE timestamps, rather than reconstructing gaps from t0.
+        payload["times"] = list(new_t)
     if n_ch >= 2:
         # N каналов: ch1..chN; при двух каналах — те же ch1/ch2, что и раньше.
         for c in range(n_ch):
-            payload[f"ch{c + 1}"] = [s[c] if len(s) > c else 0.0 for s in new_s]
+            payload[f"ch{c + 1}"] = [s[c] if len(s) > c else None for s in new_s]
     else:
         if isinstance(new_s[0], (list, tuple)):
             payload["samples"] = [s[0] for s in new_s]
@@ -2075,6 +2136,12 @@ def _build_tick_snapshot() -> dict[str, Any]:
             "contact": contact,
             "validity": {**validity, "source_mode": "replay" if archived else validity["source_mode"]},
             "emotions": S.latest_emotions if (archived or validity["emotions"]) else None,
+            "sdk_state": {
+                "emotions_processor": S.sdk_processors.get("Emotions", "unknown"),
+                "emotions_received": bool(S.latest_emotions),
+                "emotions_fields": [k for k in (S.latest_emotions or {}) if k not in ("t", "verified")],
+                "emotions_valid": bool(archived or validity["emotions"]),
+            },
             "cardio": S.latest_cardio if (archived or validity["cardio"]) else None,
             "phy": S.latest_phy if (archived or validity["phy"]) else None,
             "prod": S.latest_prod if (archived or validity["prod"]) else None,
@@ -2109,14 +2176,14 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
     n_ch = max(len(snap["eeg_channels"]), 1)
     eeg_p, delta.eeg_last_t = _build_batch(snap["eeg_t"], snap["eeg_s"], n_ch,
                                            delta.eeg_last_t, snap["eeg_sr"],
-                                           first_sync_max=sync_max)
+                                           first_sync_max=sync_max, include_times=True)
     ppg_p, delta.ppg_last_t = _build_batch(snap["ppg_t"], snap["ppg_s"], 1,
                                            delta.ppg_last_t, snap["ppg_sr"],
-                                           first_sync_max=sync_max)
+                                           first_sync_max=sync_max, include_times=True)
     mems_p, delta.mems_last_t = _build_batch(snap["mems_t"],
                                              list(zip(snap["mems_a"], snap["mems_g"])), 1,
                                              delta.mems_last_t, snap["mems_sr"],
-                                             first_sync_max=sync_max)
+                                             first_sync_max=sync_max, include_times=True)
     if mems_p is not None:
         n = mems_p["n"]
         mems_p["acc"] = [list(v) for v in snap["mems_a"][-n:]]
@@ -2131,7 +2198,9 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
             # supposedly verified live chart; replay is labelled separately.
             archived = bool(REPLAY and REPLAY.active and not S._device_ready)
             cardio_hist_list = list(S.cardio_hist) if archived else []
-            emotions_hist_list = list(S.emotions_hist) if archived else []
+            emotions_hist_list = (list(S.emotions_hist) if archived else
+                                  [item for item in S.emotions_hist
+                                   if item.get("verified") is True] if snap["validity"]["emotions"] else [])
             nfb_hist_list = list(S.nfb_hist) if archived else []
     else:
         cardio_hist_list = []
@@ -2162,6 +2231,7 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "ppg_sr": snap["ppg_sr"],
         "mems_sr": snap["mems_sr"],
         "emotions": snap["emotions"],
+        "sdk_state": snap["sdk_state"],
         "cardio": snap["cardio"],
         "phy": snap["phy"],
         "prod": snap["prod"],
@@ -2230,7 +2300,11 @@ async def _ws_receiver(ws: WebSocket) -> None:
             action = (data or {}).get("action")
             if action == "start_calibration":
                 with STATE_LOCK:
-                    if S._device_ready and S.status == "connected" and S._calibrator is not None and S.calibration_phase != "running":
+                    if (data.get("confirmed_closed_eyes") is True
+                            and S._device_ready and S.status == "connected"
+                            and S._calibrator is not None
+                            and S.calibration_phase != "running"
+                            and _contact_locked()["calibration_allowed"]):
                         S._calibration_requested = True
             elif action == "skip_calibration":
                 with STATE_LOCK:

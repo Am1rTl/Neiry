@@ -218,7 +218,10 @@ class TestFakeSdkLifecycle(unittest.TestCase):
                             with server.STATE_LOCK:
                                 server.S.contact_tracker.add(rows,now=timestamp)
                         self.assertTrue(client.get('/api/device/status').json()['contact']['ready'])
-                        self.assertEqual(client.post('/api/device/calibration/start').status_code,200)
+                        self.assertEqual(client.post('/api/device/calibration/start').status_code,400,
+                                         'Quick calibration requires explicit eyes-closed confirmation')
+                        self.assertEqual(client.post('/api/device/calibration/start',
+                            json={'confirmed_closed_eyes':True}).status_code,200)
                         self.assertTrue(until(lambda:FakeCalibrator.instances[-1].started==1))
                         self.assertEqual(client.post('/api/device/calibration/start').status_code,409)
                         self.assertEqual(client.post('/api/device/disconnect').status_code,200)
