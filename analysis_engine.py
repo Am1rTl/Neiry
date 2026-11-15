@@ -21,7 +21,9 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
-ANALYSIS_VERSION = "2.2.0"
+from cardio_quality import sdk_cardio_issues
+
+ANALYSIS_VERSION = "2.3.0"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -575,7 +577,7 @@ def analyze_vendor(path: Path, events: list, origin: float, eeg_rate: float = 0.
                     if isinstance(v,bool):item["flags"][k].append(v)
                     elif isinstance(v,(int,float)):
                         item["fields"][k].append(v);numeric[k]=v
-                if name=="cardio" and r.get("metricsAvailable") is True and not r.get("hasArtifacts") and not r.get("motionArtifacts") and r.get("skinContact") is True and _number(r.get("heartRate"))>0:
+                if name=="cardio" and not sdk_cardio_issues(r):
                     item["valid_heart_rates"].append(r["heartRate"])
                 item["timeline"].append({"time_s":_number(r.get("ts_unix"))-origin,"values":numeric})
     except OSError:pass
@@ -616,14 +618,26 @@ def _read_events(path: Path) -> list:
     return out
 
 
-def _provenance(path: Path) -> dict:
-    files=[]
-    for p in sorted(path.iterdir()):
-        if not p.is_file() or p.suffix.lower() not in {".csv",".json",".jsonl"}:continue
+def recording_source_paths(path: Path) -> list[Path]:
+    return sorted(p for p in path.iterdir() if p.suffix.lower() in {".csv", ".json", ".jsonl"})
+
+
+def recording_source_signatures(path: Path) -> dict:
+    signatures = {}
+    for p in recording_source_paths(path):
+        if p.is_symlink() or not p.is_file():
+            continue
         digest=hashlib.sha256()
         with p.open("rb") as h:
             for block in iter(lambda:h.read(1024*1024),b""):digest.update(block)
-        files.append({"name":p.name,"size_bytes":p.stat().st_size,"sha256":digest.hexdigest()})
+        signatures[p.name] = {"bytes": p.stat().st_size, "sha256": digest.hexdigest()}
+    return signatures
+
+
+def _provenance(path: Path, source_signatures: dict | None = None) -> dict:
+    signatures = recording_source_signatures(path) if source_signatures is None else source_signatures
+    files = [{"name": name, "size_bytes": sig["bytes"], "sha256": sig["sha256"]}
+             for name, sig in sorted(signatures.items())]
     return {"files":files,"source_unchanged":True,
             "time_axis":"sample_index / nominal_sample_rate; no sorting, interpolation or timestamp-based resampling",
             "unit_policy":"Unknown units are never silently converted to volts or microvolts."}
@@ -635,6 +649,9 @@ def _review_eeg(eeg: dict, audit: dict, config: AnalysisConfig) -> dict:
     usable = sum(count["usable_windows"] for count in counts)
     total = sum(count["total_windows"] for count in counts)
     spectral_channels = sum(count["usable_windows"] >= config.minimum_spectral_windows for count in counts)
+    interpretability = eeg.get("spectral_interpretability", "unavailable")
+    coarse_channels = [channel["name"] for channel in eeg["channels"]
+                       if channel["stats"]["quantization_concern"]]
     reasons = Counter()
     for count in counts:
         reasons.update(count["rejected_reasons"])
@@ -646,12 +663,15 @@ def _review_eeg(eeg: dict, audit: dict, config: AnalysisConfig) -> dict:
         status = "too_short"
     elif not usable:
         status = "rejected"
+    elif interpretability == "severely_limited":
+        status = "limited"
     elif spectral_channels < len(counts):
         status = "partial"
     else:
         status = "ready"
     return {"status": status, "accepted_windows": usable, "total_windows": total,
             "spectral_channels": spectral_channels, "channel_count": len(counts),
+            "spectral_interpretability": interpretability, "coarse_channels": coarse_channels,
             "top_reasons": [reason for reason, _ in reasons.most_common(2)],
             "window_seconds": config.epoch_s}
 
@@ -666,6 +686,8 @@ def _review_ppg(ppg: dict, audit: dict, config: AnalysisConfig) -> dict:
         status = "too_short"
     elif ppg["pulse_rate_bpm"] is None:
         status = "rejected"
+    elif quality["accepted_windows"] == 1:
+        status = "limited"
     else:
         status = "ready"
     reasons = Counter(reason for window in ppg["timeline"] for reason in window["reasons"])
@@ -706,11 +728,13 @@ def _quick_review(audit: dict, eeg: dict, ppg: dict, motion: dict, impedance: di
     }
     for name, review in streams.items():
         review.update(sample_count=audit[name]["sample_count"],
+                      recorded=audit[name]["sample_count"] > 0,
                       sample_rate_hz=audit[name]["sample_rate_hz"],
                       index_discontinuities=audit[name]["index_discontinuities"])
     return {"streams": streams, "sdk": acquisition}
 
-def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> dict:
+def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
+                    source_signatures: dict | None = None) -> dict:
     """Read one local session, return strict-JSON-compatible evidence and caveats."""
     cfg=config or AnalysisConfig();p=Path(path)
     if not p.is_dir():raise FileNotFoundError(str(p))
@@ -829,7 +853,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
           "Добавить спокойный 5-минутный PPG-блок при стабильном контакте; для клинической HRV использовать валидированную ЭКГ и корректный протокол.",
           "Для связи EEG с задачей сохранять события, ответы, точность/время реакции и дневник сна/кофеина; сравнивать одинаковые условия.",
           "Для пространственных/клинических вопросов нужны многоканальная ЭЭГ, проверенный монтаж и специалист; нынешние два отведения не заменяют обследование."],
-       "methods":methods,"configuration":asdict(cfg),"provenance":_provenance(p)}
+       "methods":methods,"configuration":asdict(cfg),"provenance":_provenance(p, source_signatures)}
     return sanitize(result)
 
 

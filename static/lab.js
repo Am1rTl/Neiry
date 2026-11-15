@@ -160,6 +160,34 @@
     try { localStorage.setItem('neuroscope.session',id); } catch (_) {}
     if (['overview','signals','compare'].includes(state.view)) await render();
   }
+  async function loadComparison(renderId) {
+    const sessions = state.sessions.slice();
+    const total = sessions.filter(session => !session.active).length;
+    if (!total) {
+      $('#content').innerHTML = empty('Нет завершённых записей', 'Завершённые сессии появятся здесь после сохранения.', 'folder');
+      return;
+    }
+    $('#content').innerHTML = `<div class="loading-panel"><span class="loader" aria-hidden="true"></span>
+      <h2>Готовим сравнение</h2><p id="compare-progress" role="status"></p></div>`;
+    const progress = $('#compare-progress');
+    const results = [];
+    let completed = 0;
+    for (const session of sessions) {
+      if (renderId !== state.renderId) return;
+      if (session.active) {
+        results.push(null);
+        continue;
+      }
+      progress.textContent = `Запись ${completed + 1} из ${total} · ${dateLabel(session.started_at)}`;
+      try {
+        results.push(await analysisFor(session.id));
+      } catch (_) {
+        results.push(null);
+      }
+      completed++;
+    }
+    if (renderId === state.renderId) renderComparison(results);
+  }
   async function render({refreshList = false} = {}) {
     const renderId = ++state.renderId; destroyCharts(); notify('');
     state.analysis = null;
@@ -187,8 +215,8 @@
         if (renderId !== state.renderId) return;
       }
       if (state.view==='compare') {
-        const results = await Promise.allSettled(state.sessions.map(s=>s.active?null:analysisFor(s.id))); if(renderId!==state.renderId)return;
-        renderComparison(results.map(r=>r.status==='fulfilled'?r.value:null)); return;
+        await loadComparison(renderId);
+        return;
       }
       if (!state.current) { $('#content').innerHTML=empty('Записей пока нет','Подключите устройство в живом мониторе и начните запись. Сессии появятся здесь после сохранения.','folder'); return; }
       const session = state.sessions.find(item => item.id === state.current);
@@ -262,19 +290,22 @@
       const s=Array.isArray(streams)?streams.find(x=>x.name===k)||{}:streams[k]||{};
       const known={eeg:a.eeg?.available,ppg:a.ppg?.available,mems:a.motion?.available,resistances:a.impedance?.available}[k];
       const count=s.sample_count??s.samples??s.rows??s.row_count??(k==='eeg'?a.eeg?.channels?.[0]?.sample_count:null);
+      const recorded=num(count)===null?known:num(count)>0;
       const names={eeg:'ЭЭГ',ppg:'Оптический пульс',mems:'Движение',resistances:'Сопротивление'};
       const rate=s.sample_rate_hz??s.nominal_rate_hz??a.session?.sample_rates?.[k];
-      return `<tr><td><span class="stream-symbol">${icon({eeg:'wave',ppg:'heart',mems:'signal',resistances:'shield'}[k])}${names[k]}</span></td><td>${tag(known?'Есть данные':count?'Есть строки, оценка недоступна':'Нет данных',known?'good':count?'warning':'')}</td><td>${integer(count)}</td><td>${known&&rate?`${integer(rate)} Гц`:'—'}</td><td>${esc(duration(s.nominal_duration_s??s.signal_duration_s??s.duration_s))}</td></tr>`;
+      return `<tr><td><span class="stream-symbol">${icon({eeg:'wave',ppg:'heart',mems:'signal',resistances:'shield'}[k])}${names[k]}</span></td><td>${tag(recorded?'Записано':'Нет данных',recorded?'blue':'')}</td><td>${integer(count)}</td><td>${recorded&&rate?`${integer(rate)} Гц`:'—'}</td><td>${esc(duration(s.nominal_duration_s??s.signal_duration_s??s.duration_s))}</td></tr>`;
     }).join('');
   }
   function quickReview(a) {
     const review = a.quick_review;
     if (!review) return '';
     const labels = {
-      missing:['Нет данных',''], unavailable:['Есть строки, оценка недоступна','warning'],
+      unavailable:['Оценка недоступна','warning'],
       too_short:['Короткий фрагмент','warning'], rejected:['Окна отклонены','bad'],
-      partial:['Частично пригоден','warning'], ready:['Доступен','good']
+      partial:['Частично пригоден','warning']
     };
+    const readyLabels = {eeg:'Спектр рассчитан',ppg:'Пульс оценён',mems:'Движение рассчитано',resistances:'Измерения разобраны'};
+    const limitedLabels = {eeg:'Спектр сильно ограничен',ppg:'Оценка по одному окну'};
     const streamNames = {eeg:'ЭЭГ',ppg:'ФПГ',mems:'Движение',resistances:'Сопротивление'};
     const reasonNames = {
       flatline:'постоянный сигнал', nonfinite:'некорректные значения', movement:'сильное движение',
@@ -288,13 +319,17 @@
     const rows = Object.entries(streamNames).map(([key,name])=>{
       const stream = review.streams?.[key];
       if (!stream) return '';
-      const [label, tone] = labels[stream.status] || labels.unavailable;
+      const recorded = stream.recorded ?? (num(stream.sample_count) > 0);
+      const [label, tone] = stream.status==='ready' ? [readyLabels[key],'good']
+        : stream.status==='limited' ? [limitedLabels[key]||'Ограниченная оценка','warning']
+        : labels[stream.status] || labels.unavailable;
       const samples = stream.sample_count ? `${integer(stream.sample_count)} ${key==='resistances'?'измерений':'отсчётов'}` : '';
       let detail = '';
       if (key==='eeg' || key==='ppg') {
         if (stream.total_windows) {
           detail = `Скрининг: ${integer(stream.accepted_windows)} из ${integer(stream.total_windows)} окон${key==='eeg'&&stream.channel_count>1?' по всем каналам':''}`;
           if (key==='eeg' && stream.status==='partial') detail += ` · спектр доступен для ${integer(stream.spectral_channels)} из ${integer(stream.channel_count)} каналов`;
+          if (key==='eeg' && arr(stream.coarse_channels).length) detail += ` · мало амплитудных уровней: ${stream.coarse_channels.join(', ')}`;
         } else if (stream.status==='too_short') {
           detail = `Для одного окна требуется ${integer(stream.window_seconds)} с`;
         }
@@ -303,11 +338,12 @@
       const pulse = num(stream.pulse_rate_bpm);
       if (pulse !== null) detail += ` · оценка пульса ${fmt(pulse,1)} уд/мин`;
       const reasons = arr(stream.top_reasons).map(code=>reasonNames[code]).filter(Boolean);
-      if (reasons.length && ['rejected','partial'].includes(stream.status)) {
+      if (reasons.length && ['rejected','partial','limited'].includes(stream.status)) {
         detail += ` · чаще всего: ${reasons.join(', ')}`;
       }
-      return `<article class="review-stream"><div class="review-stream-title"><strong>${name}</strong>${tag(label,tone)}</div>
+      return `<article class="review-stream"><div class="review-stream-title"><strong>${name}</strong>${tag(recorded?'Записано':'Нет данных',recorded?'blue':'')}</div>
         ${samples? `<div class="review-samples">${samples}${stream.sample_rate_hz? ` · ${integer(stream.sample_rate_hz)} Гц` : ''}</div>` : ''}
+        ${recorded? `<p>${tag(label,tone)}</p>` : ''}
         ${detail? `<p>${esc(detail)}</p>` : ''}</article>`;
     }).join('');
     const sdk = review.sdk || {};
@@ -331,7 +367,7 @@
       evidence.push(`<li>${streamNames[key]} · ${integer(stream.index_discontinuities)} непоследовательных переходов индекса сохранённых строк.</li>`);
     }
     return `<section class="card quick-review" aria-label="Автоматический разбор сессии">
-      ${cardHeader('Автоматический разбор','Потоки, пригодность окон и причины пустых графиков')}
+      ${cardHeader('Автоматический разбор','Наличие сигналов и пригодность оценок')}
       <div class="review-grid">${rows}</div>
       ${evidence.length ? `<details class="details-block"><summary>Метки времени и артефакты</summary><ul>${evidence.join('')}</ul></details>` : ''}
     </section>`;

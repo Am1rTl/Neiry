@@ -142,6 +142,44 @@ class TestLiveValidity(unittest.TestCase):
             server.S.metrics_updated_at['emotions']=time.monotonic()-20
             self.assertFalse(server._validity_locked()['emotions'])
 
+    def test_phy_remains_fresh_between_minute_updates(self):
+        now = time.monotonic()
+        with server.STATE_LOCK:
+            settled(server.S.contact_tracker, now)
+            server.S.latest_phy = {'fatigue': 2.0, 't': 5.0}
+            server.S.metrics_updated_at['phy'] = now - 60
+            server.S.metrics_updated_at['emotions'] = now - 60
+            server.S.metrics_updated_at['cardio'] = now - 60
+
+        snapshot = server._build_tick_snapshot()
+        self.assertTrue(snapshot['validity']['phy'])
+        self.assertFalse(snapshot['validity']['emotions'])
+        self.assertFalse(snapshot['validity']['cardio'])
+        self.assertEqual(snapshot['phy']['fatigue'], 2.0)
+        self.assertTrue(snapshot['sensor_status']['phy']['fresh'])
+        self.assertEqual(snapshot['sensor_status']['phy']['expected_interval_s'], 60)
+
+        with server.STATE_LOCK:
+            server.S.metrics_updated_at['phy'] = now - server.settings.PHY_STALE_SECONDS - 1
+
+        delayed = server._build_tick_snapshot()
+        self.assertFalse(delayed['validity']['phy'])
+        self.assertIsNone(delayed['phy'])
+        self.assertFalse(delayed['sensor_status']['phy']['fresh'])
+        self.assertEqual(delayed['sensor_status']['phy']['state'], 'warn')
+
+    def test_phy_still_requires_current_contact_and_calibration(self):
+        now = time.monotonic()
+        with server.STATE_LOCK:
+            server.S.latest_phy = {'fatigue': 2.0, 't': 5.0}
+            server.S.metrics_updated_at['phy'] = now - 30
+            self.assertFalse(server._validity_locked()['phy'])
+
+            settled(server.S.contact_tracker, now)
+            self.assertTrue(server._validity_locked()['phy'])
+            server.S.calibrated = False
+            self.assertFalse(server._validity_locked()['phy'])
+
     def test_ppg_stays_visible_when_cardio_reports_motion(self):
         with server.STATE_LOCK:
             settled(server.S.contact_tracker, time.monotonic())

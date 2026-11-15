@@ -5,9 +5,13 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
+import shutil
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -68,6 +72,7 @@ class LabApiIntegration(unittest.TestCase):
         ppg = self.session / "ppg.csv"
         baseline = self.get_report().json()["quick_review"]["streams"]["ppg"]
         self.assertEqual((baseline["status"], baseline["sample_count"]), ("missing", 0))
+        self.assertFalse(baseline["recorded"])
 
         def write_ppg(seconds):
             with ppg.open("w", newline="", encoding="utf-8") as file:
@@ -82,8 +87,44 @@ class LabApiIntegration(unittest.TestCase):
         flat = self.get_report().json()["quick_review"]["streams"]["ppg"]
         self.assertEqual((flat["status"], flat["sample_count"], flat["total_windows"]),
                          ("rejected", 3000, 1))
+        self.assertTrue(flat["recorded"])
         self.assertIsNone(flat["pulse_rate_bpm"])
         self.assertEqual(flat["top_reasons"], ["flatline"])
+
+    def test_review_flags_pulse_estimate_based_on_one_window(self):
+        fs = self.metadata["sample_rates"]["ppg"]
+        ppg = self.session / "ppg.csv"
+        with ppg.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["ts_unix", "sample_index", "value"])
+            for index in range(fs * 240):
+                elapsed = index / fs
+                value = math.sin(2 * math.pi * 1.2 * elapsed) if elapsed < 30 else 0
+                writer.writerow([elapsed, index, value])
+
+        review = self.get_report().json()["quick_review"]["streams"]["ppg"]
+        self.assertTrue(review["recorded"])
+        self.assertEqual((review["status"], review["accepted_windows"], review["total_windows"]),
+                         ("limited", 1, 8))
+        self.assertAlmostEqual(review["pulse_rate_bpm"], 72, delta=1)
+
+    def test_review_distinguishes_passed_eeg_windows_from_limited_spectrum(self):
+        fs = self.metadata["sample_rates"]["eeg"]
+        eeg = self.session / "eeg.csv"
+        with eeg.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["ts_unix", "sample_index", "O1-T3", "O2-T4"])
+            for index in range(fs * 40):
+                elapsed = index / fs
+                value = round(4 * math.sin(2 * math.pi * 10 * elapsed)) * .001
+                writer.writerow([elapsed, index, value, -value])
+
+        review = self.get_report().json()["quick_review"]["streams"]["eeg"]
+        self.assertTrue(review["recorded"])
+        self.assertEqual(review["spectral_channels"], 2)
+        self.assertEqual(review["spectral_interpretability"], "severely_limited")
+        self.assertEqual(review["coarse_channels"], ["O1-T3", "O2-T4"])
+        self.assertEqual(review["status"], "limited")
 
     def test_review_uses_sdk_packet_timing_and_artifact_counts_when_present(self):
         packets = [
@@ -168,13 +209,60 @@ class LabApiIntegration(unittest.TestCase):
 
     def test_source_change_during_analysis_rejected(self):
         actual=analysis_engine.analyze_session
-        def mutate(path):
-            result=actual(path)
-            with (Path(path)/'events.jsonl').open('a') as h:h.write('{"type":"marker","ts_unix":2}\n')
+        events = self.session / 'events.jsonl'
+        events.write_text('{"type":"marker","ts_unix":1}\n', encoding='utf-8')
+
+        def mutate(path, **kwargs):
+            result=actual(path, **kwargs)
+            previous = events.stat()
+            events.write_text('{"type":"marker","ts_unix":2}\n', encoding='utf-8')
+            os.utime(events, ns=(previous.st_atime_ns, previous.st_mtime_ns))
             return result
         with patch('analysis_engine.analyze_session',side_effect=mutate):
             self.assertEqual(self.get_report().status_code,409)
         self.assertFalse((self.reports/(self.ident+'.json')).exists())
+
+    def test_analysis_reuses_verified_hashes_in_provenance(self):
+        extra = self.session / 'operator.json'
+        extra.write_text('{"source":"demo"}', encoding='utf-8')
+        signatures = analysis_engine.recording_source_signatures
+        with patch('analysis_engine.recording_source_signatures', wraps=signatures) as read_hashes:
+            r = self.get_report()
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(read_hashes.call_count, 2 if os.name == 'nt' else 1)
+        recorded = {row['name']: row['sha256'] for row in r.json()['provenance']['files']}
+        self.assertEqual(recorded, hashes(self.session))
+        self.assertEqual(r.json()['provenance'], analysis_engine.analyze_session(self.session)['provenance'])
+
+    def test_archive_worker_serializes_cold_reports_without_blocking_warm_reads(self):
+        self.assertEqual(self.get_report().status_code, 200)
+        cold_ids = ('session_cold_first', 'session_cold_second')
+        for ident in cold_ids:
+            shutil.copytree(self.session, self.records / ident)
+        actual = analysis_engine.analyze_session
+        first_started, second_started, release = threading.Event(), threading.Event(), threading.Event()
+
+        def delayed(path, **kwargs):
+            if Path(path).name == cold_ids[0]:
+                first_started.set()
+                if not release.wait(4):
+                    raise TimeoutError('first archive report was not released')
+            else:
+                second_started.set()
+            return actual(path, **kwargs)
+
+        with patch('analysis_engine.analyze_session', side_effect=delayed), ThreadPoolExecutor(max_workers=3) as requests:
+            first = requests.submit(self.client.get, '/api/lab/analysis/' + cold_ids[0])
+            try:
+                self.assertTrue(first_started.wait(2))
+                second = requests.submit(self.client.get, '/api/lab/analysis/' + cold_ids[1])
+                warm = requests.submit(self.get_report)
+                self.assertEqual(warm.result(timeout=2).status_code, 200)
+                self.assertFalse(second_started.is_set())
+            finally:
+                release.set()
+            self.assertEqual(first.result(timeout=2).status_code, 200)
+            self.assertEqual(second.result(timeout=2).status_code, 200)
 
     def test_traversal_missing_and_symlinks_rejected(self):
         for bad in ('%2E%2E','..%5Cescape','%2Fetc%2Fpasswd','unknown'):
