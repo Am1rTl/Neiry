@@ -140,6 +140,31 @@ class TestLiveValidity(unittest.TestCase):
             server.S.metrics_updated_at['emotions']=time.monotonic()-20
             self.assertFalse(server._validity_locked()['emotions'])
 
+    def test_ppg_stays_visible_when_cardio_reports_motion(self):
+        with server.STATE_LOCK:
+            settled(server.S.contact_tracker, time.monotonic())
+            server.S.latest_cardio['motionArtifacts'] = True
+            server.S.calibrated = False
+        snapshot = server._build_tick_snapshot()
+        self.assertTrue(snapshot['validity']['ppg'])
+        self.assertFalse(snapshot['validity']['cardio'])
+        self.assertTrue(snapshot['validity']['emotions'])
+        self.assertEqual(snapshot['sensor_status']['ppg']['state'], 'ok')
+        self.assertIn('движение', snapshot['sensor_status']['cardio']['reason'])
+        self.assertIsNone(snapshot['cardio'])
+
+    def test_websocket_counts_new_rows_even_with_overlapping_callback_time(self):
+        delta = server._WSDelta()
+        snapshot = {'stream_counts': {'ppg': 2}, 'ppg_t': [1, 1.01], 'ppg_sr': 100}
+        first = server._client_stream(snapshot, delta, 'ppg', [4, 5], 1, 500)
+        self.assertEqual(first['samples'], [4, 5])
+        snapshot.update(stream_counts={'ppg': 5}, ppg_t=[1, 1.01, 1, 1.01, 1.02])
+        second = server._client_stream(snapshot, delta, 'ppg', [4, 5, 6, 7, 8], 1, 500)
+        self.assertEqual(second['samples'], [6, 7, 8])
+        self.assertEqual(second['sample_index'], 2)
+        self.assertEqual(second['times'], [1, 1.01, 1.02])
+        self.assertIsNone(server._client_stream(snapshot, delta, 'ppg', [4, 5, 6, 7, 8], 1, 500))
+
     def test_failed_contact_resets_after_disconnect(self):
         with server.STATE_LOCK:
             settled(server.S.contact_tracker,time.monotonic())

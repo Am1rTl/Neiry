@@ -89,10 +89,11 @@ def live_spectrogram(samples: list[list[float]], sr: float, names: list[str] | N
     if x.ndim!=2 or x.shape[0]<max(128,int(sr*3)):
         return {'available':False,'reason':'Для спектрограммы нужно не менее трёх секунд ЭЭГ'}
     output=[]
-    for i in range(min(x.shape[1],2)):
+    for i in range(min(x.shape[1],16)):
         row=x[:,i]
-        if not np.isfinite(row).all():
-            output.append({'name': names[i] if names and i<len(names) else f'Канал {i+1}', 'available':False})
+        name=names[i] if names and i<len(names) else f'Канал {i+1}'
+        if not np.isfinite(row).all() or sr < 4:
+            output.append({'name':name,'available':False})
             continue
         window=min(len(row),max(64,int(sr*2)))
         freqs,t,power=spectrogram(row,fs=sr,nperseg=window,noverlap=int(window*.6),
@@ -105,9 +106,9 @@ def live_spectrogram(samples: list[list[float]], sr: float, names: list[str] | N
             arr=np.stack([np.max(arr[:,edge[j]:max(edge[j]+1,edge[j+1])],axis=1)
                           for j in range(max_columns)],axis=1)
             t=np.array([t[min(len(t)-1, edge[j])] for j in range(max_columns)])
-        output.append({'name':names[i] if names and i<len(names) else f'Канал {i+1}',
+        output.append({'name':name,
                        'available':True,'freq_hz':freqs[mask].round(2).tolist(),
                        'time_s':t.round(2).tolist(),
                        'log10_psd':np.round(arr,3).tolist(),
                        'notice':'Логарифм мощности в неизвестных физических единицах; уровень сравним только внутри сигнала.'})
-    return {'available':True,'channels':output}
+    return {'available':any(c['available'] for c in output),'channels':output}

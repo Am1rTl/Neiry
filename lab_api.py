@@ -200,6 +200,8 @@ class AnalysisStore:
         threading.Thread(target=work, name="analysis-" + ident, daemon=True).start()
 
     def summaries(self) -> dict:
+        from analysis_engine import ANALYSIS_VERSION
+        active_id = self.active()
         out = []
         if self.records.is_dir():
             for d in sorted(self.records.iterdir(), reverse=True):
@@ -210,15 +212,20 @@ class AnalysisStore:
                 meta = _read_json(d / "meta.json", {})
                 cached = _read_json(self.reports / f"{d.name}.json", {})
                 s, q = cached.get("session", {}), cached.get("quality", {})
+                final = _read_json(d / "summary.json", {}) or {}
+                counts = final.get("counts") or {}
                 eeg = d / "eeg.csv"
+                eeg_recorded = bool(counts["eeg_samples"]) if "eeg_samples" in counts else (
+                    eeg.is_file() and eeg.stat().st_size > 100)
                 out.append({"id": d.name, "started_at": meta.get("started_at"),
                             "duration_s": s.get("duration_s"),
-                            "wall_duration_s": s.get("wall_duration_s"),
-                            "eeg_available": cached.get("eeg", {}).get("available", bool(eeg.is_file() and eeg.stat().st_size > 100)),
+                            "wall_duration_s": s.get("wall_duration_s", final.get("duration_s")),
+                            "eeg_available": cached.get("eeg", {}).get("available", eeg_recorded),
                             "channels": meta.get("channels", []),
                             "quality_status": q.get("status", "pending"),
                             "usable_eeg_pct": q.get("usable_eeg_pct"),
-                            "analysis_ready": bool(cached), "active": self.active() == d.name,
+                            "analysis_ready": cached.get("analysis_version") == ANALYSIS_VERSION,
+                            "active": active_id == d.name,
                             "summary": q.get("summary", "")})
         return {"sessions": out, "mode": "local", "analysis_is_medical": False}
 

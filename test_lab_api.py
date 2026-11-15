@@ -63,6 +63,55 @@ class LabApiIntegration(unittest.TestCase):
         self.assertEqual(len(listing),1);self.assertEqual(listing[0]['id'],self.ident)
         self.assertTrue(listing[0]['analysis_ready']);self.assertFalse(listing[0]['eeg_available'])
 
+    def test_opening_session_runs_review_of_recorded_vs_unusable_streams(self):
+        fs = self.metadata["sample_rates"]["ppg"]
+        ppg = self.session / "ppg.csv"
+        baseline = self.get_report().json()["quick_review"]["streams"]["ppg"]
+        self.assertEqual((baseline["status"], baseline["sample_count"]), ("missing", 0))
+
+        def write_ppg(seconds):
+            with ppg.open("w", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(["ts_unix", "sample_index", "value"])
+                writer.writerows((i / fs, i, 1) for i in range(fs * seconds))
+
+        write_ppg(5)
+        short = self.get_report().json()["quick_review"]["streams"]["ppg"]
+        self.assertEqual((short["status"], short["sample_count"]), ("too_short", 500))
+        write_ppg(30)
+        flat = self.get_report().json()["quick_review"]["streams"]["ppg"]
+        self.assertEqual((flat["status"], flat["sample_count"], flat["total_windows"]),
+                         ("rejected", 3000, 1))
+        self.assertIsNone(flat["pulse_rate_bpm"])
+        self.assertEqual(flat["top_reasons"], ["flatline"])
+
+    def test_review_uses_sdk_packet_timing_and_artifact_counts_when_present(self):
+        packets = [
+            (0, 2, 1000, 1004),
+            (2, 2, 1008, 1012),
+            (4, 2, 1032, 1036),
+            (7, 2, 1040, 1044),
+            (9, 2, 1042, 1046),
+        ]
+        fields = ("first_sample_index", "sample_count", "sdk_first_ms", "sdk_last_ms")
+        rows = [dict(zip(fields, packet), stream="eeg_batch_timing") for packet in packets]
+        rows.extend([
+            {"stream": "eeg_batch_timing", "sample_count": 0},
+            {"stream": "eeg_artifacts", "channels": [{"index": 0, "flags": 0}, {"index": 1, "flags": 2}]},
+            {"stream": "eeg_artifacts", "channels": [{"index": 0, "flags": 4}]},
+        ])
+        (self.session / "metrics.jsonl").write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+        reviewed = self.get_report().json()["quick_review"]["sdk"]
+        self.assertEqual(reviewed["eeg_timing"], {
+            "valid_packets": 5, "invalid_packets": 1, "compared_steps": 3, "long_steps": 1,
+            "nonincreasing_steps": 1, "noncontiguous_indices": 1, "longest_step_ms": 20,
+            "long_step_threshold_ms": 6.0,
+        })
+        self.assertEqual(reviewed["eeg_artifact_channels"], [
+            {"index": 0, "observations": 2, "nonzero_flags": 1},
+            {"index": 1, "observations": 1, "nonzero_flags": 1},
+        ])
+
     def test_cache_refresh_version_and_source_invalidation(self):
         with patch('analysis_engine.analyze_session',wraps=analysis_engine.analyze_session) as analysis:
             self.assertEqual(self.get_report().status_code,200);self.assertEqual(analysis.call_count,1)
