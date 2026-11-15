@@ -1,5 +1,5 @@
 /* Unified NeuroScope hardware, real-time monitor and session manager.
- * One route, one design system; no hidden calibration modal or simulated connection.
+ * Connection status, guided calibration, and signal views use the local device API.
  */
 (() => {
   'use strict';
@@ -11,6 +11,13 @@
   const blank = '—';
   let ctx = {}, view = null, preview = false, pollTimer = null, ws = null, wsRetry = null, wsEpoch = 0;
   let status = null, replay = {active:false}, charts = [], chartClock = 0, statusFingerprint = '', sessionRows = [], liveRange = 15, metricRange = 300, allowRaw = false;
+  let pollSequence = 0, calibrationAudio = null, useCalibrationSound = true;
+  let calibrationAudioRun = false, calibrationCue = '', nextPulseAt = 0;
+  const playingNotes = new Set();
+  const chimes = {
+    closed:[587.33,440], open:[440,587.33], progress:[493.88],
+    complete:[523.25,659.25,783.99], failed:[392,329.63]
+  };
   const samples = {};
   const chartDefs = [
     {id:'live-eeg',keys:['eeg1','eeg2'],series:[['O1–T3','#7ce3cb'],['O2–T4','#8ca9ff']],raw:true},
@@ -45,6 +52,174 @@
     if (s.status === 'searching') return 'Поиск Bluetooth выполняется. Включите повязку и держите её рядом с компьютером.';
     if (s.status === 'connecting') return 'Проверяем реальное соединение. Если подключение не удастся, появится ошибка и кнопка повторного поиска.';
     return s?.message || 'Нажмите «Найти устройство», чтобы обнаружить повязку.';
+  }
+  function stopCalibrationNotes() {
+    for (const note of playingNotes) note.stop();
+    playingNotes.clear();
+  }
+  async function unlockCalibrationAudio() {
+    try {
+      const Audio = window.AudioContext || window.webkitAudioContext;
+      if (!calibrationAudio) calibrationAudio = new Audio();
+      await calibrationAudio.resume();
+      return calibrationAudio.state === 'running';
+    } catch (_) {
+      return false;
+    }
+  }
+  function calibrationChime(kind, delay=0) {
+    if (!useCalibrationSound || calibrationAudio?.state !== 'running') return;
+    const audio = calibrationAudio;
+    const peak = kind==='progress' ? 0.035 : 0.075;
+    chimes[kind].forEach((frequency, i)=>{
+      const at = audio.currentTime + 0.02 + delay + i * 0.18;
+      const tone = audio.createOscillator();
+      const volume = audio.createGain();
+      tone.frequency.value = frequency;
+      volume.gain.setValueAtTime(0, at);
+      volume.gain.linearRampToValueAtTime(peak, at+0.05);
+      volume.gain.exponentialRampToValueAtTime(0.0001, at+0.43);
+      tone.connect(volume).connect(audio.destination);
+      tone.onended = ()=>{playingNotes.delete(tone);tone.disconnect();volume.disconnect();};
+      playingNotes.add(tone);
+      tone.start(at);
+      tone.stop(at+0.44);
+    });
+  }
+  function syncCalibrationAudio(s) {
+    if (!calibrationAudioRun) return;
+    const run = s?.calibration_run;
+    if (!run || s.calibration_phase !== 'running') {
+      stopCalibrationNotes();
+      calibrationChime(s?.calibration_phase==='complete'?'complete':'failed');
+      calibrationAudioRun = false;
+      calibrationCue = '';
+      return;
+    }
+    const now = performance.now();
+    const cue = `${run.mode}:${run.stage}`;
+    if (cue !== calibrationCue) {
+      stopCalibrationNotes();
+      calibrationCue = cue;
+      nextPulseAt = now + 4500;
+      calibrationChime(run.eye_state);
+    } else if (!run.preparing && now >= nextPulseAt) {
+      nextPulseAt = now + 4500;
+      calibrationChime('progress');
+    }
+  }
+  function openCalibrationSetup() {
+    const dialog = $('#calibration-setup');
+    if (!dialog) return;
+    dialog.querySelector('#calibration-mode-full').disabled = !status?.calibration_modes?.includes('full');
+    dialog.querySelector('#calibration-mode-quick').checked = true;
+    dialog.querySelector('#calibration-sound').checked = true;
+    dialog.querySelector('#calibration-dialog-error').textContent = '';
+    dialog.showModal();
+  }
+  function setupCalibrationDialog() {
+    const dialog = document.createElement('dialog');
+    dialog.id = 'calibration-setup';
+    dialog.className = 'cal-dialog';
+    dialog.setAttribute('aria-labelledby', 'calibration-dialog-title');
+    dialog.innerHTML = `
+      <form>
+        <h2 id="calibration-dialog-title">Калибровка Capsule</h2>
+        <p>Сядьте удобно, держите голову неподвижно. В открытых этапах смотрите на крест.</p>
+        <fieldset>
+          <legend>Режим</legend>
+          <label class="cal-choice"><input type="radio" name="mode" id="calibration-mode-quick" value="quick" checked>
+            <span><strong>Быстрая · около 30 с</strong><small>Глаза закрыты до сигнала завершения.</small></span></label>
+          <label class="cal-choice"><input type="radio" name="mode" id="calibration-mode-full" value="full">
+            <span><strong>Полная · около 1,5 мин</strong><small>Закрыть → открыть → закрыть → открыть. Четыре этапа по ≈20 с.</small></span></label>
+        </fieldset>
+        <label class="cal-choice"><input type="checkbox" id="calibration-sound" checked><span><strong>Звуковые подсказки</strong>
+          <small>Два нисходящих тона — закрыть глаза, два восходящих — открыть. Тихий одиночный тон звучит во время этапа.</small></span></label>
+        <button type="button" class="button text" id="calibration-preview">Прослушать подсказки</button>
+        <p id="calibration-dialog-error" role="status"></p>
+        <div class="cal-actions"><button type="submit" class="button primary">Подтвердить и начать</button>
+          <button type="button" class="button subtle" id="calibration-cancel">Отмена</button></div>
+      </form>`;
+    document.body.append(dialog);
+    const form = dialog.querySelector('form');
+    const checkbox = dialog.querySelector('#calibration-sound');
+    const error = dialog.querySelector('#calibration-dialog-error');
+    const start = form.querySelector('[type="submit"]');
+    const cancel = dialog.querySelector('#calibration-cancel');
+    const previewButton = dialog.querySelector('#calibration-preview');
+    dialog.addEventListener('close', ()=>{
+      if (!calibrationAudioRun) stopCalibrationNotes();
+    });
+    dialog.addEventListener('cancel', e=>{if(start.disabled)e.preventDefault();});
+    cancel.addEventListener('click', ()=>dialog.close());
+    previewButton.addEventListener('click', async ()=>{
+      useCalibrationSound = true;
+      if (!await unlockCalibrationAudio()) {
+        error.textContent = 'Браузер не смог включить звук.';
+        return;
+      }
+      if (!dialog.open) return;
+      error.textContent = '';
+      stopCalibrationNotes();
+      calibrationChime('closed');
+      calibrationChime('open', 0.75);
+      calibrationChime('progress', 1.55);
+    });
+    form.addEventListener('submit', async e=>{
+      e.preventDefault();
+      const mode = new FormData(form).get('mode');
+      start.disabled = cancel.disabled = previewButton.disabled = true;
+      error.textContent = '';
+      stopCalibrationNotes();
+      useCalibrationSound = checkbox.checked;
+      try {
+        if (useCalibrationSound && !await unlockCalibrationAudio()) {
+          notice('Звук недоступен. Следите за инструкцией на экране.','error');
+        }
+        await api('/api/device/calibration/start',{method:'POST',body:JSON.stringify({mode})});
+        calibrationAudioRun = true;
+        calibrationCue = '';
+        dialog.close();
+        await poll();
+      } catch (err) {
+        error.textContent = err.message || 'Не удалось запустить калибровку.';
+      } finally {
+        start.disabled = cancel.disabled = previewButton.disabled = false;
+      }
+    });
+  }
+  function calibrationPanel(s) {
+    const run = s.calibration_run;
+    if (run) {
+      const eyes = run.eye_state==='closed'?'Закройте глаза':'Откройте глаза';
+      return `<div class="cal-state" role="status"><small>Этап ${run.stage} из ${run.stage_count}</small><strong class="cal-eyes">${eyes}</strong></div>
+        <div class="cal-fixation" ${run.eye_state==='closed'?'hidden':''} aria-hidden="true">+</div>
+        <progress id="calibration-stage-progress" max="${run.expected_stage_s}" value="0" aria-label="Примерный прогресс этапа"></progress>
+        <small class="cal-timer" id="calibration-stage-time"></small>`;
+    }
+    const titles = {ready:'Калибровка доступна',failed:'Калибровка не удалась',skipped:'Калибровка пропущена',
+      unavailable:'Калибратор недоступен',complete:'Калибровка NFB завершена'};
+    let detail = s.calibration_available ? 'Выберите режим и следуйте подсказкам.' : s.contact?.ready
+      ? 'Калибратор Capsule недоступен.' : 'Дождитесь стабильного контакта электродов.';
+    if (s.calibration_phase==='failed') detail = s.message || detail;
+    if (s.calibration_reconnect) detail += ' Переподключите повязку для повтора.';
+    if (s.calibration_phase==='complete' && s.calibration_result) {
+      const result = s.calibration_result;
+      detail = `Индивидуальная частота SDK · ${fmt(result.individualFrequency,2)} Гц. Глаза можно открыть.`;
+    }
+    return `<div class="cal-state" role="status"><strong>${titles[s.calibration_phase]||'Нет калибровки'}</strong><small>${esc(detail)}</small></div>
+      <div class="cal-actions">${pButton(s.calibrated?'Повторить калибровку':'Настроить калибровку','calibration','subtle',!s.calibration_available)}
+        ${s.calibration_phase==='ready'?pButton('Пропустить','skip-cal','subtle'):''}</div>`;
+  }
+  function updateCalibrationProgress(s) {
+    const run = s.calibration_run;
+    const bar = $('#calibration-stage-progress');
+    const time = $('#calibration-stage-time');
+    if (!run || !bar || !time) return;
+    bar.value = Math.min(run.expected_stage_s, run.elapsed_s);
+    time.textContent = run.preparing ? `Начало через ${Math.ceil(run.prepare_remaining_s)} с`
+      : run.elapsed_s < run.expected_stage_s ? `${Math.floor(run.elapsed_s)} / ≈${run.expected_stage_s} с`
+      : 'Ожидаем подтверждение этапа от Capsule…';
   }
   function contactPanel(contact, compact=false) {
     const c = contact || {state:'waiting',channels:[],message:'Ожидаем реальные показания сопротивления SDK.'};
@@ -83,11 +258,8 @@
     const found = s.connected ? `<div class="info-stack"><strong>Текущее подключение</strong><p>Потоки доступны в разделе «Живой монитор». Отключение завершит текущую запись и освободит устройство.</p><a class="button primary" href="#live" data-go="live">Перейти к сигналам</a></div>`:
       devices.length ? devices.map(d=>`<div class="found-device"><span class="found-icon"><svg class="icon"><use href="#i-wave"/></svg></span><span class="found-copy"><strong>${esc(d.name)}</strong><small>${esc(d.serial)}</small></span>${pButton('Подключить','connect:'+d.serial,'primary',s.status==='connecting')}</div>`).join('') :
       `<div class="no-device">${s.scanning?'<span class="loader"></span> Поиск выполняется…':'Пока нет найденных устройств.'}<small>Поиск выполняется только после нажатия кнопки. Его можно повторить.</small></div>`;
-    const cal = s.connected ? `${contactPanel(s.contact)}<div class="cal-box"><div class="cal-state"><strong>${s.calibrated?'Калибровка выполнена':{
-      ready:'Калибровка доступна',running:'Калибровка выполняется',failed:'Калибровка не удалась',
-      skipped:'Калибровка пропущена',unavailable:'Калибратор недоступен',complete:'Калибровка выполнена'}[s.calibration_phase]||'Нет калибровки'}</strong><small>${s.contact?.ready?'Контакт стабилен — калибровку можно запустить.':'Калибровка заблокирована до стабильных показаний всех каналов.'} Калибровка нужна для персонализированных показателей SDK.</small></div>
-      <div class="cal-actions">${pButton(s.calibration_phase==='complete'?'Повторить калибровку':'Начать калибровку','calibration','subtle',!s.calibration_available||s.calibration_phase==='running')}${s.calibration_phase==='ready'?pButton('Пропустить','skip-cal','subtle'):''}</div></div>`:
-      `<div class="no-device small">Калибровка недоступна: сначала подключите реальное устройство. Она никогда не запускается сама.</div>`;
+    const cal = s.connected ? `${contactPanel(s.contact)}<div class="cal-box">${calibrationPanel(s)}</div>`:
+      `<div class="no-device small">Подключите повязку для калибровки.</div>`;
     return `${statusBox(s)}<div class="device-two-col">
       <section class="card">${heading('Обнаруженные устройства','Сначала поиск, затем явный выбор и проверка соединения')}${found}
       <div class="connection-options"><label class="toggle-row"><input type="checkbox" id="auto-reconnect" ${s.auto_reconnect?'checked':''} ${!s.sdk_ready?'disabled':''}><span><strong>Автоматическое переподключение</strong><small>По умолчанию выключено; после потери связи повторить поиск и попытаться подключить прежнее устройство</small></span></label></div></section>
@@ -141,9 +313,10 @@
   }
   async function api(path,opts={}) { return ctx.api(path,opts); }
   async function act(action, extra) {
-    const map={scan:'/api/device/scan',disconnect:'/api/device/disconnect',calibration:'/api/device/calibration/start','skip-cal':'/api/device/calibration/skip',
+    const map={scan:'/api/device/scan',disconnect:'/api/device/disconnect','skip-cal':'/api/device/calibration/skip',
       'start-record':'/api/recording/start','stop-record':'/api/recording/stop','stop-replay':'/api/replay/stop','pause-replay':'/api/replay/pause','resume-replay':'/api/replay/resume'};
     try {
+      if (action==='calibration') {openCalibrationSetup();return;}
       if (action==='marker') {
         const input=$('#live-marker');const value=input?.value.trim();if(!value){notice('Введите название метки.','error');input?.focus();return;}
         await api('/api/markers',{method:'POST',body:JSON.stringify({label:value})}); input.value='';notice('Метка добавлена к текущей записи.','success');
@@ -159,7 +332,7 @@
         await api(`/api/records/${encodeURIComponent(id)}`,{method:'DELETE'});
         await loadSessions(); await ctx.reloadSessions?.(); notice('Запись удалена.','success');return;
       } else if(map[action]) {
-        await api(map[action],{method:'POST'});notice(({scan:'Поиск запущен.',disconnect:'Отключение запрошено.',calibration:'Калибровка запрошена.','skip-cal':'Калибровка пропущена.','start-record':'Запись начата.','stop-record':'Запись остановлена.','stop-replay':'Воспроизведение остановлено.'})[action]||'Готово.','success');
+        await api(map[action],{method:'POST'});notice(({scan:'Поиск запущен.',disconnect:'Отключение запрошено.','skip-cal':'Калибровка пропущена.','start-record':'Запись начата.','stop-record':'Запись остановлена.','stop-replay':'Воспроизведение остановлено.'})[action]||'Готово.','success');
       }
       await poll();
     } catch (error) { notice(error.message||'Не удалось выполнить действие.','error'); }
@@ -384,18 +557,22 @@
   function closeWS(){wsEpoch++;clearTimeout(wsRetry);wsRetry=null;if(ws){const old=ws;ws=null;old.onclose=null;old.close();}}
   async function poll() {
     if(preview)return;
+    const sequence = ++pollSequence;
     try {
-      const s=await api('/api/device/status');status=s;setTopStatus(s);
+      const s=await api('/api/device/status',{signal:AbortSignal.timeout(1600)});
+      if (sequence !== pollSequence) return;
+      status=s;setTopStatus(s);syncCalibrationAudio(s);
       if(view==='device'&&$('#content')){
-        const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,contact:s.contact,scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery});
+        const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,calibration_stage:s.calibration_run?.stage,calibration_result:s.calibration_result,contact:s.calibration_run?null:s.contact,scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery});
         if(fingerprint!==statusFingerprint){statusFingerprint=fingerprint;$('#content').innerHTML=devicePanel(s);bind();}
+        updateCalibrationProgress(s);
       }
       if(view==='live'){
         try{replay=await api('/api/replay/status');}catch(_){replay={active:false};}
         updateLiveStatus();
         await updateSignalQuality();
       }
-    }catch(e){setTopStatus({status:'error',message:'Не удаётся связаться с локальным сервером'});if(view==='device'&&$('#content'))$('#content').innerHTML=`<section class="card"><h2>Нет связи с сервером</h2><p>${esc(e.message)}</p>${pButton('Повторить','scan')}</section>`;}
+    }catch(e){if(sequence!==pollSequence)return;syncCalibrationAudio(null);statusFingerprint='';setTopStatus({status:'error',message:'Не удаётся связаться с локальным сервером'});if(view==='device'&&$('#content'))$('#content').innerHTML=`<section class="card"><h2>Нет связи с сервером</h2><p>${esc(e.message)}</p>${pButton('Повторить','scan')}</section>`;}
   }
   async function loadSessions() {
     if(preview||view!=='sessions')return;
@@ -416,8 +593,12 @@
     ctx=options;preview=Boolean(options.preview);
     if(preview){setTopStatus({status:'idle'});return;}
     if(pollTimer)clearInterval(pollTimer);
-    pollTimer=setInterval(poll,1900);
-    poll();
+    setupCalibrationDialog();
+    async function schedulePoll() {
+      await poll();
+      pollTimer=setTimeout(schedulePoll,status?.calibration_phase==='running'?250:1900);
+    }
+    schedulePoll();
   }
   async function renderView(nextView) {
     closeWS();clearGraphs();view=nextView;

@@ -14,6 +14,7 @@ capsule_worker при отсутствии SDK ставит status error и жд
 import asyncio
 import ctypes
 import json
+import math
 import os
 import re
 import shutil
@@ -35,6 +36,9 @@ from fastapi.staticfiles import StaticFiles
 from config import find_sdk_dir, settings, setup_logging
 from json_utils import finite_json
 from contact_quality import ElectrodeContact, ContactOptions
+from capsule_calibration import (
+    CalibrationRun, CUE_SECONDS, bind_calibration_result, bind_staged_calibration,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -304,8 +308,10 @@ class State:
         # Calibration control (user-driven):
         self.calibration_phase: str = "idle"
         self._calibration_started_at: float = 0.0
-        self._calibrator = None              # set in _handle_devices_in_worker
-        self._calibration_requested: bool = False  # set by WS command, consumed by capsule thread
+        self._calibrator = None  # Owned by capsule_worker.
+        self._calibration_run: CalibrationRun | None = None
+        self._calibration_stage_start: Callable | None = None
+        self._calibration_reconnect: bool = False
         self._calibration_skip: bool = False
 
         self.latest_emotions: dict[str, Any] | None = None
@@ -596,11 +602,68 @@ def on_eeg(device, eeg) -> None:
                 rec_ts.append(unix_now - ts_back)
             _stamp_metric("eeg")
             _touch_data()
-        if RECORDER:
-            RECORDER.record_eeg(rec_rows, rec_ts)
+        rec = RECORDER
+        if rec and rec.active:
+            sdk_bounds = None
+            try:
+                first_ms = int(eeg.get_timestamp(0))
+                last_ms = int(eeg.get_timestamp(n_samples - 1)) if n_samples > 1 else first_ms
+                if 0 < first_ms <= last_ms:
+                    sdk_bounds = (first_ms, last_ms)
+            except Exception:
+                # Older builds may omit the timestamp accessor or return no clock.
+                pass
+            rec.record_eeg(rec_rows, rec_ts, sdk_bounds=sdk_bounds)
         _cb_log("eeg", f"n={n_samples} ch={n_ch} sr={sr}")
     except BaseException as exc:
         log.warning("[cb] on_eeg EXC: %r", exc)
+
+
+def _subscribe_eeg_artifacts(device, lib):
+    pointer_type = ctypes.POINTER(ctypes.c_int)
+    callback_type = ctypes.CFUNCTYPE(None, pointer_type, pointer_type)
+    subscribe = lib.clCDevice_SetOnEEGArtifactsEvent
+    subscribe.argtypes = [pointer_type, callback_type]
+    subscribe.restype = None
+    count = lib.clCEEGArtifacts_GetChannelsCount
+    timestamp = lib.clCEEGArtifacts_GetTimestampMilli
+    flags = lib.clCEEGArtifacts_GetArtifactByChannel
+    quality = lib.clCEEGArtifacts_GetEEGQuality
+    for fn, result_type, uses_index in (
+        (count, ctypes.c_int32, False), (timestamp, ctypes.c_uint64, False),
+        (flags, ctypes.c_uint8, True), (quality, ctypes.c_float, True),
+    ):
+        # CEEGArtifacts.h returns float for quality. 2.0.72 Python reads uint8.
+        fn.restype = result_type
+        fn.argtypes = [pointer_type, *([ctypes.c_int32] if uses_index else []), ctypes.POINTER(Error)]
+
+    def read(fn, data, *index):
+        error = Error()
+        value = fn(data, *index, ctypes.byref(error))
+        _check_capsule_error(error)
+        return value
+
+    @callback_type
+    def on_artifacts(_device, artifacts):
+        rec = RECORDER
+        if not artifacts or not rec or not rec.active:
+            return
+        try:
+            channels = []
+            for i in range(read(count, artifacts)):
+                value = read(quality, artifacts, i)
+                channels.append({"index": i, "flags": read(flags, artifacts, i),
+                                 "quality": value if math.isfinite(value) else None})
+            if channels:
+                rec.record_metric("eeg_artifacts", {
+                    "sdk_timestamp_ms": read(timestamp, artifacts),
+                    "channels": channels,
+                })
+        except Exception:
+            log.exception("[cb] SDK EEG artifacts unavailable")
+
+    subscribe(device.get_c_pointer(), on_artifacts)
+    return on_artifacts
 
 
 def on_mems(mems, mems_data) -> None:
@@ -726,8 +789,6 @@ def on_phy_calibrated(phy, baselines) -> None:
         d = {n: float(getattr(baselines, n)) for n in
              ["alpha", "alphaGravity", "beta", "betaGravity",
               "concentration", "timestampMilli"]}
-        with STATE_LOCK:
-            S.latest_calibration = d
         if RECORDER:
             RECORDER.record_metric("phy_baselines", d)
     except BaseException as exc:
@@ -858,7 +919,9 @@ def _clear_live_connection(reason: str, status: str = "idle", *, preserve_device
         S.calibration_phase = "idle"
         S._calibration_started_at = 0.0
         S._calibrator = None
-        S._calibration_requested = S._calibration_skip = False
+        S._calibration_run = None
+        S._calibration_stage_start = None
+        S._calibration_reconnect = S._calibration_skip = False
         S.latest_calibration = None
         S.latest_emotions = S.latest_cardio = S.latest_phy = S.latest_prod = None
         S.latest_resistances = []
@@ -920,6 +983,12 @@ def _prepare_device(device, lib) -> tuple[list[Any], list[Any]]:
     device.set_on_eeg(on_eeg)
     device.set_on_resistances(on_resistances)
     handles: list[Any] = []
+    try:
+        handles.append(_subscribe_eeg_artifacts(device, lib))
+    except AttributeError:
+        log.info("[capsule] EEG artifact stream unavailable in this SDK")
+    except Exception:
+        log.exception("[capsule] cannot subscribe to EEG artifacts")
     baseline_handlers: list[Any] = []
     for label, factory in (("Emotions", Emotions), ("Cardio", Cardio),
                            ("PhysiologicalStates", PhysiologicalStates),
@@ -998,6 +1067,9 @@ def capsule_worker() -> None:
         nonlocal active_device, handles, baseline_handlers, negative_checks, next_auto_scan_at
         old = active_device
         active_device = None
+        with STATE_LOCK:
+            if S.calibration_phase == "running":
+                _fail_calibration_locked(reason="disconnected", message=message)
         try:
             if old is not None:
                 try:
@@ -1029,10 +1101,6 @@ def capsule_worker() -> None:
             serial = S.connect_requested
             S.connect_requested = None
             auto_reconnect = S.auto_reconnect
-            cal_start = S._calibration_requested
-            S._calibration_requested = False
-            cal_skip = S._calibration_skip
-            S._calibration_skip = False
         if disconnect:
             release_device("Устройство отключено пользователем.", "idle")
             with STATE_LOCK:
@@ -1104,14 +1172,30 @@ def capsule_worker() -> None:
                          "mems": _query_sample_rate(device, "get_mems_sample_rate", DEFAULT_MEMS_SR)}
                 info_obj = device.get_info()
                 device.start()
-                # Optional, explicit quick calibration (never starts itself).
+                # Initialize the opt-in calibrator and retain its native callbacks.
                 cal = None
+                stage_start = None
                 try:
-                    cal = Calibrator(device, lib)
-                    cal.set_on_calibration_finished(_on_calibration)
+                    candidate_calibrator = Calibrator(device, lib)
+                    try:
+                        from Calibrator import IndividualNFBData
+                        handles.append(bind_calibration_result(
+                            lib, candidate_calibrator, IndividualNFBData, _on_calibration))
+                    except (ImportError, AttributeError):
+                        candidate_calibrator.set_on_calibration_finished(_on_calibration)
+                    failed_status = getattr(lib, "clCNFBCalibrator_HasCalibrationFailed", None)
+                    if failed_status is not None:
+                        failed_status.restype = ctypes.c_bool
+                    cal = candidate_calibrator
                     handles.append(cal)
                 except Exception as exc:
-                    log.info("[capsule] quick calibration unavailable: %s", exc)
+                    log.info("[capsule] calibration unavailable: %s", exc)
+                if cal is not None:
+                    try:
+                        stage_start = bind_staged_calibration(
+                            lib, cal, Error, _check_capsule_error, _on_calibration_stage_finished)
+                    except Exception as exc:
+                        log.info("[capsule] staged calibration unavailable: %s", exc)
                 try:
                     nfb = NFB(device, lib, calibrator=None)
                     nfb.set_on_user_state(on_nfb_user_state)
@@ -1127,6 +1211,7 @@ def capsule_worker() -> None:
                     S.channel_names = channels
                     S.eeg_sample_rate, S.ppg_sample_rate, S.mems_sample_rate = (rates["eeg"], rates["ppg"], rates["mems"])
                     S._calibrator = cal
+                    S._calibration_stage_start = stage_start
                     S.calibration_phase = "ready" if cal is not None else "unavailable"
                     S.calibrated = False
                     S._device_ready = True
@@ -1207,45 +1292,8 @@ def capsule_worker() -> None:
                     if negative_checks >= 2:
                         log.warning("[capsule] device.is_connected() false twice — disconnected")
                         release_device("Устройство потеряло связь.", "disconnected", retry=auto_reconnect)
-            with STATE_LOCK:
-                phase = S.calibration_phase
-                cal = S._calibrator
-                ready = S._device_ready
-                age = _data_age_s()
-                started_at = S._calibration_started_at
-            if ready and phase == "running" and started_at and time.time()-started_at > CAL_TIMEOUT_S:
-                with STATE_LOCK:
-                    S.calibration_phase = "failed"
-                    S.status_message = "Калибровка превысила лимит времени: проверьте контакт ЭЭГ."
-            if ready and cal_start and cal is not None and phase in ("ready", "complete", "failed", "skipped"):
-                with STATE_LOCK:
-                    contact_still_ready = _contact_locked()["calibration_allowed"]
-                if not contact_still_ready:
-                    with STATE_LOCK:
-                        S.status_message = "Калибровка не началась: контакт электродов утрачен."
-                    continue
-                try:
-                    # Baseline algorithms are also opt-in, never run on discovery or connection.
-                    for processor in baseline_handlers:
-                        try:
-                            processor.calibrate_baselines()
-                        except Exception as exc:
-                            log.warning("[capsule] baseline calibration failed: %s", exc)
-                    cal.calibrate_quick()
-                    with STATE_LOCK:
-                        S.calibration_phase = "running"
-                        S.calibrated = False
-                        S._calibration_started_at = time.time()
-                    if RECORDER:
-                        RECORDER.event("calibration_started")
-                except Exception as exc:
-                    with STATE_LOCK:
-                        S.calibration_phase = "failed"
-                        S.status_message = f"Не удалось начать калибровку: {exc}"
-            elif ready and cal_skip and phase == "ready":
-                with STATE_LOCK:
-                    S.calibration_phase = "skipped"
-                    S.calibrated = False  # Skipping is NOT a completed calibration.
+            if active_device is not None:
+                _update_calibration(baseline_handlers)
         time.sleep(0.04)
 
     if active_device is not None:
@@ -1264,30 +1312,176 @@ def _query_sample_rate(device, getter: str, default: int) -> int:
     return default
 
 
+def _check_capsule_error(error) -> None:
+    if error.code != Error_Code.OK:
+        raise CapsuleException(error)
+
+
+def _calibration_event_locked(kind: str, **fields) -> None:
+    run = S._calibration_run
+    rec = RECORDER
+    if run and rec and rec.active and rec.session_id == run.session_id:
+        rec.event(kind, **run.event_fields(), **fields)
+
+
+def _fail_calibration_locked(reason: str, message: str, reconnect: bool = False) -> None:
+    S.calibration_phase = "failed"
+    S.calibrated = False
+    S.status_message = message
+    S._calibration_reconnect = reconnect
+    _calibration_event_locked("calibration_failed", reason=reason)
+
+
+def _finish_stage_locked() -> None:
+    run = S._calibration_run
+    if not run.stage_finished:
+        run.stage_finished = True
+        _calibration_event_locked("calibration_stage_end")
+
+
+def _on_calibration_stage_finished(calibrator) -> None:
+    with STATE_LOCK:
+        run = S._calibration_run
+        if (calibrator is S._calibrator and S.calibration_phase == "running"
+                and run.mode == "full" and run.started is not None):
+            _finish_stage_locked()
+
+
+def _calibration_is_current_locked(calibrator) -> bool:
+    run = S._calibration_run
+    return bool(calibrator is S._calibrator and S._device_ready and S.status == "connected"
+                and S.calibration_phase == "running" and run and run.started is not None)
+
+
+def _report_calibration_failure_locked(reason: int) -> None:
+    messages = {
+        1: "Capsule обнаружил слишком много артефактов. Проверьте посадку повязки и повторите в покое.",
+        2: "Пик оказался на границе диапазона Capsule. Попробуйте расслабиться и повторить.",
+    }
+    _fail_calibration_locked(f"sdk_{reason}", messages.get(reason, "Capsule не смог завершить калибровку."))
+
+
 def _on_calibration(calibrator, data) -> None:
     try:
-        d = {n: float(getattr(data, n)) for n in
-             ["individualFrequency", "individualPeakFrequency",
-              "individualPeakFrequencyPower", "individualPeakFrequencySuppression",
-              "individualBandwidth", "individualNormalizedPower",
-              "lowerFrequency", "upperFrequency"]}
         with STATE_LOCK:
-            if not (S._device_ready and S.status == "connected" and S.calibration_phase == "running"):
+            if not _calibration_is_current_locked(calibrator):
+                return
+            reason = getattr(data, "failReason", 0)
+            reason = int(getattr(reason, "value", reason))
+            if reason:
+                _report_calibration_failure_locked(reason)
+                return
+            run = S._calibration_run
+            if not run.last_stage:
                 return
             if not _contact_locked()["calibration_allowed"]:
-                S.calibration_phase = "failed"
-                S.calibrated = False
-                S.status_message = "Калибровка завершилась при плохом контакте. Повторите после стабилизации."
+                _fail_calibration_locked("contact_lost", "Контакт потерян. Дождитесь стабилизации и повторите.")
                 return
+            d = {key: float(getattr(data, key)) for key in (
+                "individualFrequency", "individualPeakFrequency", "individualPeakFrequencyPower",
+                "individualPeakFrequencySuppression", "individualBandwidth",
+                "individualNormalizedPower", "lowerFrequency", "upperFrequency",
+            )}
+            if not all(math.isfinite(value) for value in d.values()):
+                _fail_calibration_locked("invalid_result", "Capsule вернул некорректный результат.")
+                return
+            d.update(mode=run.mode, timestampMilli=int(getattr(data, "timestampMilli", -1)))
+            _finish_stage_locked()
             S.latest_calibration = d
             S.calibrated = True
             S.calibration_phase = "complete"
-            S.status_message = "Калибровка завершена"
-        if RECORDER:
-            RECORDER.set_calibration(d)
-        log.info("[cb] calibration finished: %s", d)
-    except BaseException as exc:
-        log.warning("[cb] _on_calibration EXC: %r", exc)
+            S.status_message = "Калибровка NFB завершена. Можно открыть глаза."
+            run.baselines_at = time.monotonic() + CUE_SECONDS
+            _calibration_event_locked("calibration_complete")
+            rec = RECORDER
+            if rec and rec.active and rec.session_id == run.session_id:
+                rec.set_calibration(d)
+        log.info("[cb] NFB calibration finished: %s", d)
+    except Exception:
+        log.exception("[cb] NFB calibration result error")
+
+
+def _sdk_calibration_failed(calibrator) -> bool:
+    getter = getattr(calibrator, "has_calibration_failed", None)
+    return bool(getter and getter())
+
+
+def _update_calibration(baseline_handlers) -> None:
+    """Advance after SDK events, applying native calls only on the SDK pump thread."""
+    now = time.monotonic()
+    with STATE_LOCK:
+        if S._calibration_skip and S.calibration_phase == "ready":
+            S.calibration_phase = "skipped"
+        S._calibration_skip = False
+        run = S._calibration_run
+        phase = S.calibration_phase
+        cal = S._calibrator
+        if phase == "complete" and run and run.baselines_at is not None and now >= run.baselines_at:
+            run.baselines_at = None
+            if not _contact_locked()["calibration_allowed"]:
+                return
+            _calibration_event_locked("sdk_baselines_started")
+        elif phase != "running":
+            return
+        else:
+            if not _contact_locked()["calibration_allowed"]:
+                _fail_calibration_locked("contact_lost", "Контакт потерян во время калибровки.",
+                                         reconnect=run.started is not None and not run.stage_finished)
+                return
+            if run.stage_finished and not run.last_stage:
+                run.stage += 1
+                run.started = None
+                run.stage_finished = False
+                run.prepare_until = now + CUE_SECONDS
+                _calibration_event_locked("calibration_cue")
+            if run.started is not None and now - run.started > CAL_TIMEOUT_S:
+                _fail_calibration_locked("timeout", "Capsule не завершил этап вовремя.", reconnect=True)
+                return
+            if run.started is None and now < run.prepare_until:
+                return
+            starting = run.started is None
+            if starting:
+                run.started = now
+                if run.stage == 0:
+                    S._calibration_started_at = time.time()
+                    _calibration_event_locked("calibration_started")
+                _calibration_event_locked("calibration_stage_start")
+
+    if phase == "complete":
+        for processor in baseline_handlers:
+            try:
+                processor.calibrate_baselines()
+            except Exception as exc:
+                log.warning("[capsule] baseline calibration failed: %s", exc)
+        return
+
+    try:
+        if starting:
+            # The failure flag can still describe the previous attempt.
+            run.previous_sdk_failure = _sdk_calibration_failed(cal)
+            if run.mode == "quick":
+                cal.calibrate_quick()
+            else:
+                S._calibration_stage_start(run.stage)
+            return
+        if not _sdk_calibration_failed(cal):
+            run.previous_sdk_failure = False
+            return
+        if run.previous_sdk_failure:
+            return
+        # Some versions expose failure through status without a result callback.
+        try:
+            reason = cal.get_individual_nfb().failReason
+            reason = int(getattr(reason, "value", reason))
+        except Exception:
+            reason = -1
+        with STATE_LOCK:
+            if _calibration_is_current_locked(cal):
+                _report_calibration_failure_locked(reason or -1)
+    except Exception as exc:
+        with STATE_LOCK:
+            if _calibration_is_current_locked(cal):
+                _fail_calibration_locked("sdk_error", f"Ошибка калибратора Capsule: {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -1424,7 +1618,14 @@ def _device_status_payload() -> dict[str, Any]:
             "calibration_phase": S.calibration_phase if ready else "unavailable",
             "contact": (contact := _contact_locked()),
             "validity": _validity_locked(contact),
-            "calibration_available": ready and S._calibrator is not None and contact["calibration_allowed"],
+            "calibration_available": ready and S._calibrator is not None and contact["calibration_allowed"]
+            and S.calibration_phase != "running" and not S._calibration_reconnect,
+            "calibration_modes": (["quick", "full"] if S._calibration_stage_start is not None else ["quick"])
+            if ready and S._calibrator is not None else [],
+            "calibration_run": S._calibration_run.status(time.monotonic())
+            if ready and S.calibration_phase == "running" and S._calibration_run else None,
+            "calibration_result": finite_json(S.latest_calibration) if ready and S.calibrated else None,
+            "calibration_reconnect": S._calibration_reconnect,
             "calibrated": S.calibrated if ready else False,
             "recording": RECORDER.session_id if ready and RECORDER and RECORDER.active else None,
             "data_age_s": round(age, 2) if ready and age is not None else None,
@@ -1492,18 +1693,37 @@ async def api_device_reconnect_settings(payload: dict[str, Any]) -> dict[str, An
     return _device_status_payload()
 
 
-@app.post("/api/device/calibration/start")
-async def api_calibration_start() -> dict[str, Any]:
+def _queue_calibration(mode: str, *, guided: bool) -> None:
+    if EXPERIMENTS.status()["state"] == "running":
+        raise HTTPException(409, "Завершите эксперимент перед калибровкой.")
     with STATE_LOCK:
         if not S._device_ready or S.status != "connected":
             raise HTTPException(409, "Калибровка возможна только после подключения устройства.")
-        if S._calibrator is None:
-            raise HTTPException(503, "Калибратор недоступен для этого устройства.")
+        if S._calibrator is None or (mode == "full" and S._calibration_stage_start is None):
+            raise HTTPException(503, "Этот режим калибровки недоступен в установленной версии Capsule.")
         if S.calibration_phase == "running":
             raise HTTPException(409, "Калибровка уже выполняется.")
+        if S._calibration_reconnect:
+            raise HTTPException(409, "Переподключите повязку перед повторной калибровкой.")
         if not _contact_locked()["calibration_allowed"]:
-            raise HTTPException(409, "Контакт электродов ещё не стабилен. Наденьте повязку, дождитесь измерений ниже порога по всем каналам и повторите.")
-        S._calibration_requested = True
+            raise HTTPException(409, "Контакт электродов ещё не стабилен. Дождитесь готовности и повторите.")
+        rec = RECORDER
+        S._calibration_run = CalibrationRun(mode, time.monotonic() + (CUE_SECONDS if guided else 0.0),
+                                             rec.session_id if rec and rec.active else None)
+        S._calibration_started_at = 0.0
+        S.calibration_phase = "running"
+        S.calibrated = False
+        S.latest_calibration = None
+        S.status_message = "Калибровка NFB выполняется."
+        _calibration_event_locked("calibration_cue")
+
+
+@app.post("/api/device/calibration/start")
+async def api_calibration_start(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    mode = (payload or {}).get("mode", "quick")
+    if mode not in ("quick", "full"):
+        raise HTTPException(400, "Выберите быструю или полную калибровку.")
+    _queue_calibration(mode, guided=payload is not None)
     return {"accepted": True, "calibration_phase": "queued"}
 
 
@@ -1512,7 +1732,7 @@ async def api_calibration_skip() -> dict[str, Any]:
     with STATE_LOCK:
         if not S._device_ready or S.status != "connected":
             raise HTTPException(409, "Устройство не подключено.")
-        if S.calibration_phase not in ("ready",):
+        if S.calibration_phase != "ready":
             raise HTTPException(409, "Калибровка недоступна для пропуска в этом состоянии.")
         S._calibration_skip = True
     return {"accepted": True, "calibration_phase": "skipped", "calibrated": False}
@@ -2231,9 +2451,10 @@ async def _ws_receiver(ws: WebSocket) -> None:
                 continue
             action = (data or {}).get("action")
             if action == "start_calibration":
-                with STATE_LOCK:
-                    if S._device_ready and S.status == "connected" and S._calibrator is not None and S.calibration_phase != "running":
-                        S._calibration_requested = True
+                try:
+                    _queue_calibration("quick", guided=False)
+                except HTTPException:
+                    pass
             elif action == "skip_calibration":
                 with STATE_LOCK:
                     if S._device_ready and S.status == "connected" and S.calibration_phase == "ready":
@@ -2285,8 +2506,7 @@ from experiments import DOOR_TRIALS, ExperimentManager, TEMPLATES
 
 def _door_signal_ready() -> bool:
     with STATE_LOCK:
-        return (S.calibration_phase != 'running' and not S._calibration_requested
-                and _validity_locked()['eeg'])
+        return S.calibration_phase != 'running' and _validity_locked()['eeg']
 
 
 EXPERIMENTS = ExperimentManager(lambda: RECORDER, door_signal_ready=_door_signal_ready)
@@ -2304,6 +2524,9 @@ async def experiment_status():
 async def experiment_start(payload: dict[str, Any]):
     if not _live_connected() or RECORDER is None or not RECORDER.active:
         raise HTTPException(409,"Сначала подключите повязку и начните запись")
+    with STATE_LOCK:
+        if S.calibration_phase == "running":
+            raise HTTPException(409, "Дождитесь завершения калибровки.")
     try:
         return EXPERIMENTS.start(payload.get('protocol_id',''), payload.get('phases'))
     except ValueError as exc:raise HTTPException(400,str(exc))

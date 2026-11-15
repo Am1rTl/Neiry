@@ -121,7 +121,7 @@
       $$('[data-studio^="start:"]').forEach(b=>{
         const door=b.dataset.studio===`start:${doorProtocol}`;
         b.disabled=experimentBusy||active||!d.connected||!d.recording||
-          (door&&(!eegReady||d.calibration_phase==='running'));
+          d.calibration_phase==='running'||(door&&!eegReady);
       });
       $('[data-studio="record"]').disabled=experimentBusy||!!d.recording||!eegReady;
       $('[data-studio="record-stop"]').disabled=experimentBusy||!d.recording;
