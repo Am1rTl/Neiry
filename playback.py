@@ -19,6 +19,7 @@ from typing import Any, Callable, Iterator
 
 _METRIC_TO_LATEST = {"emotions": "latest_emotions", "cardio": "latest_cardio",
                      "phy": "latest_phy", "productivity": "latest_prod"}
+_METRIC_TO_HISTORY = {"emotions": "emotions_hist", "cardio": "cardio_hist", "nfb": "nfb_hist"}
 _METRIC_ENVELOPE = ("ts_unix", "ts_iso", "stream")
 _DEFAULT_RATES = {"eeg": 250, "ppg": 100, "mems": 250}
 
@@ -149,9 +150,13 @@ class PlaybackController:
         # Set display metadata for replay. This is not a live-device connection.
         with self._lock:
             self.generation += 1
-            for field in ('eeg','eeg_t','ppg','ppg_t','mems_acc','mems_gyro','mems_t'):
-                buff=getattr(self._state,field,None)
-                if buff is not None and hasattr(buff,'clear'):buff.clear()
+            for field in ('eeg', 'eeg_t', 'ppg', 'ppg_t', 'mems_acc', 'mems_gyro', 'mems_t',
+                          *_METRIC_TO_HISTORY.values()):
+                buff = getattr(self._state, field, None)
+                if buff is not None:
+                    buff.clear()
+            for field in _METRIC_TO_LATEST.values():
+                setattr(self._state, field, None)
             try:
                 metadata=json.loads((folder/'meta.json').read_text(encoding='utf-8'))
                 rates=metadata.get('sample_rates') or {}
@@ -273,7 +278,7 @@ class PlaybackController:
         target = _METRIC_TO_LATEST.get(stream)
         if target:
             setattr(self._state, target, values)
-        history = {'emotions':'emotions_hist', 'cardio':'cardio_hist', 'nfb':'nfb_hist'}.get(stream)
+        history = _METRIC_TO_HISTORY.get(stream)
         if history and hasattr(self._state, history):
             getattr(self._state, history).append(values)
         if stream == 'battery' and 'charge_pct' in values:

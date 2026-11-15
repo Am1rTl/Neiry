@@ -313,7 +313,7 @@
   function livePanel() {
     return `<div class="live-banner" id="live-banner"><span class="activity-dot"></span><div><strong id="live-mode">Ожидание сигнала</strong><p id="live-message">Подключите устройство или запустите воспроизведение записи.</p></div><div class="live-banner-actions"><a class="button subtle" href="#device" data-go="device">Устройство</a><button class="button subtle" id="replay-pause" data-action="pause-replay" hidden>Пауза</button><button class="button subtle" id="replay-forward" data-action="seek-forward" hidden>+30 с</button><button class="button subtle" id="replay-stop" data-action="stop-replay" hidden>Остановить воспроизведение</button></div></div>
       <div id="live-contact-card" class="contact-live-wrap">${contactPanel(status?.contact,true)}</div>
-      <div class="live-metrics"><section class="metric-card"><div class="metric-label">Пульс · SDK</div><div class="metric-value" id="live-hr">—</div><div class="metric-note">уд/мин · если доступно</div></section>
+      <div class="live-metrics"><section class="metric-card"><div class="metric-label">Пульс · SDK</div><div class="metric-value" id="live-hr">—</div><div class="metric-note" id="live-hr-note">уд/мин · Capsule SDK</div></section>
       <section class="metric-card"><div class="metric-label">Внимание · SDK</div><div class="metric-value" id="live-attention">—</div><div class="metric-note">Индекс производителя, не % концентрации</div></section>
       <section class="metric-card"><div class="metric-label">Расслабление · SDK</div><div class="metric-value" id="live-relax">—</div><div class="metric-note">Индекс производителя</div></section>
       <section class="metric-card"><div class="metric-label">Возраст данных</div><div class="metric-value" id="live-age">—</div><div class="metric-note">с · время получения сервером</div></section></div>
@@ -323,7 +323,7 @@
         <h2 id="live-primary-label">ЭЭГ и пульс</h2><div class="live-graphs">
           ${livePlot('live-eeg','ЭЭГ','Метки каналов и частота дискретизации из SDK',true,'<p class="chart-caption"><span id="live-channels">Каналы: —</span> <span id="live-eeg-sr"></span></p>')}
           ${livePlot('live-ppg','ФПГ · пульсовая волна','Оптический сигнал',false,'<p class="chart-caption" id="live-ppg-sr"></p>')}
-          ${livePlot('live-hr-chart','Пульс во времени','Значения SDK в пригодных фрагментах')}
+          ${livePlot('live-hr-chart','Пульс во времени · SDK','Фрагменты, прошедшие проверку флагов Capsule')}
           <section class="card wide" data-live-diagnostic="spectrogram">${heading('Спектрограмма ЭЭГ','Мощность нормируется отдельно для каждого канала')}<div class="live-spectrograms" id="live-spectrograms"></div><p class="chart-caption" id="live-spectrogram-note">Для построения нужны не менее трёх секунд ЭЭГ.</p></section>
           <section class="card wide" data-live-diagnostic="quality">${heading('Диагностика ЭЭГ','Постоянный сигнал, округление и помехи 50/60 Гц')}<div id="live-quality-state" class="studio-grid"><p class="chart-caption">Ожидаем достаточное окно ЭЭГ.</p></div></section>
         </div>
@@ -340,7 +340,7 @@
         <h2 id="live-sdk-label">Индексы Capsule SDK</h2><div class="live-graphs">
           ${livePlot('live-nfb','Нейрообратная связь','Пять частотных полос α, β, θ, δ и SMR',true)}
           ${livePlot('live-emotions','Оценки внимания и состояний','Индексы производителя',true)}
-          ${livePlot('live-phy','Физиологические оценки')}
+          ${livePlot('live-phy','Физиологические оценки','Capsule обычно обновляет их раз в минуту')}
           ${livePlot('live-prod','Продуктивность')}
           ${livePlot('live-si-chart','Кардиоиндекс стресса','Расчёт SDK по ФПГ')}
           ${livePlot('live-ki-chart','Индекс Каплана','Расчёт SDK по ФПГ')}
@@ -564,9 +564,13 @@
     dst.splice(0,Math.max(lowerBound(dst,t-920),dst.length-max));
   }
   function appendMetrics(tick,qualified,allowArchived){
-    if(tick.cardio&&(qualified?.cardio||allowArchived)){
+    const cardioFields=[['hr','heartRate'],['stressIndex','stressIndex'],['kaplanIndex','kaplanIndex']];
+    if(tick.cardio&&qualified?.cardio){
       const c=tick.cardio;
-      for(const [key,prop] of [['hr','heartRate'],['stressIndex','stressIndex'],['kaplanIndex','kaplanIndex']])addPoint(key,c.t,c[prop]);
+      for(const [key,prop] of cardioFields)addPoint(key,c.t,c[prop]);
+    }else{
+      const t=allowArchived?tick.sensor_status?.cardio?.t:tick.t;
+      for(const [key] of cardioFields)addPoint(key,t,null);
     }
     if(tick.emotions&&(qualified?.emotions||allowArchived))
       for(const key of ['attention','relaxation','cognitiveLoad','cognitiveControl','selfControl'])addPoint(key,tick.emotions.t,tick.emotions[key]);
@@ -577,8 +581,8 @@
     if(Array.isArray(tick.nfb)&&(qualified?.nfb||allowArchived))
       for(const item of tick.nfb)for(const key of ['alpha','beta','theta','delta','smr'])addPoint(key,item?.t,item?.[key]);
     if(!allowArchived){
-      for(const [source,ids] of [['cardio',['live-hr-chart','live-si-chart','live-ki-chart']],['emotions',['live-emotions']],
-                                ['phy',['live-phy']],['prod',['live-prod']],['nfb',['live-nfb']]]){
+      for(const [source,ids] of [['emotions',['live-emotions']],['phy',['live-phy']],
+                                ['prod',['live-prod']],['nfb',['live-nfb']]]){
         if(!qualified[source])for(const id of ids)for(const key of plotConfig(id).keys)addPoint(key,tick.t,null);
       }
     }
@@ -820,7 +824,10 @@
     if(liveContact&&!archived)setText($('.contact-age',liveContact),contactAge(tick.contact));
     const valid=tick.validity||{};
     const field=(id,v)=>setText($(`#${id}`),fmt(v,1));
-    field('live-hr',(valid.cardio||archived)?tick.cardio?.heartRate:null);
+    field('live-hr',valid.cardio?tick.cardio?.heartRate:null);
+    setText($('#live-hr-note'), archived
+      ? (valid.cardio?'уд/мин · сохранённое значение SDK':tick.sensor_status?.cardio?.reason||'Ожидаем кардиопоказатели из записи.')
+      : 'уд/мин · Capsule SDK');
     field('live-attention',(valid.emotions||archived)?tick.emotions?.attention:null);
     field('live-relax',(valid.emotions||archived)?tick.emotions?.relaxation:null);
     field('live-age',tick.data_age_s);

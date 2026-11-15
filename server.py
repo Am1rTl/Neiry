@@ -36,6 +36,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import find_sdk_dir, settings, setup_logging
+from cardio_quality import sdk_cardio_issues
 from json_utils import finite_json
 from contact_quality import ElectrodeContact, ContactOptions
 from capsule_calibration import (
@@ -425,26 +426,23 @@ def _fresh_locked(name: str, max_age: float, now: float) -> bool:
     return stamp is not None and 0 <= now - stamp <= max_age
 
 
+def _stream_freshness_limit(name: str) -> float:
+    if name in ("eeg", "ppg", "mems"):
+        return settings.CONTACT_STALE_SECONDS
+    if name == "phy":
+        return settings.PHY_STALE_SECONDS
+    return settings.METRIC_STALE_SECONDS
+
+
 def _cardio_limits_locked(ppg_ready: bool, now: float) -> list[str]:
     report = S.latest_cardio
     if not report:
         return ["Capsule пока не прислал кардиоиндексы."]
     if not _fresh_locked("cardio", settings.METRIC_STALE_SECONDS, now):
         return ["Кардиоиндексы перестали обновляться."]
-    problems = []
+    problems = sdk_cardio_issues(report)
     if not ppg_ready:
-        problems.append("Ожидаем сырой поток ФПГ и стабильный контакт.")
-    if not report.get("skinContact"):
-        problems.append("Оптический датчик не подтвердил контакт с кожей.")
-    if report.get("motionArtifacts"):
-        problems.append("Capsule обнаружил движение.")
-    if report.get("hasArtifacts"):
-        problems.append("Capsule обнаружил артефакты ФПГ.")
-    if not report.get("metricsAvailable"):
-        problems.append("Capsule пока не выдал достоверный пульс.")
-    hr = report.get("heartRate")
-    if not isinstance(hr, (int, float)) or not 30 <= hr <= 220:
-        problems.append("Пульс вне диапазона отображения.")
+        problems.insert(0, "Ожидаем сырой поток ФПГ и стабильный контакт.")
     return problems
 
 
@@ -453,18 +451,18 @@ def _validity_locked(contact: dict[str, Any] | None = None) -> dict[str, Any]:
     contact = contact or _contact_locked()
     now = time.monotonic()
 
-    def fresh(name: str, age: float = settings.METRIC_STALE_SECONDS) -> bool:
-        return _fresh_locked(name, age, now)
+    def fresh(name: str) -> bool:
+        return _fresh_locked(name, _stream_freshness_limit(name), now)
 
-    eeg = bool(contact["ready"] and fresh("eeg", settings.CONTACT_STALE_SECONDS)
+    eeg = bool(contact["ready"] and fresh("eeg")
                and len(S.eeg) >= settings.EEG_MIN_SAMPLES)
-    ppg = bool(contact["ready"] and fresh("ppg", settings.CONTACT_STALE_SECONDS)
+    ppg = bool(contact["ready"] and fresh("ppg")
                and len(S.ppg) >= settings.PPG_MIN_SAMPLES)
     sdk = eeg and S.calibrated
     return {
         "raw_source": "Capsule SDK", "contact_verified": bool(contact["ready"]),
         "eeg": eeg, "ppg": ppg, "cardio": not _cardio_limits_locked(ppg, now),
-        "mems": fresh("mems", settings.CONTACT_STALE_SECONDS),
+        "mems": fresh("mems"),
         "emotions": eeg and fresh("emotions"), "phy": sdk and fresh("phy"),
         "prod": sdk and fresh("prod"), "nfb": sdk and fresh("nfb"),
         "source_mode": "live" if S._device_ready and S.status == "connected" else "none",
@@ -2401,8 +2399,10 @@ def _verified_sensor_status(source: State, validity: dict[str, Any], contact: di
         output = sensors[name]
         raw = name in ("eeg", "ppg", "mems")
         stamp = source.metrics_updated_at.get(name)
-        fresh = _fresh_locked(name, settings.CONTACT_STALE_SECONDS if raw else settings.METRIC_STALE_SECONDS, now)
+        fresh = _fresh_locked(name, _stream_freshness_limit(name), now)
         output.update(received=stamp is not None, fresh=fresh)
+        if name == "phy":
+            output.update(expected_interval_s=60, stale_after_s=settings.PHY_STALE_SECONDS)
         if raw:
             output["total_samples"] = source.stream_counts.get(name, 0)
         baseline = source.baselines.get(name)
@@ -2410,8 +2410,10 @@ def _verified_sensor_status(source: State, validity: dict[str, Any], contact: di
             output["baseline"] = dict(baseline)
         if validity.get(name):
             output.update(state="ok", reason="Отсчёты поступают." if raw else "Capsule обновляет показатели.")
-            if name == "phy" and any((source.latest_phy or {}).get(key) for key in ("nfbArtifacts", "cardioArtifacts")):
-                output.update(state="warn", reason="Capsule пометил артефакты в одном из входных потоков.")
+            if name == "phy":
+                output["reason"] = "Capsule обновляет физиологические оценки примерно раз в минуту."
+                if any((source.latest_phy or {}).get(key) for key in ("nfbArtifacts", "cardioArtifacts")):
+                    output.update(state="warn", reason="Capsule пометил артефакты в одном из входных потоков.")
         elif source.stream_support.get(name) is False:
             output.update(state="none", reason="Поток недоступен в этом подключении Capsule.")
         elif name == "cardio" and stamp is not None:
@@ -2427,7 +2429,9 @@ def _verified_sensor_status(source: State, validity: dict[str, Any], contact: di
         elif stamp is None:
             output.update(state="none", reason="От SDK пока не поступали данные.")
         elif not fresh:
-            output.update(state="warn", reason="SDK перестал обновлять поток.")
+            reason = ("Физиологическая оценка устарела. Ожидаем обновление Capsule."
+                      if name == "phy" else "SDK перестал обновлять поток.")
+            output.update(state="warn", reason=reason)
         elif not contact["ready"]:
             output.update(state="warn", reason="Данные поступают; ожидаем стабильный контакт электродов.")
         elif raw:
@@ -2587,6 +2591,20 @@ def _build_tick_snapshot(deltas: tuple[_WSDelta, ...] | None = None) -> dict[str
         resistances_n = _metric_window(S.resistances_t, "resistances", source, deltas)
         nfb_n = (_metric_window(S.nfb_hist, "nfb", source, deltas, timestamp=lambda row: row["t"])
                  if archived or validity["nfb"] else 0)
+        sensors = _verified_sensor_status(S, validity, contact)
+        cardio_history = []
+        if archived:
+            report = S.latest_cardio
+            issues = sdk_cardio_issues(report) if report else []
+            validity["cardio"] = bool(report) and not issues
+            if not report:
+                sensors["cardio"] = {"state": "none", "reason": "Ожидаем кардиопоказатели из записи."}
+            elif issues:
+                sensors["cardio"] = {"state": "warn", "reason": " ".join(issues), "t": report.get("t")}
+            else:
+                sensors["cardio"] = {"state": "ok", "reason": "Сохранённый пульс прошёл проверку флагов Capsule."}
+            if legacy_replay_init:
+                cardio_history = [row for row in S.cardio_hist if not sdk_cardio_issues(row)]
         return {
             "connected": S._device_ready and S.status == "connected",
             "t": S.now(),
@@ -2611,7 +2629,7 @@ def _build_tick_snapshot(deltas: tuple[_WSDelta, ...] | None = None) -> dict[str
             "validity": validity,
             "replay": replay,
             "emotions": S.latest_emotions if (archived or validity["emotions"]) else None,
-            "cardio": S.latest_cardio if (archived or validity["cardio"]) else None,
+            "cardio": S.latest_cardio if validity["cardio"] else None,
             "phy": S.latest_phy if (archived or validity["phy"]) else None,
             "prod": S.latest_prod if (archived or validity["prod"]) else None,
             "resistances": S.latest_resistances,
@@ -2619,7 +2637,7 @@ def _build_tick_snapshot(deltas: tuple[_WSDelta, ...] | None = None) -> dict[str
             "resistances_times": _tail(S.resistances_t, resistances_n),
             "res_channel_names": S.res_channel_names,
             "nfb": _tail(S.nfb_hist, nfb_n),
-            "sensor_status": _verified_sensor_status(S, validity, contact),
+            "sensor_status": sensors,
             "stream_epoch": epoch,
             "stream_counts": counts,
             "eeg_t": _tail(S.eeg_t, eeg_n),
@@ -2629,7 +2647,7 @@ def _build_tick_snapshot(deltas: tuple[_WSDelta, ...] | None = None) -> dict[str
             "mems_t": _tail(S.mems_t, mems_n),
             "mems_a": _tail(S.mems_acc, mems_n),
             "mems_g": _tail(S.mems_gyro, mems_n),
-            "cardio_history": list(S.cardio_hist) if legacy_replay_init else [],
+            "cardio_history": cardio_history,
             "emotions_history": list(S.emotions_hist) if legacy_replay_init else [],
             "nfb_history_list": list(S.nfb_hist) if legacy_replay_init else [],
             **_recording_status(),

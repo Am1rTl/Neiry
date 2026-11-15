@@ -65,6 +65,7 @@ class Settings:
     CONTACT_MIN_UPDATES: int = 3
     CONTACT_MIN_CHANNELS: int = 2
     METRIC_STALE_SECONDS: float = 8.0
+    PHY_STALE_SECONDS: float = 75.0  # PhysiologicalStates обычно обновляется раз в минуту.
     EEG_MIN_SAMPLES: int = 100  # пороги sensor_status: сколько точек считать «есть сигнал»
     PPG_MIN_SAMPLES: int = 50
     MEMS_MIN_SAMPLES: int = 100
@@ -99,6 +100,7 @@ class Settings:
             CONTACT_MIN_UPDATES=_env_int("CONTACT_MIN_UPDATES", 3),
             CONTACT_MIN_CHANNELS=_env_int("CONTACT_MIN_CHANNELS", 2),
             METRIC_STALE_SECONDS=_env_float("METRIC_STALE_SECONDS", 8.0),
+            PHY_STALE_SECONDS=_env_float("PHY_STALE_SECONDS", 75.0),
             EEG_MIN_SAMPLES=_env_int("EEG_MIN_SAMPLES", 100),
             PPG_MIN_SAMPLES=_env_int("PPG_MIN_SAMPLES", 50),
             MEMS_MIN_SAMPLES=_env_int("MEMS_MIN_SAMPLES", 100),
