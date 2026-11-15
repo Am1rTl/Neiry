@@ -298,10 +298,12 @@ class SessionRecorder:
         self._jsonl("events", "events.jsonl", rec, "events")
 
     # ── быстрые потоки (CSV) ────────────────────────────────────────────────
-    def record_eeg(self, samples: Iterable[Sequence[float]], timestamps: Iterable[float]) -> None:
+    def record_eeg(self, samples: Iterable[Sequence[float]], timestamps: Iterable[float],
+                   *, sdk_bounds: tuple[int, int] | None = None) -> None:
         if self._closed:
             return
         n_ch = len(self.channel_names) or 2
+        first_index = self._sample_index
         for sample, ts in zip(samples, timestamps):
             vals = [float(v) for v in sample]
             # An absent channel is missing data, never a physiological zero.
@@ -309,6 +311,13 @@ class SessionRecorder:
             self._row("eeg", [f"{ts:.6f}", _iso(ts), self._sample_index,
                               *[format(v, ".17g") for v in vals[:n_ch]]], "eeg_samples")
             self._sample_index += 1
+        count = self._sample_index - first_index
+        if count and sdk_bounds is not None:
+            first_ms, last_ms = sdk_bounds
+            self.record_metric("eeg_batch_timing", {
+                "first_sample_index": first_index, "sample_count": count,
+                "sdk_first_ms": first_ms, "sdk_last_ms": last_ms,
+            }, ts=ts)
 
     def record_ppg(self, values: Iterable[float], timestamps: Iterable[float]) -> None:
         if self._closed:
