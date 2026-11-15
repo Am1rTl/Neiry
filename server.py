@@ -103,6 +103,7 @@ def _rec_close() -> None:
     global RECORDER
     if RECORDER is not None:
         closed_id = RECORDER.session_id
+        EXPERIMENTS.recording_ending(closed_id, 'recording_stopped')
         try:
             summary = RECORDER.close()
             log.info("[rec] session closed: %s", summary.get("counts"))
@@ -125,6 +126,7 @@ def _rec_rotate() -> None:
     m = re.search(r"_p(\d+)$", old_id)
     base = old_id[:m.start()] if m else old_id
     nxt = (int(m.group(1)) + 1) if m else 2
+    EXPERIMENTS.recording_ending(old_id, 'recording_rotated')
     try:
         rec.close()
         rec.start(session_id=f"{base}_p{nxt}")
@@ -2278,12 +2280,21 @@ LAB_ROUTER, LAB_STORE = create_lab_router(
     lambda: RECORDER.session_id if RECORDER is not None and RECORDER.active else None)
 app.include_router(LAB_ROUTER)
 
-from experiments import ExperimentManager, TEMPLATES
-EXPERIMENTS = ExperimentManager(lambda: RECORDER)
+from experiments import DOOR_TRIALS, ExperimentManager, TEMPLATES
+
+
+def _door_signal_ready() -> bool:
+    with STATE_LOCK:
+        return (S.calibration_phase != 'running' and not S._calibration_requested
+                and _validity_locked()['eeg'])
+
+
+EXPERIMENTS = ExperimentManager(lambda: RECORDER, door_signal_ready=_door_signal_ready)
 
 @app.get("/api/experiments/templates")
 async def experiment_templates():
-    return {"templates": TEMPLATES, "notice":"Маркеры протокола используют серверное время; не аппаратные триггеры."}
+    return {"templates": TEMPLATES, "door_trials": DOOR_TRIALS,
+            "notice":"Маркеры протокола используют серверное время; не аппаратные триггеры."}
 
 @app.get("/api/experiments/status")
 async def experiment_status():
@@ -2299,8 +2310,20 @@ async def experiment_start(payload: dict[str, Any]):
     except RuntimeError as exc:raise HTTPException(409,str(exc))
 
 @app.post("/api/experiments/stop")
-async def experiment_stop():
-    return EXPERIMENTS.stop()
+async def experiment_stop(run_id: str | None = None):
+    return EXPERIMENTS.stop('stimulus_hidden' if run_id else 'user_stop', run_id=run_id)
+
+
+@app.post("/api/experiments/door/presented")
+async def door_phase_presented(payload: dict[str, Any]):
+    try:
+        EXPERIMENTS.door_presented(payload.get('run_id'), payload.get('phase_index'),
+                                   payload.get('client_unix_ms'))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    return {"ok": True}
 
 
 
