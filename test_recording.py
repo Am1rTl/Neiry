@@ -61,6 +61,45 @@ class TestRecorder(unittest.TestCase):
             self.assertEqual(types[-1], "session_closed")
             self.assertEqual(rec.close(), {})  # повторный close — пусто, без ошибок
 
+    def test_eeg_packets_keep_indices_and_sdk_timing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = make_rec(tmp)
+            d = rec.start()
+            rec.record_eeg(iter([[1], [2, 3]]), iter([1000.0, 1000.004]), sdk_bounds=(5000, 5004))
+            rec.record_eeg(iter([[4, 5]]), iter([1000.002]), sdk_bounds=(5008, 5008))
+            rec.close()
+
+            with (d / "eeg.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([int(row["sample_index"]) for row in rows], [0, 1, 2])
+            self.assertEqual([float(row["ts_unix"]) for row in rows], [1000.0, 1000.004, 1000.002])
+            self.assertTrue(math.isnan(float(rows[0]["Fp2"])))
+            packets = [json.loads(line) for line in (d / "metrics.jsonl").read_text().splitlines()]
+            self.assertEqual([(p["first_sample_index"], p["sample_count"], p["ts_unix"]) for p in packets],
+                             [(0, 2, 1000.004), (2, 1, 1000.002)])
+
+    def test_csv_write_error_preserves_later_rows_and_reports_gap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rec = make_rec(tmp)
+            d = rec.start()
+            writer = rec._writers["eeg"]
+
+            class FailingWriter:
+                def writerow(self, row):
+                    if row[2] == 1:
+                        raise OSError("simulated write failure")
+                    writer.writerow(row)
+
+            rec._writers["eeg"] = FailingWriter()
+            rec.record_eeg([[1, 2], [3, 4], [5, 6]], [1000.0, 1000.004, 1000.008])
+            rec.record_eeg([[7, 8]], [1000.012])
+            summary = rec.close()
+            with (d / "eeg.csv").open() as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual([int(row["sample_index"]) for row in rows], [0, 2, 3])
+            self.assertEqual(summary["counts"]["eeg_samples"], 3)
+            self.assertEqual(summary["write_errors"], 1)
+
     def test_calibration_writethrough(self):
         with tempfile.TemporaryDirectory() as tmp:
             rec = make_rec(tmp)

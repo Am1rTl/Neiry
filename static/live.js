@@ -9,10 +9,17 @@
   const n = v => v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
   const fmt = (v, digits=1) => n(v) == null ? '—' : Number(v).toLocaleString('ru-RU',{maximumFractionDigits:digits});
   const blank = '—';
-  let ctx = {}, view = null, preview = false, pollTimer = null, ws = null, wsRetry = null, wsEpoch = 0;
+  let ctx = {}, view = null, preview = false, pollTimer = null, statusRequest = null, ws = null, wsRetry = null;
   let status = null, replay = {active:false}, chartClock = 0, statusFingerprint = '', sessionRows = [], liveRange = 15, metricRange = 300, allowRaw = false;
-  let pollSequence = 0, calibrationAudio = null, useCalibrationSound = true;
+  let calibrationAudio = null, useCalibrationSound = true;
   let calibrationAudioRun = false, calibrationCue = '', nextPulseAt = 0;
+  let plotObserver = null, chartFrame = null, lastStreamStatusAt = -Infinity, lastIndicatorsAt = -Infinity;
+  let diagnosticTimer = null, diagnosticRequest = null, diagnosticSource = '';
+  const diagnosticEvery = 4000;
+  const lastDiagnosticAt = {};
+  const visibleCharts = new Set();
+  const visibleDiagnostics = new Set();
+  const renderedMarkup = new WeakMap();
   const playingNotes = new Set();
   const chimes = {
     closed:[587.33,440], open:[440,587.33], progress:[493.88],
@@ -46,6 +53,16 @@
   };
   function label(state) { return statuses[state] || ['Ожидание','neutral']; }
   function notice(message, kind='') { ctx.notify?.(message,kind); }
+  function setText(el,value) {
+    if(!el || el.textContent===value)return;
+    renderedMarkup.delete(el);
+    el.textContent=value;
+  }
+  function setMarkup(el,html) {
+    if(!el || renderedMarkup.get(el)===html)return;
+    renderedMarkup.set(el,html);
+    el.innerHTML=html;
+  }
   function pButton(name, action, cls='subtle', disabled=false) {
     return `<button type="button" class="button ${cls}" data-action="${esc(action)}" ${disabled?'disabled':''}>${esc(name)}</button>`;
   }
@@ -188,6 +205,7 @@
         calibrationCue = '';
         dialog.close();
         await poll();
+        scheduleStatusPoll();
       } catch (err) {
         error.textContent = err.message || 'Не удалось запустить калибровку.';
       } finally {
@@ -246,9 +264,19 @@
     return `<div class="contact-panel ${c.state==='ready'?'ready':c.state==='poor'?'poor':''}">
       <div class="contact-overview"><span class="contact-flag ${esc(c.state)}">${esc(stateLabel)}</span><strong>${esc(c.message||'Ожидаем данные')}</strong></div>
       ${channelRows?`<div class="contact-electrodes">${channelRows}</div>`:'<p class="chart-caption">Нет актуальных измерений сопротивления. Значения не моделируются.</p>'}
-      ${progress}<p class="chart-caption">Только настоящие отсчёты сопротивления Capsule SDK · порог ${fmt(c.ready_below_kohm,0)} кОм по каждому каналу; желательнее ниже ${fmt(c.preferred_below_kohm,0)} кОм. Возраст данных: ${c.updated_age_s==null?'—':`${fmt(c.updated_age_s,1)} с`}. Это проверка контакта, а не подтверждение нахождения на голове или чистоты ЭЭГ.</p>
+      ${progress}<p class="chart-caption">Только настоящие отсчёты сопротивления Capsule SDK · порог ${fmt(c.ready_below_kohm,0)} кОм по каждому каналу; желательнее ниже ${fmt(c.preferred_below_kohm,0)} кОм. Возраст данных: <span class="contact-age">${contactAge(c)}</span>. Это проверка контакта, а не подтверждение нахождения на голове или чистоты ЭЭГ.</p>
       ${compact?'':'<p class="chart-caption">Поправьте посадку, раздвиньте волосы под электродами. Не давите слишком сильно. При снятии или потере данных отсчёт стабильности начинается заново.</p>'}
     </div>`;
+  }
+  function contactAge(contact){
+    return contact?.updated_age_s==null?'—':`${fmt(contact.updated_age_s,1)} с`;
+  }
+  function contactSignature(contact){
+    if(!contact)return '';
+    const {state,message,ready_below_kohm,preferred_below_kohm,required_seconds,stable_seconds,sample_count,channels}=contact;
+    return JSON.stringify([state,message,ready_below_kohm,preferred_below_kohm,
+      state==='settling'?[required_seconds,stable_seconds,sample_count]:null,
+      (channels||[]).map(r=>[r.channel,n(r.kohm)===null?null:Math.round(r.kohm*10),r.good,r.preferred])]);
   }
   function statusBox(s) {
     const [title, tone] = label(s?.status);
@@ -296,8 +324,8 @@
           ${livePlot('live-eeg','ЭЭГ','Метки каналов и частота дискретизации из SDK',true,'<p class="chart-caption"><span id="live-channels">Каналы: —</span> <span id="live-eeg-sr"></span></p>')}
           ${livePlot('live-ppg','ФПГ · пульсовая волна','Оптический сигнал',false,'<p class="chart-caption" id="live-ppg-sr"></p>')}
           ${livePlot('live-hr-chart','Пульс во времени','Значения SDK в пригодных фрагментах')}
-          <section class="card wide">${heading('Спектрограмма ЭЭГ','Мощность нормируется отдельно для каждого канала')}<div class="live-spectrograms" id="live-spectrograms"></div><p class="chart-caption" id="live-spectrogram-note">Для построения нужны не менее трёх секунд ЭЭГ.</p></section>
-          <section class="card wide">${heading('Диагностика ЭЭГ','Постоянный сигнал, округление и помехи 50/60 Гц')}<div id="live-quality-state" class="studio-grid"><p class="chart-caption">Ожидаем достаточное окно ЭЭГ.</p></div></section>
+          <section class="card wide" data-live-diagnostic="spectrogram">${heading('Спектрограмма ЭЭГ','Мощность нормируется отдельно для каждого канала')}<div class="live-spectrograms" id="live-spectrograms"></div><p class="chart-caption" id="live-spectrogram-note">Для построения нужны не менее трёх секунд ЭЭГ.</p></section>
+          <section class="card wide" data-live-diagnostic="quality">${heading('Диагностика ЭЭГ','Постоянный сигнал, округление и помехи 50/60 Гц')}<div id="live-quality-state" class="studio-grid"><p class="chart-caption">Ожидаем достаточное окно ЭЭГ.</p></div></section>
         </div>
       </section>
       <section class="live-graph-group" aria-labelledby="live-motion-label">
@@ -331,7 +359,7 @@
   function setTopStatus(s) {
     const badge=$('#device-top-status');if (!badge)return;
     const [title,tone]=label(s?.status);
-    badge.innerHTML=`<span class="status-pin ${tone}"></span>${esc(title)}${s?.connected?` · ${esc(s.device||'Neiry')}${s.contact?.ready?' · контакт готов':' · контакт не подтверждён'}`:''}`;
+    setMarkup(badge,`<span class="status-pin ${tone}"></span>${esc(title)}${s?.connected?` · ${esc(s.device||'Neiry')}${s.contact?.ready?' · контакт готов':' · контакт не подтверждён'}`:''}`);
     badge.title=safeInfo(s);
   }
   async function api(path,opts={}) { return ctx.api(path,opts); }
@@ -345,7 +373,7 @@
         await api('/api/markers',{method:'POST',body:JSON.stringify({label:value})}); input.value='';notice('Метка добавлена к текущей записи.','success');
       } else if (action.startsWith('connect:')) {
         await api('/api/device/connect',{method:'POST',body:JSON.stringify({serial:action.slice(8)})}); notice('Подключение начато. Дождитесь подтверждения SDK.');
-    } else if(action==='seek-forward') {await api('/api/replay/seek',{method:'POST',body:JSON.stringify({offset_s:(replay?.progress_s||0)+30})});clearSamples();renderCharts();notice('Переходим на 30 секунд вперёд.');} else if(action==='reload-sessions') {await loadSessions();return;}
+      } else if(action==='seek-forward') {await api('/api/replay/seek',{method:'POST',body:JSON.stringify({offset_s:(replay?.progress_s||0)+30})});clearSamples();requestChartFrame();notice('Переходим на 30 секунд вперёд.');} else if(action==='reload-sessions') {await loadSessions();return;}
       else if(action.startsWith('replay:')) {
         const id=action.slice(7); await api(`/api/replay/${encodeURIComponent(id)}/start?speed=1`,{method:'POST'});
         notice('Воспроизведение запущено. В мониторе будут показаны архивные данные.','success'); location.hash='live';
@@ -370,14 +398,15 @@
       if(go){e.preventDefault();location.hash=go.dataset.go;}
     });
     root.addEventListener('change', async e=>{
-      if(e.target.id==='live-time-range'){liveRange=Number(e.target.value)||15;renderCharts();return;}
-      if(e.target.id==='metric-time-range'){metricRange=Number(e.target.value)||300;renderCharts();return;}
+      if(e.target.id==='live-time-range'){liveRange=Number(e.target.value)||15;requestChartFrame();return;}
+      if(e.target.id==='metric-time-range'){metricRange=Number(e.target.value)||300;requestChartFrame();return;}
       if(e.target.id==='show-unverified-raw'){
         allowRaw=Boolean(e.target.checked);
         if(!allowRaw){
           for(const key of [...plotConfig('live-eeg').keys,'ppg'])clearSeries(key);
-          renderCharts();
+          requestChartFrame();
         }
+        refreshDiagnosticSource();
         return;
       }
       if(e.target.id!=='auto-reconnect')return;
@@ -437,6 +466,13 @@
     resistanceSince=-Infinity;
   }
   function clearGraphs(){
+    plotObserver?.disconnect();
+    plotObserver=null;
+    visibleCharts.clear();
+    visibleDiagnostics.clear();
+    cancelChartFrame();
+    stopDiagnostics();
+    diagnosticSource='';
     charts.forEach(c=>c.destroy());
     charts.clear();
     chartSource='';
@@ -457,6 +493,36 @@
     let lo=0,hi=series.length;
     while(lo<hi){const mid=(lo+hi)>>1;if(series[mid].x<t)lo=mid+1;else hi=mid;}
     return lo;
+  }
+  function visibleWindow(series,begin,end,width){
+    const start=lowerBound(series,begin);
+    const columns=Math.max(1,Math.floor(width/2));
+    if(series.length-start<=2*columns)return series.slice(start);
+    // Match the drawing resolution while retaining peaks and explicit gaps.
+    const points=[];
+    const scale=(columns-1)/Math.max(end-begin,1);
+    let column=-1, low=null, high=null;
+    function flush(){
+      if(low===null)return;
+      points.push(low.x<=high.x?low:high);
+      if(low!==high)points.push(low.x<=high.x?high:low);
+      low=high=null;
+    }
+    for(let i=start;i<series.length;i++){
+      const point=series[i];
+      if(point.y===null){
+        flush();
+        if(points.at(-1)?.y!==null)points.push(point);
+        column=-1;
+        continue;
+      }
+      const current=Math.floor((point.x-begin)*scale);
+      if(current!==column){flush();column=current;}
+      if(low===null||point.y<low.y)low=point;
+      if(high===null||point.y>high.y)high=point;
+    }
+    flush();
+    return points;
   }
   function addSeries(key,packet,values){
     if(!packet||!Array.isArray(values)||!values.length)return;
@@ -536,13 +602,14 @@
     }
   }
   function renderCharts(){
-    for(const cfg of chartDefs){
-      const chart=charts.get(cfg.id);
+    for(const id of visibleCharts){
+      const cfg=plotConfig(id);
+      const chart=charts.get(id)||makeChart(cfg);
       if(!chart)continue;
       const begin=chartEnd-chartRange(cfg);
       let found=false;
       cfg.keys.forEach((key,i)=>{
-        const items=samples[key].slice(lowerBound(samples[key],begin));
+        const items=visibleWindow(samples[key],begin,chartEnd,chart.width);
         const series=chart.data.datasets[i];
         series.data=items;
         series.pointRadius=items.length<=3?2.5:0;
@@ -550,12 +617,49 @@
       });
       const empty=chart.canvas.parentElement.querySelector('.live-chart-empty');
       if(empty)empty.hidden=found;
+      if(!found&&!chart.options.scales.x.display)continue;
       chart.options.scales.x.min=begin;
       chart.options.scales.x.max=chartEnd;
       chart.options.scales.x.display=chart.options.scales.y.display=found;
       chart.options.plugins.legend.display=found&&cfg.keys.length>1;
       chart.update('none');
     }
+  }
+  function requestChartFrame(){
+    if(chartFrame!==null||!visibleCharts.size||document.hidden)return;
+    chartFrame=requestAnimationFrame(()=>{
+      chartFrame=null;
+      if(view==='live'&&!document.hidden)renderCharts();
+    });
+  }
+  function cancelChartFrame(){
+    if(chartFrame!==null)cancelAnimationFrame(chartFrame);
+    chartFrame=null;
+  }
+  function observePlots(){
+    const diagnostics=$$('[data-live-diagnostic]');
+    const plotNodes=chartDefs.map(cfg=>document.getElementById(cfg.id)).filter(Boolean);
+    if(typeof IntersectionObserver!=='function'){
+      plotNodes.forEach(node=>visibleCharts.add(node.id));
+      diagnostics.forEach(node=>visibleDiagnostics.add(node.dataset.liveDiagnostic));
+      requestChartFrame();
+      scheduleDiagnostics();
+      return;
+    }
+    const observer=new IntersectionObserver(entries=>{
+      if(plotObserver!==observer)return;
+      for(const {target,isIntersecting} of entries){
+        const name=target.dataset.liveDiagnostic;
+        const set=name?visibleDiagnostics:visibleCharts;
+        if(isIntersecting)set.add(name||target.id);
+        else set.delete(name||target.id);
+      }
+      if(!visibleDiagnostics.size)stopDiagnostics();
+      else scheduleDiagnostics();
+      requestChartFrame();
+    });
+    plotObserver=observer;
+    [...plotNodes,...diagnostics].forEach(node=>observer.observe(node));
   }
   function drawHeatmap(id,channel){
     const canvas=$(`#${id}`);if(!canvas)return;
@@ -590,36 +694,88 @@
     channels.forEach((c,i)=>{
       if(!c.available)return;
       const f=c.freq_hz||[],t=c.time_s||[];
-      $(`#live-spectrogram-y-${i}`).innerHTML=f.length?`<span>${fmt(f.at(-1))} Гц</span><span>${fmt(f[0])} Гц</span>`:'';
-      $(`#live-spectrogram-x-${i}`).innerHTML=t.length?`<span>${fmt(t[0])} с</span><span>${fmt(t.at(-1))} с</span>`:'';
+      setMarkup($(`#live-spectrogram-y-${i}`),f.length?`<span>${fmt(f.at(-1))} Гц</span><span>${fmt(f[0])} Гц</span>`:'');
+      setMarkup($(`#live-spectrogram-x-${i}`),t.length?`<span>${fmt(t[0])} с</span><span>${fmt(t.at(-1))} с</span>`:'');
       drawHeatmap(`live-spectrogram-${i}`,c);
     });
   }
+  function diagnosticsAllowed(){
+    return replay.active||status?.validity?.eeg||allowRaw&&connected();
+  }
+  function stopDiagnostics(){
+    clearTimeout(diagnosticTimer);
+    diagnosticTimer=null;
+    diagnosticRequest?.abort();
+    diagnosticRequest=null;
+  }
+  function refreshDiagnosticSource(){
+    if(view!=='live')return;
+    const allowed=diagnosticsAllowed();
+    const source=`${chartSource}:${Boolean(allowed)}`;
+    if(source===diagnosticSource)return;
+    diagnosticSource=source;
+    stopDiagnostics();
+    for(const name of Object.keys(lastDiagnosticAt))delete lastDiagnosticAt[name];
+    setText($('#live-quality-state'),allowed?'Ожидаем достаточное окно ЭЭГ.':'ЭЭГ пока не подтверждена контактом. Для проверки аппаратного шума доступен диагностический показ сырого сигнала.');
+    setText($('#live-spectrogram-note'),allowed?'Для построения нужны не менее трёх секунд ЭЭГ.':'Спектрограмма скрыта: контакт электродов не подтверждён.');
+    renderSpectrograms(null);
+    scheduleDiagnostics();
+  }
+  function scheduleDiagnostics(){
+    clearTimeout(diagnosticTimer);
+    diagnosticTimer=null;
+    if(view!=='live'||document.hidden||!visibleDiagnostics.size||diagnosticRequest||!diagnosticsAllowed())return;
+    const due=Math.min(...[...visibleDiagnostics].map(name=>(lastDiagnosticAt[name]??-Infinity)+diagnosticEvery));
+    diagnosticTimer=setTimeout(updateSignalQuality,Math.max(0,due-performance.now()));
+  }
   async function updateSignalQuality(){
-    if(preview||view!=='live')return;
-    // Raw FFT panels are diagnostics, never unlabelled "brain activity" off-head.
-    if(!replay?.active && !status?.validity?.eeg && !allowRaw){
-      const box=$('#live-quality-state');if(box)box.textContent='ЭЭГ пока не подтверждена контактом. Включите диагностический показ сырого сигнала, если хотите изучить аппаратный шум.';
-      const note=$('#live-spectrogram-note');if(note)note.textContent='Спектрограмма скрыта: контакт электродов не подтверждён.';
-      renderSpectrograms(null);
-      return;
-    }
+    diagnosticTimer=null;
+    if(view!=='live'||document.hidden||!visibleDiagnostics.size||diagnosticRequest||!diagnosticsAllowed())return;
+    const now=performance.now();
+    const due=name=>visibleDiagnostics.has(name)&&now-(lastDiagnosticAt[name]??-Infinity)>=diagnosticEvery;
+    const quality=due('quality'), spectrogram=due('spectrogram');
+    if(!quality&&!spectrogram){scheduleDiagnostics();return;}
+    if(quality)lastDiagnosticAt.quality=now;
+    if(spectrogram)lastDiagnosticAt.spectrogram=now;
+    const request=new AbortController();
+    diagnosticRequest=request;
     try{
-      const [quality,tiles]=await Promise.all([api('/api/live/quality'),api('/api/live/spectrogram?seconds=20')]);
-      if(view!=='live')return;
-      const box=$('#live-quality-state');if(box){
-        box.innerHTML=quality.available?quality.channels.map(c=>`<div class="studio-state"><strong>${esc(c.name)} · ${c.status==='screened'?'Без обнаруженных флагов':esc(c.status)}</strong><span>${(c.reasons||[]).map(esc).join('; ')||'Проверки не выявили заданных инженерных предупреждений; это не оценка здоровья.'}</span><small>Различных уровней: ${fmt(c.unique_levels,0)} · Помеха: ${c.line_power_fraction==null?'—':fmt(c.line_power_fraction*100)}%</small></div>`).join(''):`<p class="chart-caption">${esc(quality.reason||'Нет данных')}</p>`;
+      const result=await api(`/api/live/diagnostics?quality=${quality}&spectrogram=${spectrogram}`,
+        {signal:AbortSignal.any([request.signal,AbortSignal.timeout(5000)])});
+      if(request!==diagnosticRequest)return;
+      if(result.quality&&visibleDiagnostics.has('quality')){
+        const q=result.quality;
+        setMarkup($('#live-quality-state'),q.available?q.channels.map(c=>`<div class="studio-state"><strong>${esc(c.name)} · ${c.status==='screened'?'Без обнаруженных флагов':esc(c.status)}</strong><span>${(c.reasons||[]).map(esc).join('; ')||'Проверки не выявили заданных инженерных предупреждений; это не оценка здоровья.'}</span><small>Различных уровней: ${fmt(c.unique_levels,0)} · Помеха: ${c.line_power_fraction==null?'—':fmt(c.line_power_fraction*100)}%</small></div>`).join(''):`<p class="chart-caption">${esc(q.reason||'Нет данных')}</p>`);
       }
-      renderSpectrograms(tiles);
-      const note=$('#live-spectrogram-note');if(note)note.textContent=tiles.available?(replay?.active?'Относительная мощность архивной ЭЭГ.':status?.validity?.eeg?'Время отсчитывается от начала показанного окна.':'Диагностический сигнал без подтверждённого контакта.'):'Для построения нужны не менее трёх секунд ЭЭГ.';
-    }catch(e){const el=$('#live-quality-state');if(el)el.textContent='Диагностика недоступна: '+e.message;}
+      if(result.spectrogram&&visibleDiagnostics.has('spectrogram')){
+        const tiles=result.spectrogram;
+        renderSpectrograms(tiles);
+        setText($('#live-spectrogram-note'),tiles.available?(replay.active?'Относительная мощность архивной ЭЭГ.':status?.validity?.eeg?'Время отсчитывается от начала показанного окна.':'Диагностический сигнал без подтверждённого контакта.'):'Для построения нужны не менее трёх секунд ЭЭГ.');
+      }
+    }catch(e){
+      if(request!==diagnosticRequest)return;
+      if(quality&&visibleDiagnostics.has('quality'))setText($('#live-quality-state'),'Диагностика недоступна: '+e.message);
+      if(spectrogram&&visibleDiagnostics.has('spectrogram'))setText($('#live-spectrogram-note'),'Спектрограмма недоступна: '+e.message);
+    }finally{
+      if(request===diagnosticRequest){
+        diagnosticRequest=null;
+        scheduleDiagnostics();
+      }
+    }
   }
   function updateLiveTick(tick) {
-    if(view!=='live')return;
+    if(view!=='live'||document.hidden)return;
+    const now=performance.now();
     const eeg=tick.eeg_stream,ppg=tick.ppg_stream,mems=tick.mems_stream;
     const valid=tick.validity||{};
+    if(tick.replay){
+      replay=tick.replay;
+      lastStreamStatusAt=now;
+      const {connected,device,message,recording,recording_origin,recording_error,contact,validity,sensor_status}=tick;
+      status={...status,connected,device,message,recording,recording_origin,recording_error,contact,validity,sensor_status,status:tick.status};
+    }
     const archived=valid.source_mode==='replay'||(!valid.source_mode&&replay?.active);
-    const source=archived?'replay':tick.connected?`live:${tick.serial||''}:${tick.stream_epoch??''}`:'idle';
+    const source=archived?`replay:${tick.stream_epoch??''}`:tick.connected?`live:${tick.serial||''}:${tick.stream_epoch??''}`:'idle';
     const sourceChanged=source!==chartSource;
     if(sourceChanged){clearSamples();chartSource=source;}
     const names=tick.eeg_channels||[];
@@ -643,32 +799,48 @@
       if(Array.isArray(mems.gyro))for(let i=0;i<3;i++)addSeries(['gyroX','gyroY','gyroZ'][i],mems,mems.gyro.map(v=>Array.isArray(v)?v[i]:null));
     }
     appendMetrics(tick,valid,archived);
+    refreshDiagnosticSource();
+    if(sourceChanged||now-lastIndicatorsAt>=500){
+      lastIndicatorsAt=now;
+      updateLiveIndicators(tick,archived,eegLabels);
+    }
+    const newest=Math.max(0,...Object.values(samples).map(series=>series.at(-1)?.x??0));
+    chartEnd=Math.max(chartEnd,newest,archived?0:n(tick.t)||0);
+    if(now-chartClock<400&&!sourceChanged)return;
+    chartClock=now;
+    requestChartFrame();
+  }
+  function updateLiveIndicators(tick,archived,eegLabels) {
     const liveContact=$('#live-contact-card');
-    if(liveContact)liveContact.innerHTML=archived?'<div class="contact-panel"><strong>Архивное воспроизведение</strong><p class="chart-caption">Данные из сохранённого файла. Текущий контакт электродов не оценивается.</p></div>':contactPanel(tick.contact,true);
-    const field=(id,v)=>{const el=$(`#${id}`);if(el)el.textContent=n(v)===null?'—':fmt(v,1);};
+    const signature=archived?'replay':contactSignature(tick.contact);
+    if(liveContact&&liveContact.dataset.contactSignature!==signature){
+      liveContact.dataset.contactSignature=signature;
+      setMarkup(liveContact,archived?'<div class="contact-panel"><strong>Архивное воспроизведение</strong><p class="chart-caption">Данные из сохранённого файла. Текущий контакт электродов не оценивается.</p></div>':contactPanel(tick.contact,true));
+    }
+    if(liveContact&&!archived)setText($('.contact-age',liveContact),contactAge(tick.contact));
+    const valid=tick.validity||{};
+    const field=(id,v)=>setText($(`#${id}`),fmt(v,1));
     field('live-hr',(valid.cardio||archived)?tick.cardio?.heartRate:null);
     field('live-attention',(valid.emotions||archived)?tick.emotions?.attention:null);
     field('live-relax',(valid.emotions||archived)?tick.emotions?.relaxation:null);
     field('live-age',tick.data_age_s);
-    if($('#live-channels'))$('#live-channels').textContent=eegLabels.length?`Каналы (${eegLabels.length}): ${eegLabels.join(' / ')}`:'Каналы: —';
+    setText($('#live-channels'),eegLabels.length?`Каналы (${eegLabels.length}): ${eegLabels.join(' / ')}`:'Каналы: —');
     for(const name of ['eeg','ppg','mems']){
-      const el=$(`#live-${name}-sr`);
-      if(el)el.textContent=tick[`${name}_sr`]>0?`${name==='eeg'?'· ':''}${fmt(tick[`${name}_sr`],1)} Гц`:'';
+      const rate=tick[`${name}_sr`];
+      setText($(`#live-${name}-sr`),rate>0?`${name==='eeg'?'· ':''}${fmt(rate,1)} Гц`:'');
     }
-    updateRecordingStatus(tick);
-    updateStreamSummary(tick,archived);
-    if($('#live-resistances'))$('#live-resistances').innerHTML=(tick.contact?.channels||[]).map(r=>`<span>${esc(r.channel)}: <strong>${n(r.kohm)!==null?`${fmt(r.kohm,1)} кОм`:'нет измерения'}</strong></span>`).join('')||'<span>Нет актуального измерения электродов</span>';
-    const newest=Math.max(0,...Object.values(samples).map(series=>series.at(-1)?.x??0));
-    chartEnd=Math.max(chartEnd,newest,archived?0:n(tick.t)||0);
-    if(performance.now()-chartClock<400)return;
-    chartClock=performance.now();
-    renderCharts();
+    if(tick.replay){
+      setTopStatus(status);
+      updateLiveStatus();
+    }else{
+      updateRecordingStatus(tick);
+      updateStreamSummary(tick,archived);
+    }
+    setMarkup($('#live-resistances'),(tick.contact?.channels||[]).map(r=>`<span>${esc(r.channel)}: <strong>${n(r.kohm)!==null?`${fmt(r.kohm,1)} кОм`:'нет измерения'}</strong></span>`).join('')||'<span>Нет актуального измерения электродов</span>');
   }
   function updateRecordingStatus(s) {
-    const line = $('#live-recording-state');
-    if (!line) return;
-    line.textContent = s?.recording ? `Идёт запись${s.recording_origin==='calibration'?' · автоматически после калибровки':''} · ${s.recording}`
-      : s?.recording_error || 'Нет активной записи';
+    setText($('#live-recording-state'),s?.recording ? `Идёт запись${s.recording_origin==='calibration'?' · автоматически после калибровки':''} · ${s.recording}`
+      : s?.recording_error || 'Нет активной записи');
   }
   function updateStreamSummary(tick, archived) {
     const panel = $('#live-sensors');
@@ -688,22 +860,18 @@
           <span class="sensor-light" aria-hidden="true"></span>${esc(name)}${rate}<span class="screen-reader">. ${caption}</span>
           </span>${reason?`<small>${esc(reason)}</small>`:''}</div>`;
       }).join('');
-    if (panel.dataset.summary !== html) {
-      panel.dataset.summary = html;
-      panel.innerHTML = html;
-    }
+    setMarkup(panel,html);
   }
   function updateLiveStatus() {
     if(view!=='live'||!$('#live-mode'))return;
     const activeReplay=replay?.active;
     const isConnected=connected();
-    $('#live-mode').textContent=activeReplay?'Воспроизведение сохранённой записи':isConnected?(status.contact?.ready?'Контакт электродов подтверждён':'Подключено, контакта пока нет'):'Нет активного источника сигнала';
-    $('#live-message').textContent=activeReplay?`Запись ${replay.session_id} · скорость ×${fmt(replay.speed,1)} · это не текущие данные человека.`:
+    setText($('#live-mode'),activeReplay?'Воспроизведение сохранённой записи':isConnected?(status.contact?.ready?'Контакт электродов подтверждён':'Подключено, контакта пока нет'):'Нет активного источника сигнала');
+    setText($('#live-message'),activeReplay?`Запись ${replay.session_id} · скорость ×${fmt(replay.speed,1)} · это не текущие данные человека.`:
       isConnected?(status.contact?.message || 'Подключено. Ожидаем показатели сопротивления электродов.'):
-
-      'Подключите устройство на вкладке «Устройство» или воспроизведите архивную сессию на вкладке «Записи».';
+      'Подключите устройство на вкладке «Устройство» или воспроизведите архивную сессию на вкладке «Записи».');
     const stop=$('#replay-stop');if(stop)stop.hidden=!activeReplay;
-    const pause=$('#replay-pause');if(pause){pause.hidden=!activeReplay;pause.dataset.action=replay?.paused?'resume-replay':'pause-replay';pause.textContent=replay?.paused?'Продолжить':'Пауза';}
+    const pause=$('#replay-pause');if(pause){pause.hidden=!activeReplay;pause.dataset.action=replay?.paused?'resume-replay':'pause-replay';setText(pause,replay?.paused?'Продолжить':'Пауза');}
     const forward=$('#replay-forward');if(forward)forward.hidden=!activeReplay;
     const start=$('[data-action="start-record"]');if(start)start.disabled=!isConnected||!status?.validity?.eeg||Boolean(status?.recording);
     const marker=$('[data-action="marker"]');if(marker)marker.disabled=!isConnected||!Boolean(status?.recording);
@@ -712,33 +880,92 @@
     if(status?.sensor_status)updateStreamSummary(status,activeReplay);
   }
   function openWS() {
-    if(preview||view!=='live'||ws)return;
-    const epoch=++wsEpoch;
+    if(preview||view!=='live'||document.hidden||ws)return;
     const scheme=location.protocol==='https:'?'wss':'ws';
-    ws=new WebSocket(`${scheme}://${location.host}/ws`);
-    ws.onmessage=e=>{try{const tick=JSON.parse(e.data);if(tick.type==='tick')updateLiveTick(tick);}catch(err){console.warn('NeuroScope WS data:',err);}};
-    ws.onclose=()=>{ws=null;if(view==='live'&&epoch===wsEpoch){wsRetry=setTimeout(openWS,1700);}};
-    ws.onerror=()=>{try{ws?.close();}catch(_){}};
+    const socket=new WebSocket(`${scheme}://${location.host}/ws?profile=live`);
+    ws=socket;
+    socket.onmessage=e=>{
+      if(ws!==socket)return;
+      try{const tick=JSON.parse(e.data);if(tick.type==='tick')updateLiveTick(tick);}
+      catch(err){console.warn('NeuroScope WS data:',err);}
+    };
+    socket.onclose=()=>{
+      if(ws!==socket)return;
+      ws=null;
+      lastStreamStatusAt=-Infinity;
+      if(view==='live'&&!document.hidden){
+        wsRetry=setTimeout(openWS,1700);
+        scheduleStatusPoll(0);
+      }
+    };
+    socket.onerror=()=>socket.close();
   }
-  function closeWS(){wsEpoch++;clearTimeout(wsRetry);wsRetry=null;if(ws){const old=ws;ws=null;old.onclose=null;old.close();}}
-  async function poll() {
-    if(preview)return;
-    const sequence = ++pollSequence;
+  function closeWS(){
+    clearTimeout(wsRetry);
+    wsRetry=null;
+    lastStreamStatusAt=-Infinity;
+    if(ws){const old=ws;ws=null;old.close();}
+  }
+  function healthyLiveStatus(){
+    return view==='live'&&performance.now()-lastStreamStatusAt<1500;
+  }
+  async function poll(force=true) {
+    if(preview||document.hidden&&!calibrationAudioRun||!force&&(statusRequest||healthyLiveStatus()&&!calibrationAudioRun))return;
+    statusRequest?.abort();
+    const request=new AbortController();
+    statusRequest=request;
+    const options={signal:AbortSignal.any([request.signal,AbortSignal.timeout(1600)])};
     try {
-      const s=await api('/api/device/status',{signal:AbortSignal.timeout(1600)});
-      if (sequence !== pollSequence) return;
+      const [s,replayStatus]=await Promise.all([api('/api/device/status',options),
+        view==='live'&&!healthyLiveStatus()?api('/api/replay/status',options).catch(()=>null):null]);
+      if(request!==statusRequest)return;
       status=s;setTopStatus(s);syncCalibrationAudio(s);
       if(view==='device'&&$('#content')){
-        const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,calibration_stage:s.calibration_run?.stage,calibration_result:s.calibration_result,contact:s.calibration_run?null:s.contact,scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery,firmware_version:s.firmware_version,sdk_version:s.sdk_version,recording:s.recording,recording_error:s.recording_error});
+        const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,calibration_stage:s.calibration_run?.stage,calibration_result:s.calibration_result,contact:s.calibration_run?null:contactSignature(s.contact),scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery,firmware_version:s.firmware_version,sdk_version:s.sdk_version,recording:s.recording,recording_error:s.recording_error});
         if(fingerprint!==statusFingerprint){statusFingerprint=fingerprint;$('#content').innerHTML=devicePanel(s);bind();}
+        setText($('#content .contact-age'),contactAge(s.contact));
         updateCalibrationProgress(s);
       }
       if(view==='live'){
-        try{replay=await api('/api/replay/status');}catch(_){replay={active:false};}
+        if(replayStatus&&!healthyLiveStatus())replay=replayStatus;
         updateLiveStatus();
-        await updateSignalQuality();
+        refreshDiagnosticSource();
       }
-    }catch(e){if(sequence!==pollSequence)return;syncCalibrationAudio(null);statusFingerprint='';setTopStatus({status:'error',message:'Не удаётся связаться с локальным сервером'});if(view==='device'&&$('#content'))$('#content').innerHTML=`<section class="card"><h2>Нет связи с сервером</h2><p>${esc(e.message)}</p>${pButton('Повторить','scan')}</section>`;}
+    }catch(e){
+      if(request!==statusRequest)return;
+      syncCalibrationAudio(null);
+      statusFingerprint='';
+      setTopStatus({status:'error',message:'Не удаётся связаться с локальным сервером'});
+      if(view==='device')$('#content').innerHTML=`<section class="card"><h2>Нет связи с сервером</h2><p>${esc(e.message)}</p>${pButton('Повторить','scan')}</section>`;
+    }finally{
+      if(request===statusRequest)statusRequest=null;
+    }
+  }
+  function scheduleStatusPoll(delay){
+    clearTimeout(pollTimer);
+    pollTimer=null;
+    if(preview||document.hidden&&!calibrationAudioRun)return;
+    pollTimer=setTimeout(async()=>{
+      pollTimer=null;
+      await poll(false);
+      if(pollTimer===null)scheduleStatusPoll();
+    },delay??(calibrationAudioRun||status?.calibration_phase==='running'?250:1900));
+  }
+  function visibilityChanged(){
+    if(document.hidden){
+      closeWS();
+      cancelChartFrame();
+      stopDiagnostics();
+      if(!calibrationAudioRun){
+        statusRequest?.abort();
+        statusRequest=null;
+      }
+    }else if(view==='live'){
+      openWS();
+      requestChartFrame();
+      scheduleDiagnostics();
+    }
+    scheduleStatusPoll(0);
   }
   async function loadSessions() {
     if(preview||view!=='sessions')return;
@@ -758,13 +985,10 @@
   function init(options) {
     ctx=options;preview=Boolean(options.preview);
     if(preview){setTopStatus({status:'idle'});return;}
-    if(pollTimer)clearInterval(pollTimer);
     setupCalibrationDialog();
-    async function schedulePoll() {
-      await poll();
-      pollTimer=setTimeout(schedulePoll,status?.calibration_phase==='running'?250:1900);
-    }
-    schedulePoll();
+    document.addEventListener('visibilitychange',visibilityChanged);
+    // A hardware view loads its status on entry; periodic polling covers other views.
+    scheduleStatusPoll();
   }
   async function renderView(nextView) {
     closeWS();clearGraphs();view=nextView;
@@ -774,7 +998,7 @@
       statusFingerprint='';box.innerHTML=devicePanel(status);bind();await poll();
     }else if(view==='live'){
       box.innerHTML=livePanel();bind();
-      for(const cfg of chartDefs)makeChart(cfg);
+      observePlots();
       openWS(); await poll();
     }else if(view==='sessions'){
       box.innerHTML=sessionsPanel();bind();await loadSessions();
