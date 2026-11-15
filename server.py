@@ -4,7 +4,7 @@ Capsule Neiry — Web Dashboard Backend.
 
 FastAPI server that wraps the Capsule Python API in a background thread,
 accumulates the latest data into thread-safe buffers, and pushes it to
-WebSocket clients at ~10 Hz.
+WebSocket clients at up to 10 Hz.
 
 Импорт модуля обязан работать без SDK и без железа: SDK-импорты ленивые,
 capsule_worker при отсутствии SDK ставит status error и ждёт, а API
@@ -26,6 +26,8 @@ import zipfile
 from urllib.parse import urlsplit
 from collections import deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import Any, Callable
 
@@ -2027,25 +2029,87 @@ async def api_live_contact() -> dict[str, Any]:
                 "calibration_phase": S.calibration_phase}
 
 
+@dataclass
+class _DiagnosticResult:
+    source: tuple
+    revision: tuple
+    enough_samples: bool
+    computed_at: float
+    payload: dict[str, Any]
+
+
+_DIAGNOSTICS_LOCK = threading.Lock()
+_DIAGNOSTICS_CACHE: dict[tuple[str, float], _DiagnosticResult] = {}
+
+
+def _live_diagnostics(quality: bool, spectrogram: bool, seconds: float) -> dict[str, Any]:
+    from live_quality import assess_eeg, live_spectrogram
+
+    results: dict[str, Any] = {"quality": None, "spectrogram": None}
+    with _DIAGNOSTICS_LOCK:
+        # Share the snapshot and the computed results across monitor tabs and legacy callers.
+        requests = []
+        if quality:
+            requests.append(("quality", 4.0, 2.0, 64, 2.0, assess_eeg))
+        if spectrogram:
+            requests.append(("spectrogram", seconds, 3.0, 128, 4.0, live_spectrogram))
+
+        with STATE_LOCK:
+            rate = S.eeg_sample_rate or DEFAULT_EEG_SR
+            names = _eeg_channel_names_locked()
+            playback_generation = REPLAY.generation if REPLAY and not S._device_ready else None
+            source = (id(S), S.stream_epoch, playback_generation, rate, tuple(names))
+            size = len(S.eeg)
+            revision = (size, S.stream_counts.get("eeg"), S.eeg_t[-1] if S.eeg_t else None)
+            now = time.monotonic()
+            pending = []
+            for name, span, minimum_seconds, minimum_count, interval, compute in requests:
+                key = (name, span)
+                enough = size >= max(minimum_count, int(rate * minimum_seconds))
+                cached = _DIAGNOSTICS_CACHE.get(key)
+                if (cached and cached.source == source and cached.enough_samples == enough
+                        and (cached.revision == revision or now - cached.computed_at < interval)):
+                    results[name] = cached.payload
+                else:
+                    pending.append((key, enough, compute))
+
+            if not pending:
+                return results
+            tail_size = max(int(key[1] * rate) for key, _, _ in pending)
+            # Sample rows are appended and never mutated in place.
+            samples = list(islice(reversed(S.eeg), tail_size))
+            samples.reverse()
+
+        for key, enough, compute in pending:
+            name, span = key
+            sample_limit = int(span * rate)
+            payload = finite_json(compute(samples[-sample_limit:], rate, names, span))
+            results[name] = payload
+            if key not in _DIAGNOSTICS_CACHE and len(_DIAGNOSTICS_CACHE) >= 8:
+                _DIAGNOSTICS_CACHE.pop(next(iter(_DIAGNOSTICS_CACHE)))
+            _DIAGNOSTICS_CACHE[key] = _DiagnosticResult(source, revision, enough, now, payload)
+    return results
+
+
+@app.get("/api/live/diagnostics")
+async def api_live_diagnostics(quality: bool = True, spectrogram: bool = True,
+                               seconds: float = Query(20, ge=3, le=30)) -> dict[str, Any]:
+    """Calculate only the diagnostics requested by the monitor."""
+    if not quality and not spectrogram:
+        return {"quality": None, "spectrogram": None}
+    return await asyncio.to_thread(_live_diagnostics, quality, spectrogram, seconds)
+
+
 @app.get("/api/live/quality")
 async def api_live_quality() -> dict[str, Any]:
-    """Advisory engineering flags; works for replay, too."""
-    from live_quality import assess_eeg
-    with STATE_LOCK:
-        samples = [list(x) for x in list(S.eeg)[-int(4*(S.eeg_sample_rate or 250)):]]
-        names=list(S.channel_names)
-        sr=S.eeg_sample_rate or DEFAULT_EEG_SR
-    return finite_json(await asyncio.to_thread(assess_eeg, samples, sr, names))
+    result = await asyncio.to_thread(_live_diagnostics, True, False, 20)
+    return result["quality"]
 
 
 @app.get("/api/live/spectrogram")
 async def api_live_spectrogram(seconds: float = Query(20, ge=3, le=30)) -> dict[str, Any]:
-    from live_quality import live_spectrogram
-    with STATE_LOCK:
-        sr=S.eeg_sample_rate or DEFAULT_EEG_SR
-        values=[list(x) for x in list(S.eeg)[-int(seconds*sr):]]
-        names=list(S.channel_names)
-    return finite_json(await asyncio.to_thread(live_spectrogram, values, sr, names, seconds))
+    result = await asyncio.to_thread(_live_diagnostics, False, True, seconds)
+    return result["spectrogram"]
 
 
 @app.post("/api/recording/start")
@@ -2393,13 +2457,24 @@ def _sanitize(obj):
 
 
 class _WSDelta:
-    __slots__ = ("last_times", "sample_counts", "source", "is_first")
+    __slots__ = ("last_times", "sample_counts", "source", "is_first", "lean")
 
-    def __init__(self) -> None:
+    def __init__(self, *, lean: bool = False) -> None:
         self.last_times: dict[str, float] = {}
         self.sample_counts: dict[str, int] = {}
         self.source: tuple[str, int] | None = None
         self.is_first: bool = True
+        self.lean = lean
+
+    def first_for(self, source: tuple[str, int]) -> bool:
+        return self.is_first or self.source != source
+
+    def waveform_limit(self, sample_rate: float, *, first: bool) -> int:
+        if not self.lean:
+            return 7500 if first else 500
+        if not math.isfinite(sample_rate) or sample_rate <= 0:
+            return 500
+        return max(1, math.ceil(min(7500, sample_rate * 5)))
 
 
 def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, first_sync_max: int = 500,
@@ -2446,15 +2521,72 @@ def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, 
 _WS_DELTAS: dict[WebSocket, _WSDelta] = {}
 
 
-def _build_tick_snapshot() -> dict[str, Any]:
-    """Общая часть тика: строится ОДИН раз за тик под одним локом."""
+def _tail(rows, count: int) -> list:
+    """Copy just the requested deque suffix, in chronological order."""
+    return list(islice(reversed(rows), count))[::-1]
+
+
+def _tail_after(rows, start: float, *, timestamp=lambda row: row) -> int:
+    for count, row in enumerate(reversed(rows)):
+        if timestamp(row) <= start:
+            return count
+    return len(rows)
+
+
+def _waveform_window(times, name, rate, total, source, deltas, legacy: bool) -> int:
+    if deltas is None:
+        return len(times)
+    count = 256 if legacy else 0
+    earliest = None
+    for delta in deltas:
+        first = delta.first_for(source)
+        if first:
+            count = max(count, delta.waveform_limit(rate, first=True))
+        elif total is not None:
+            if (cursor := delta.sample_counts.get(name)) is not None:
+                count = max(count, total - cursor)
+            else:
+                count = max(count, delta.waveform_limit(rate, first=False))
+        elif (cursor := delta.last_times.get(name)) is not None:
+            earliest = cursor if earliest is None else min(earliest, cursor)
+        else:
+            count = max(count, delta.waveform_limit(rate, first=False))
+    if earliest is not None and count < len(times):
+        count = max(count, _tail_after(times, earliest))
+    return min(len(times), count)
+
+
+def _metric_window(rows, name, source, deltas, *, timestamp=lambda row: row) -> int:
+    if not deltas or any(not d.lean or d.first_for(source) or name not in d.last_times for d in deltas):
+        return min(len(rows), 128)
+    earliest = min(d.last_times[name] for d in deltas)
+    return min(128, _tail_after(rows, earliest, timestamp=timestamp))
+
+
+def _build_tick_snapshot(deltas: tuple[_WSDelta, ...] | None = None) -> dict[str, Any]:
+    """Copy the union of the data due clients need, once under the state lock."""
     with STATE_LOCK:
         age = _data_age_s()
         contact = _contact_locked()
         validity = _validity_locked(contact)
         # In replay we surface archived estimates *as archived*, not fresh SDK
         # readings. Never forward unverified live estimates as brain metrics.
-        archived = bool(REPLAY and REPLAY.active and not S._device_ready)
+        replay = REPLAY.status() if REPLAY is not None else {"active": False}
+        archived = replay["active"] and not S._device_ready
+        validity["source_mode"] = "replay" if archived else validity["source_mode"]
+        epoch = REPLAY.generation if archived else S.stream_epoch
+        source = (validity["source_mode"], epoch)
+        legacy = deltas is None or any(not d.lean for d in deltas)
+        legacy_replay_init = legacy and archived and (
+            deltas is None or any(not d.lean and d.first_for(source) for d in deltas)
+        )
+        counts = dict(S.stream_counts) if not archived else {}
+        eeg_n = _waveform_window(S.eeg_t, "eeg", S.eeg_sample_rate, counts.get("eeg"), source, deltas, legacy)
+        ppg_n = _waveform_window(S.ppg_t, "ppg", S.ppg_sample_rate, counts.get("ppg"), source, deltas, legacy)
+        mems_n = _waveform_window(S.mems_t, "mems", S.mems_sample_rate, counts.get("mems"), source, deltas, legacy)
+        resistances_n = _metric_window(S.resistances_t, "resistances", source, deltas)
+        nfb_n = (_metric_window(S.nfb_hist, "nfb", source, deltas, timestamp=lambda row: row["t"])
+                 if archived or validity["nfb"] else 0)
         return {
             "connected": S._device_ready and S.status == "connected",
             "t": S.now(),
@@ -2476,32 +2608,30 @@ def _build_tick_snapshot() -> dict[str, Any]:
             "ppg_sr": S.ppg_sample_rate,
             "mems_sr": S.mems_sample_rate,
             "contact": contact,
-            "validity": {**validity, "source_mode": "replay" if archived else validity["source_mode"]},
+            "validity": validity,
+            "replay": replay,
             "emotions": S.latest_emotions if (archived or validity["emotions"]) else None,
             "cardio": S.latest_cardio if (archived or validity["cardio"]) else None,
             "phy": S.latest_phy if (archived or validity["phy"]) else None,
             "prod": S.latest_prod if (archived or validity["prod"]) else None,
             "resistances": S.latest_resistances,
-            "resistances_hist": list(S.resistances_hist)[-128:],
-            "resistances_times": list(S.resistances_t)[-128:],
+            "resistances_hist": _tail(S.resistances_hist, resistances_n),
+            "resistances_times": _tail(S.resistances_t, resistances_n),
             "res_channel_names": S.res_channel_names,
-            "nfb": list(S.nfb_hist)[-128:] if (archived or validity["nfb"]) else [],
+            "nfb": _tail(S.nfb_hist, nfb_n),
             "sensor_status": _verified_sensor_status(S, validity, contact),
-            "stream_epoch": S.stream_epoch,
-            "stream_counts": dict(S.stream_counts) if not archived else {},
-            "eeg_t": list(S.eeg_t),
-            "eeg_s": list(S.eeg),
-            "ppg_t": list(S.ppg_t),
-            "ppg_s": list(S.ppg),
-            "mems_t": list(S.mems_t),
-            "mems_a": list(S.mems_acc),
-            "mems_g": list(S.mems_gyro),
-            # Legacy-хвосты последних 256 точек: фронт держит их как фолбэк,
-            # если *_stream пуст (см. static/index.html), — оставляем.
-            "eeg": list(S.eeg)[-256:],
-            "ppg": list(S.ppg)[-256:],
-            "mems_acc": list(S.mems_acc)[-256:],
-            "mems_gyro": list(S.mems_gyro)[-256:],
+            "stream_epoch": epoch,
+            "stream_counts": counts,
+            "eeg_t": _tail(S.eeg_t, eeg_n),
+            "eeg_s": _tail(S.eeg, eeg_n),
+            "ppg_t": _tail(S.ppg_t, ppg_n),
+            "ppg_s": _tail(S.ppg, ppg_n),
+            "mems_t": _tail(S.mems_t, mems_n),
+            "mems_a": _tail(S.mems_acc, mems_n),
+            "mems_g": _tail(S.mems_gyro, mems_n),
+            "cardio_history": list(S.cardio_hist) if legacy_replay_init else [],
+            "emotions_history": list(S.emotions_hist) if legacy_replay_init else [],
+            "nfb_history_list": list(S.nfb_hist) if legacy_replay_init else [],
             **_recording_status(),
             "records_dir": RECORDS_DIR,
         }
@@ -2541,31 +2671,32 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         delta.last_times.clear()
         delta.sample_counts.clear()
         delta.is_first = True
-    sync_max = 7500 if delta.is_first else 500
+    first = delta.is_first
     n_ch = max(len(snap["eeg_channels"]), 1)
-    eeg_p = _client_stream(snap, delta, "eeg", snap["eeg_s"], n_ch, sync_max)
-    ppg_p = _client_stream(snap, delta, "ppg", snap["ppg_s"], 1, sync_max)
-    mems_p = _client_stream(snap, delta, "mems", list(zip(snap["mems_a"], snap["mems_g"])), 1, sync_max)
+    eeg_p = _client_stream(snap, delta, "eeg", snap["eeg_s"], n_ch,
+                           delta.waveform_limit(snap["eeg_sr"], first=first))
+    ppg_p = _client_stream(snap, delta, "ppg", snap["ppg_s"], 1,
+                           delta.waveform_limit(snap["ppg_sr"], first=first))
+    mems_p = _client_stream(snap, delta, "mems", list(zip(snap["mems_a"], snap["mems_g"])), 1,
+                            delta.waveform_limit(snap["mems_sr"], first=first))
     if mems_p is not None:
         n = mems_p["n"]
-        mems_p["acc"] = [list(v) for v in snap["mems_a"][-n:]]
-        mems_p["gyro"] = [list(v) for v in snap["mems_g"][-n:]]
+        mems_p["acc"] = snap["mems_a"][-n:]
+        mems_p["gyro"] = snap["mems_g"][-n:]
         del mems_p["samples"]
 
-    if delta.is_first:
-        delta.is_first = False
-        with STATE_LOCK:
-            # Historic SDK scores are not guaranteed to have had electrode
-            # contact at their original timestamps. Do not import them into a
-            # supposedly verified live chart; replay is labelled separately.
-            archived = bool(REPLAY and REPLAY.active and not S._device_ready)
-            cardio_hist_list = list(S.cardio_hist) if archived else []
-            emotions_hist_list = list(S.emotions_hist) if archived else []
-            nfb_hist_list = list(S.nfb_hist) if archived else []
-    else:
-        cardio_hist_list = []
-        emotions_hist_list = []
-        nfb_hist_list = []
+    resistance_times, resistances, nfb = snap["resistances_times"], snap["resistances_hist"], snap["nfb"]
+    if delta.lean:
+        if resistance_times:
+            count = _tail_after(resistance_times, delta.last_times.get("resistances", -math.inf))
+            delta.last_times["resistances"] = resistance_times[-1]
+            resistance_times = resistance_times[-count:] if count else []
+            resistances = resistances[-count:] if count else []
+        if nfb:
+            count = _tail_after(nfb, delta.last_times.get("nfb", -math.inf), timestamp=lambda row: row["t"])
+            delta.last_times["nfb"] = nfb[-1]["t"]
+            nfb = nfb[-count:] if count else []
+    delta.is_first = False
 
     payload = {
         "type": "tick",
@@ -2586,6 +2717,7 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "calibration_started_at": snap["calibration_started_at"],
         "contact": snap["contact"],
         "validity": snap["validity"],
+        "replay": snap["replay"],
         "stream_epoch": snap["stream_epoch"],
         "eeg_channels": snap["eeg_channels"],
         "eeg_sr": snap["eeg_sr"],
@@ -2596,18 +2728,11 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "phy": snap["phy"],
         "prod": snap["prod"],
         "resistances": snap["resistances"],
-        "resistances_hist": snap["resistances_hist"],
-        "resistances_times": snap["resistances_times"],
+        "resistances_hist": resistances,
+        "resistances_times": resistance_times,
         "res_channel_names": snap["res_channel_names"],
-        "nfb": snap["nfb"],
+        "nfb": nfb,
         "sensor_status": snap["sensor_status"],
-        "cardio_history": cardio_hist_list,
-        "emotions_history": emotions_hist_list,
-        "nfb_history_list": nfb_hist_list,
-        "eeg": snap["eeg"],
-        "ppg": snap["ppg"],
-        "mems_acc": snap["mems_acc"],
-        "mems_gyro": snap["mems_gyro"],
         "eeg_stream": eeg_p,
         "ppg_stream": ppg_p,
         "mems_stream": mems_p,
@@ -2616,26 +2741,43 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "recording_error": snap["recording_error"],
         "records_dir": snap["records_dir"],
     }
+    if not delta.lean:
+        # The compatibility dashboard uses raw tails as a fallback.
+        payload.update(
+            cardio_history=snap["cardio_history"] if first else [],
+            emotions_history=snap["emotions_history"] if first else [],
+            nfb_history_list=snap["nfb_history_list"] if first else [],
+            eeg=snap["eeg_s"][-256:],
+            ppg=snap["ppg_s"][-256:],
+            mems_acc=snap["mems_a"][-256:],
+            mems_gyro=snap["mems_g"][-256:],
+        )
     return payload
 
 
 async def _ws_broadcast_loop() -> None:
-    """Один тик 10 Гц на всех клиентов: снапшот строится раз, дельты — пер-клиент."""
+    """Send the compact live profile at 5 Hz and legacy clients at 10 Hz."""
     try:
+        live_frame = True
         while not _STOP.is_set():
-            await asyncio.sleep(0.1)  # 10 Hz
+            await asyncio.sleep(0.1)
+            live_frame = not live_frame
             if not S.connected_clients:
                 continue
+            due = []
+            for ws in S.connected_clients:
+                delta = _WS_DELTAS.get(ws)
+                if delta is not None and (live_frame or not delta.lean):
+                    due.append((ws, delta))
+            if not due:
+                continue
             try:
-                snap = _build_tick_snapshot()
+                snap = _build_tick_snapshot(tuple(delta for _, delta in due))
             except Exception as exc:
                 log.warning("[ws] snapshot failed: %r", exc)
                 continue
             dead = []
-            for ws in list(S.connected_clients):
-                delta = _WS_DELTAS.get(ws)
-                if delta is None:
-                    delta = _WS_DELTAS[ws] = _WSDelta()
+            for ws, delta in due:
                 try:
                     payload = _build_client_tick(snap, delta)
                     payload = finite_json(payload)
@@ -2696,7 +2838,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
         return
     await ws.accept()
     S.connected_clients.add(ws)
-    _WS_DELTAS[ws] = _WSDelta()
+    _WS_DELTAS[ws] = _WSDelta(lean=ws.query_params.get("profile") == "live")
     try:
         await _ws_receiver(ws)
     finally:

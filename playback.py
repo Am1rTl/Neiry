@@ -117,6 +117,7 @@ class PlaybackController:
         self._speed = 1.0
         self._progress_s, self._total_s, self._offset_s = 0.0, 0.0, 0.0
         self._t0 = 0.0
+        self.generation = 0
 
     @property
     def active(self) -> bool:
@@ -147,6 +148,7 @@ class PlaybackController:
         self._session_id, self._session_dir = folder.name, folder
         # Set display metadata for replay. This is not a live-device connection.
         with self._lock:
+            self.generation += 1
             for field in ('eeg','eeg_t','ppg','ppg_t','mems_acc','mems_gyro','mems_t'):
                 buff=getattr(self._state,field,None)
                 if buff is not None and hasattr(buff,'clear'):buff.clear()
