@@ -15,6 +15,7 @@ class CalibrationRun:
     prepare_until: float
     session_id: str | None
     run_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    auto_record: bool = True
     stage: int = 0
     started: float | None = None
     stage_finished: bool = False

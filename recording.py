@@ -41,12 +41,15 @@ class SessionRecorder:
     _JSONL_FLUSH_SEC = 1.0
 
     def __init__(self, base_dir: str | Path, *, device_name: str = "", device_serial: str = "",
-                 channel_names: Sequence[str] = (), sample_rates: Optional[Mapping[str, int]] = None):
+                 channel_names: Sequence[str] = (), sample_rates: Optional[Mapping[str, int]] = None,
+                 start_reason: str = "manual", source: Mapping[str, str | None] | None = None):
         self.base_dir = Path(base_dir)
         self.device_name = device_name or "unknown"
         self.device_serial = device_serial or "unknown"
         self.channel_names = list(channel_names)
         self.sample_rates = dict(sample_rates or {})
+        self.start_reason = start_reason
+        self.source = {k: v for k, v in (source or {}).items() if v}
         self.session_id = ""
         self.session_dir: Optional[Path] = None
         self._lock = threading.RLock()
@@ -112,7 +115,8 @@ class SessionRecorder:
             self._open_text("metrics", "metrics.jsonl")
             self._open_text("events", "events.jsonl")
             self._write_meta(ended=False)
-            self.event("session_started", device=self.device_name, serial=self.device_serial)
+            self.event("session_started", device=self.device_name, serial=self.device_serial,
+                       reason=self.start_reason)
             return self.session_dir
 
     def _open(self, key: str, name: str, header: list[str]) -> None:
@@ -140,6 +144,8 @@ class SessionRecorder:
         meta = {"session_id": self.session_id, "device": self.device_name,
                 "serial": self.device_serial, "channels": self.channel_names,
                 "sample_rates": self.sample_rates,
+                "start_reason": self.start_reason,
+                "source": self.source,
                 "started_at": _iso(self._started_ts),
                 "recording_format_version": 2,
                 "units": {"eeg": "sdk_native_unverified", "ppg": "sdk_native_unverified",
@@ -246,6 +252,8 @@ class SessionRecorder:
         if self._closed:
             return
         with self._lock:
+            if self._closed:
+                return
             w = self._writers.get(key)
             if w is None:
                 return
@@ -264,6 +272,8 @@ class SessionRecorder:
         line = json.dumps(finite_json(rec), ensure_ascii=False, default=str, allow_nan=False) + "\n"
         try:
             with self._lock:
+                if self._closed:
+                    return
                 f = self._files.get(key)
                 if f is None:
                     # Хэндл не открылся в start() — дописываем напрямую.

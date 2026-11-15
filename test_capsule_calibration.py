@@ -35,6 +35,8 @@ class GuidedCalibrationTests(unittest.TestCase):
         self.state._calibrator = self.cal
         self.contact = {'calibration_allowed': True, 'ready': True}
         directory = self.enterContext(TemporaryDirectory())
+        self.enterContext(patch.object(server, 'RECORDS_DIR', directory))
+        self.enterContext(patch.object(server, 'LAB_STORE', None))
         self.rec = SessionRecorder(directory, channel_names=['O1-T3', 'O2-T4'])
         self.path = self.rec.start()
         self.addCleanup(self.rec.close)
@@ -49,7 +51,7 @@ class GuidedCalibrationTests(unittest.TestCase):
 
     def advance_past_cue(self, run):
         run.prepare_until = time.monotonic() - 1
-        server._update_calibration([])
+        server._update_calibration({})
 
     def test_full_uses_sdk_completion_and_exports_eye_states(self):
         run = self.begin('full')
@@ -65,16 +67,20 @@ class GuidedCalibrationTests(unittest.TestCase):
                     server._on_calibration(self.cal, nfb_result())
                     self.assertFalse(self.state.calibrated)
                 server._on_calibration_stage_finished(self.cal)
-                server._update_calibration([])
+                server._update_calibration({})
         self.assertFalse(self.state.calibrated)  # Last stage event still needs a result.
         server._on_calibration(self.cal, nfb_result())
         self.assertTrue(self.state.calibrated)
         baseline = Mock()
-        server._update_calibration([baseline])
+        server._update_calibration({"prod": baseline})
         baseline.calibrate_baselines.assert_not_called()
         run.baselines_at = time.monotonic() - 1
-        server._update_calibration([baseline])
+        server._update_calibration({"prod": baseline})
         baseline.calibrate_baselines.assert_called_once()
+        server._baseline_progress("prod", 0.64)
+        self.assertEqual(self.state.baselines["prod"], {"state": "running", "progress": 0.64})
+        server._baseline_completed("prod")
+        self.assertEqual(self.state.baselines["prod"], {"state": "complete", "progress": 1.0})
         self.rec.close()
         events = [json.loads(line) for line in (self.path / 'events.jsonl').read_text().splitlines()]
         starts = [row for row in events if row['type'] == 'calibration_stage_start']
@@ -101,16 +107,52 @@ class GuidedCalibrationTests(unittest.TestCase):
         self.cal.has_calibration_failed.return_value = True
         run = self.begin('quick')
         self.advance_past_cue(run)
-        server._update_calibration([])
+        server._update_calibration({})
         self.assertEqual(self.state.calibration_phase, 'running')
         server._on_calibration(self.cal, nfb_result())
         self.assertTrue(self.state.calibrated)
+
+    def test_success_starts_one_recording_and_writes_result_and_provenance(self):
+        server.RECORDER = None
+        self.state.channel_names = ['O1-T3', 'O2-T4']
+        self.state.firmware_version = '1.2.3'
+        self.state.library_version = '2.0.72'
+        self.addCleanup(server._rec_close)
+        run = self.begin('quick')
+        self.advance_past_cue(run)
+        server._on_calibration(self.cal, nfb_result())
+        rec = server.RECORDER
+        self.assertIsNotNone(rec)
+        response = self.client.get('/api/device/status').json()
+        self.assertEqual(response['recording_origin'], 'calibration')
+        self.assertEqual(run.session_id, response['recording'])
+        server._on_calibration(self.cal, nfb_result())
+        self.assertIs(server.RECORDER, rec)
+        self.assertEqual(self.client.post('/api/recording/stop').status_code, 200)
+        meta = json.loads((rec.session_dir / 'meta.json').read_text())
+        self.assertEqual(meta['source'], {'capsule_version': '2.0.72', 'firmware_version': '1.2.3'})
+        self.assertEqual(meta['start_reason'], 'calibration')
+        result = json.loads((rec.session_dir / 'calibration.json').read_text())
+        self.assertEqual(result['individualPeakFrequency'], 10.25)
+        self.assertIn('recording_started_after_calibration', (rec.session_dir / 'events.jsonl').read_text())
+
+    def test_opt_out_or_sdk_failure_leaves_recorder_stopped(self):
+        server.RECORDER = None
+        response = self.client.post('/api/device/calibration/start', json={'mode': 'quick', 'auto_record': False})
+        self.assertEqual(response.status_code, 200)
+        self.advance_past_cue(self.state._calibration_run)
+        server._on_calibration(self.cal, nfb_result())
+        self.assertIsNone(server.RECORDER)
+        run = self.begin('quick')
+        self.advance_past_cue(run)
+        server._on_calibration(self.cal, nfb_result(reason=1))
+        self.assertIsNone(server.RECORDER)
 
     def test_contact_loss_discards_late_result_from_active_stage(self):
         run = self.begin('full')
         self.advance_past_cue(run)
         self.contact['calibration_allowed'] = False
-        server._update_calibration([])
+        server._update_calibration({})
         self.contact['calibration_allowed'] = True
         server._on_calibration(self.cal, nfb_result())
         self.assertFalse(self.state.calibrated)

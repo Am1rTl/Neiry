@@ -53,7 +53,7 @@ class Settings:
     HIST_LEN: int = 256       # emotions/cardio/nfb истории
     LOST_TIMEOUT_S: float = 3.0   # возраст данных, после которого устройство потеряно
     CAL_TIMEOUT_S: float = 180.0  # таймаут ожидания ЭЭГ для калибровки
-    RECORD_ENABLED: bool = False  # по умолчанию запуск записи только вручную
+    RECORD_ENABLED: bool = False  # совместимость: запуск записи сразу при подключении
     RECORDS_DIR: str = ""
     MAX_SESSION_HOURS: float = 6.0  # ротация сессии по длительности
     MAX_CSV_MB: float = 500.0       # ротация сессии по размеру eeg.csv

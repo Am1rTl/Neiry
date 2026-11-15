@@ -72,7 +72,8 @@ except Exception:  # /api/replay/* вернут 503
     PlaybackController = None  # type: ignore
 
 RECORDS_DIR = settings.RECORDS_DIR
-RECORDER = None  # SessionRecorder | None, одна сессия на подключение устройства
+RECORDER = None  # SessionRecorder | None
+RECORD_LOCK = threading.RLock()  # Recorder lifecycle; acquire before STATE_LOCK when both are required.
 
 # Дефолты частот, если устройство их не отдало (см. STAGE 9: API позволяет
 # запросить все три через get_*_sample_rate, дефолты — только на случай сбоя).
@@ -85,60 +86,97 @@ LOST_TIMEOUT_S = settings.LOST_TIMEOUT_S
 CAL_TIMEOUT_S = settings.CAL_TIMEOUT_S
 
 
-def _rec_start(device_name: str, serial: str, channels, sample_rates) -> None:
+def _open_recorder(device_name: str, serial: str, channels, sample_rates, *,
+                   reason: str, calibration=None, session_id=None):
+    """Start a recording while RECORD_LOCK is held."""
     global RECORDER
-    _rec_close()
+    if SessionRecorder is None:
+        raise RuntimeError("Модуль записи недоступен.")
+    with STATE_LOCK:
+        source = {"capsule_version": S.library_version, "firmware_version": S.firmware_version}
+    rec = SessionRecorder(RECORDS_DIR, device_name=device_name, device_serial=serial,
+                          channel_names=list(channels), sample_rates=dict(sample_rates),
+                          start_reason=reason, source=source)
+    rec.start(session_id=session_id)
+    if rec.write_errors:
+        rec.close()
+        raise OSError("Не удалось открыть файлы сессии.")
+    if calibration:
+        rec.set_calibration(calibration)
+    RECORDER = rec
+    with STATE_LOCK:
+        S.recording_error = None
+    log.info("[rec] %s: %s -> %s", reason, rec.session_id, rec.session_dir)
+    return rec
+
+
+def _eeg_channel_names_locked() -> list[str]:
+    names = list(S.channel_names)
+    count = len(S.eeg[-1]) if S.eeg else 0
+    return names + [f"ch{i + 1}" for i in range(len(names), count)]
+
+
+def _recording_device_locked() -> tuple:
+    return (S.device_name or "manual", S.device_serial or "manual", _eeg_channel_names_locked(),
+            {"eeg": S.eeg_sample_rate, "ppg": S.ppg_sample_rate, "mems": S.mems_sample_rate})
+
+
+def _rec_start(device_name: str, serial: str, channels, sample_rates) -> None:
     if not settings.RECORD_ENABLED:
         return
-    if SessionRecorder is None:
-        return
-    try:
-        RECORDER = SessionRecorder(RECORDS_DIR, device_name=device_name, device_serial=serial,
-                                   channel_names=list(channels or []),
-                                   sample_rates=dict(sample_rates or {}))
-        RECORDER.start()
-        log.info("[rec] recording session %s -> %s", RECORDER.session_id, RECORDER.session_dir)
-    except Exception as exc:
-        log.warning("[rec] failed to start recorder: %r", exc)
-        RECORDER = None
-
-
-def _rec_close() -> None:
-    global RECORDER
-    if RECORDER is not None:
-        closed_id = RECORDER.session_id
-        EXPERIMENTS.recording_ending(closed_id, 'recording_stopped')
+    with RECORD_LOCK:
+        if RECORDER is not None and RECORDER.active:
+            return
         try:
-            summary = RECORDER.close()
+            _open_recorder(device_name, serial, channels, sample_rates, reason="connection")
+        except Exception as exc:
+            _recording_failed(exc)
+
+
+def _recording_failed(exc: Exception) -> None:
+    log.warning("[rec] failed to start recorder: %r", exc)
+    with STATE_LOCK:
+        S.recording_error = "Не удалось начать запись. Проверьте доступ к папке записей и свободное место."
+
+
+def _rec_close() -> str | None:
+    global RECORDER
+    with RECORD_LOCK:
+        rec = RECORDER
+        if rec is None:
+            return None
+        closed_id = rec.session_id
+        EXPERIMENTS.recording_ending(closed_id, 'recording_stopped')
+        RECORDER = None
+        try:
+            summary = rec.close()
             log.info("[rec] session closed: %s", summary.get("counts"))
         except Exception:
-            pass
-        RECORDER = None
-        # Analysis also runs lazily when an archived session is opened.
+            log.exception("[rec] failed to close session %s", closed_id)
         store = globals().get("LAB_STORE")
         if store is not None and closed_id:
             store.analyze_background(closed_id)
+        return closed_id
 
 
-def _rec_rotate() -> None:
-    """Ротация длинной сессии: close + start новой с суффиксом _p2, _p3, ..."""
-    global RECORDER
-    rec = RECORDER
-    if rec is None or not rec.active:
-        return
-    old_id = rec.session_id
-    m = re.search(r"_p(\d+)$", old_id)
-    base = old_id[:m.start()] if m else old_id
-    nxt = (int(m.group(1)) + 1) if m else 2
-    EXPERIMENTS.recording_ending(old_id, 'recording_rotated')
-    try:
-        rec.close()
-        rec.start(session_id=f"{base}_p{nxt}")
-        rec.event("rotation", prev_session=old_id)
-        log.info("[rec] rotated %s -> %s", old_id, rec.session_id)
-    except Exception as exc:
-        log.warning("[rec] rotation failed: %r", exc)
-        RECORDER = None
+def _rec_rotate(expected) -> None:
+    """Rotate only the recording checked by the watchdog."""
+    with RECORD_LOCK:
+        if RECORDER is not expected or not expected.active:
+            return
+        old_id = expected.session_id
+        m = re.search(r"_p(\d+)$", old_id)
+        base = old_id[:m.start()] if m else old_id
+        nxt = (int(m.group(1)) + 1) if m else 2
+        EXPERIMENTS.recording_ending(old_id, 'recording_rotated')
+        _rec_close()
+        try:
+            rec = _open_recorder(expected.device_name, expected.device_serial,
+                                 expected.channel_names, expected.sample_rates, reason=expected.start_reason,
+                                 calibration=expected.calibration, session_id=f"{base}_p{nxt}")
+            rec.event("rotation", prev_session=old_id)
+        except Exception as exc:
+            _recording_failed(exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -318,6 +356,8 @@ class State:
         self.latest_cardio: dict[str, Any] | None = None
         self.latest_phy: dict[str, Any] | None = None
         self.latest_prod: dict[str, Any] | None = None
+        self.firmware_version: str | None = None
+        self.recording_error: str | None = None
         self.latest_resistances: list[dict[str, Any]] = []
         self.contact_tracker = ElectrodeContact(ContactOptions(
             ready_ohm=settings.CONTACT_READY_OHM,
@@ -330,6 +370,10 @@ class State:
         # Monotonic timestamps identify stale SDK estimates; a fresh battery
         # event does NOT make earlier pulse/attention readings fresh.
         self.metrics_updated_at: dict[str, float] = {}
+        self.stream_counts: dict[str, int] = {}
+        self.stream_epoch = 0
+        self.stream_support: dict[str, bool] = {}
+        self.baselines: dict[str, dict[str, Any]] = {}
 
         self.latest_calibration: dict[str, Any] | None = None
 
@@ -348,11 +392,11 @@ class State:
         self.cardio_hist: deque[dict[str, Any]] = deque(maxlen=HIST_LEN)
         self.nfb_hist: deque[dict[str, Any]] = deque(maxlen=HIST_LEN)
 
-        self._t0 = time.time()
+        self._t0 = time.monotonic()
         self.last_data_at: float = 0.0
 
     def now(self) -> float:
-        return time.time() - self._t0
+        return time.monotonic() - self._t0
 
 
 S = State()
@@ -374,36 +418,57 @@ def _contact_locked() -> dict[str, Any]:
     return S.contact_tracker.snapshot(connected=(S._device_ready and S.status == "connected"))
 
 
-def _validity_locked(contact: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Data can stream with the band off-head. Only validated values enter cards.
+def _fresh_locked(name: str, max_age: float, now: float) -> bool:
+    stamp = S.metrics_updated_at.get(name)
+    return stamp is not None and 0 <= now - stamp <= max_age
 
-    Physical wear itself cannot be proven by an SDK resistance callback.
-    Historical/replay streams are labelled separately, never called live verified.
-    """
+
+def _cardio_limits_locked(ppg_ready: bool, now: float) -> list[str]:
+    report = S.latest_cardio
+    if not report:
+        return ["Capsule пока не прислал кардиоиндексы."]
+    if not _fresh_locked("cardio", settings.METRIC_STALE_SECONDS, now):
+        return ["Кардиоиндексы перестали обновляться."]
+    problems = []
+    if not ppg_ready:
+        problems.append("Ожидаем сырой поток ФПГ и стабильный контакт.")
+    if not report.get("skinContact"):
+        problems.append("Оптический датчик не подтвердил контакт с кожей.")
+    if report.get("motionArtifacts"):
+        problems.append("Capsule обнаружил движение.")
+    if report.get("hasArtifacts"):
+        problems.append("Capsule обнаружил артефакты ФПГ.")
+    if not report.get("metricsAvailable"):
+        problems.append("Capsule пока не выдал достоверный пульс.")
+    hr = report.get("heartRate")
+    if not isinstance(hr, (int, float)) or not 30 <= hr <= 220:
+        problems.append("Пульс вне диапазона отображения.")
+    return problems
+
+
+def _validity_locked(contact: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Evaluate stream freshness and calculation eligibility independently."""
     contact = contact or _contact_locked()
     now = time.monotonic()
-    def fresh(name: str, age: float | None = None) -> bool:
-        stamp = S.metrics_updated_at.get(name)
-        return stamp is not None and 0 <= now - stamp <= (age or settings.METRIC_STALE_SECONDS)
+
+    def fresh(name: str, age: float = settings.METRIC_STALE_SECONDS) -> bool:
+        return _fresh_locked(name, age, now)
+
     eeg = bool(contact["ready"] and fresh("eeg", settings.CONTACT_STALE_SECONDS)
                and len(S.eeg) >= settings.EEG_MIN_SAMPLES)
-    c = S.latest_cardio or {}
-    cardio = bool(contact["ready"] and fresh("cardio") and fresh("ppg")
-                  and c.get("skinContact") is True and c.get("metricsAvailable") is True
-                  and not c.get("hasArtifacts") and not c.get("motionArtifacts")
-                  and isinstance(c.get("heartRate"), (int,float))
-                  and 30 <= c["heartRate"] <= 220)
-    sdk = eeg and bool(S.calibrated)
+    ppg = bool(contact["ready"] and fresh("ppg", settings.CONTACT_STALE_SECONDS)
+               and len(S.ppg) >= settings.PPG_MIN_SAMPLES)
+    sdk = eeg and S.calibrated
     return {
         "raw_source": "Capsule SDK", "contact_verified": bool(contact["ready"]),
-        "eeg": eeg, "ppg": cardio, "cardio": cardio,
-        "emotions": sdk and fresh("emotions"), "phy": sdk and fresh("phy"),
+        "eeg": eeg, "ppg": ppg, "cardio": not _cardio_limits_locked(ppg, now),
+        "mems": fresh("mems", settings.CONTACT_STALE_SECONDS),
+        "emotions": eeg and fresh("emotions"), "phy": sdk and fresh("phy"),
         "prod": sdk and fresh("prod"), "nfb": sdk and fresh("nfb"),
         "source_mode": "live" if S._device_ready and S.status == "connected" else "none",
-        "notice": ("Оценки SDK скрыты: контакт не подтверждён или данные устарели. "
-                   "Сырые отсчёты могут поступать без надетой повязки."
+        "notice": ("Сырые отсчёты могут поступать без надетой повязки."
                    if not contact["ready"] else
-                   "Контакт электродов подтверждён по сопротивлению SDK, но это не доказывает качество всех отсчётов."),
+                   "Сопротивление SDK подтверждает контакт ЭЭГ; качество потоков проверяется отдельно."),
     }
 
 
@@ -528,8 +593,9 @@ def on_battery(device, charge: int) -> None:
         with STATE_LOCK:
             S.battery = int(charge)
             _touch_data()
-        if RECORDER:
-            RECORDER.record_metric("battery", {"charge_pct": int(charge)})
+        rec = RECORDER
+        if rec:
+            rec.record_metric("battery", {"charge_pct": int(charge)})
         _cb_log("batt", f"charge={charge}%")
     except BaseException as exc:
         log.warning("[cb] on_battery EXC: %r", exc)
@@ -572,8 +638,9 @@ def on_resistances(device, res) -> None:
             S.resistances_hist.append(chart_vals)
             S.resistances_t.append(S.now())
             _touch_data()
-        if RECORDER:
-            RECORDER.record_resistances({nme: (float("nan") if is_i else float(v))
+        rec = RECORDER
+        if rec:
+            rec.record_resistances({nme: (float("nan") if is_i else float(v))
                                          for nme, v, is_i in zip(names, raw, [r["is_inf"] for r in latest])})
         preview = ", ".join(f"{n}={float(v)/1000:.0f}kΩ" if not is_i else f"{n}=INF" for n, v, is_i in zip(names, raw, [r["is_inf"] for r in latest]))
         _cb_log("res", f"ch={n} {preview}")
@@ -581,28 +648,32 @@ def on_resistances(device, res) -> None:
         log.warning("[cb] on_resistances EXC: %r", exc)
 
 
+def _display_batch_start(times, received_at: float, count: int, step: float) -> float:
+    start = received_at - (count - 1) * step
+    return max(start, times[-1] + step) if times else start
+
+
+def _track_sample_batch_locked(name: str, count: int) -> None:
+    S.stream_counts[name] = S.stream_counts.get(name, 0) + count
+    _stamp_metric(name)
+    _touch_data()
+
+
 def on_eeg(device, eeg) -> None:
     try:
         n_samples = eeg.get_samples_count()
         n_ch = eeg.get_channels_count()
-        if n_samples == 0:
+        if n_samples <= 0 or n_ch <= 0:
             return
-        sr = max(S.eeg_sample_rate, 1)
-        dt = 1.0 / sr
-        now = S.now()
-        unix_now = time.time()
-        rec_rows, rec_ts = [], []
-        with STATE_LOCK:
-            for i in range(n_samples):
-                ts_back = (n_samples - 1 - i) * dt
-                sample = [eeg.get_raw_value(c, i) for c in range(n_ch)]
-                S.eeg.append(sample)
-                S.eeg_t.append(now - ts_back)
-                rec_rows.append(sample)
-                rec_ts.append(unix_now - ts_back)
-            _stamp_metric("eeg")
-            _touch_data()
+        dt = 1.0 / max(S.eeg_sample_rate, 1)
+        now, unix_now = S.now(), time.time()
         rec = RECORDER
+        rows = [[eeg.get_raw_value(c, i) for c in range(n_ch)] for i in range(n_samples)]
+        with STATE_LOCK:
+            start = _display_batch_start(S.eeg_t, now, n_samples, dt)
+            S.eeg.extend(rows)
+            S.eeg_t.extend(start + i * dt for i in range(n_samples))
+            _track_sample_batch_locked("eeg", n_samples)
         if rec and rec.active:
             sdk_bounds = None
             try:
@@ -613,10 +684,11 @@ def on_eeg(device, eeg) -> None:
             except Exception:
                 # Older builds may omit the timestamp accessor or return no clock.
                 pass
-            rec.record_eeg(rec_rows, rec_ts, sdk_bounds=sdk_bounds)
-        _cb_log("eeg", f"n={n_samples} ch={n_ch} sr={sr}")
-    except BaseException as exc:
-        log.warning("[cb] on_eeg EXC: %r", exc)
+            host_start = unix_now - (n_samples - 1) * dt
+            rec.record_eeg(rows, (host_start + i * dt for i in range(n_samples)), sdk_bounds=sdk_bounds)
+        _cb_log("eeg", f"n={n_samples} ch={n_ch}")
+    except Exception:
+        log.exception("[cb] on_eeg")
 
 
 def _subscribe_eeg_artifacts(device, lib):
@@ -669,56 +741,47 @@ def _subscribe_eeg_artifacts(device, lib):
 def on_mems(mems, mems_data) -> None:
     try:
         n = len(mems_data)
-        if n == 0:
+        if not n:
             return
-        sr = max(S.mems_sample_rate, 1)
-        dt = 1.0 / sr
-        now = S.now()
-        unix_now = time.time()
-        rec_acc, rec_gyro, rec_ts = [], [], []
+        dt = 1.0 / max(S.mems_sample_rate, 1)
+        now, unix_now = S.now(), time.time()
+        rec = RECORDER
+        acc = [[v.x, v.y, v.z] for v in (mems_data.get_accelerometer(i) for i in range(n))]
+        gyro = [[v.x, v.y, v.z] for v in (mems_data.get_gyroscope(i) for i in range(n))]
         with STATE_LOCK:
-            for i in range(n):
-                ts_back = (n - 1 - i) * dt
-                acc = mems_data.get_accelerometer(i)
-                gyro = mems_data.get_gyroscope(i)
-                S.mems_acc.append([acc.x, acc.y, acc.z])
-                S.mems_gyro.append([gyro.x, gyro.y, gyro.z])
-                S.mems_t.append(now - ts_back)
-                rec_acc.append([acc.x, acc.y, acc.z])
-                rec_gyro.append([gyro.x, gyro.y, gyro.z])
-                rec_ts.append(unix_now - ts_back)
-            _touch_data()
-        if RECORDER:
-            RECORDER.record_mems(rec_acc, rec_gyro, rec_ts)
-        _cb_log("mems", f"n={n} sr={sr}")
-    except BaseException as exc:
-        log.warning("[cb] on_mems EXC: %r", exc)
+            start = _display_batch_start(S.mems_t, now, n, dt)
+            S.mems_acc.extend(acc)
+            S.mems_gyro.extend(gyro)
+            S.mems_t.extend(start + i * dt for i in range(n))
+            _track_sample_batch_locked("mems", n)
+        if rec:
+            host_start = unix_now - (n - 1) * dt
+            rec.record_mems(acc, gyro, (host_start + i * dt for i in range(n)))
+        _cb_log("mems", f"n={n}")
+    except Exception:
+        log.exception("[cb] on_mems")
 
 
 def on_ppg(cardio, ppg) -> None:
     try:
         n = len(ppg)
-        if n == 0:
+        if not n:
             return
-        sr = max(S.ppg_sample_rate, 1)
-        dt = 1.0 / sr
-        now = S.now()
-        unix_now = time.time()
-        rec_vals, rec_ts = [], []
+        dt = 1.0 / max(S.ppg_sample_rate, 1)
+        now, unix_now = S.now(), time.time()
+        rec = RECORDER
+        values = [float(ppg.get_value(i)) for i in range(n)]
         with STATE_LOCK:
-            for i in range(n):
-                ts_back = (n - 1 - i) * dt
-                S.ppg.append(float(ppg.get_value(i)))
-                S.ppg_t.append(now - ts_back)
-                rec_vals.append(float(ppg.get_value(i)))
-                rec_ts.append(unix_now - ts_back)
-            _stamp_metric("ppg")
-            _touch_data()
-        if RECORDER:
-            RECORDER.record_ppg(rec_vals, rec_ts)
-        _cb_log("ppg", f"n={n} sr={sr}")
-    except BaseException as exc:
-        log.warning("[cb] on_ppg EXC: %r", exc)
+            start = _display_batch_start(S.ppg_t, now, n, dt)
+            S.ppg.extend(values)
+            S.ppg_t.extend(start + i * dt for i in range(n))
+            _track_sample_batch_locked("ppg", n)
+        if rec:
+            host_start = unix_now - (n - 1) * dt
+            rec.record_ppg(values, (host_start + i * dt for i in range(n)))
+        _cb_log("ppg", f"n={n}")
+    except Exception:
+        log.exception("[cb] on_ppg")
 
 
 def on_emotions_states(emotion, states) -> None:
@@ -730,8 +793,9 @@ def on_emotions_states(emotion, states) -> None:
             _stamp_metric("emotions")
             S.emotions_hist.append(d)
             _touch_data()
-        if RECORDER:
-            RECORDER.record_metric("emotions", d)
+        rec = RECORDER
+        if rec:
+            rec.record_metric("emotions", d)
         _cb_log("emot", f"attn={d['attention']:.2f} relax={d['relaxation']:.2f} cogL={d['cognitiveLoad']:.2f} cogC={d['cognitiveControl']:.2f}")
     except BaseException as exc:
         log.warning("[cb] on_emotions_states EXC: %r", exc)
@@ -754,8 +818,9 @@ def on_cardio_indexes(cardio, indexes) -> None:
             _stamp_metric("cardio")
             S.cardio_hist.append(d)
             _touch_data()
-        if RECORDER:
-            RECORDER.record_metric("cardio", d)
+        rec = RECORDER
+        if rec:
+            rec.record_metric("cardio", d)
         _cb_log("cardio", f"HR={d['heartRate']:.1f} SI={d['stressIndex']:.2f} skin={d['skinContact']}")
     except BaseException as exc:
         log.warning("[cb] on_cardio_indexes EXC: %r", exc)
@@ -777,11 +842,28 @@ def on_phy_states(phy, states) -> None:
             S.latest_phy = d
             _stamp_metric("phy")
             _touch_data()
-        if RECORDER:
-            RECORDER.record_metric("phy", d)
+        rec = RECORDER
+        if rec:
+            rec.record_metric("phy", d)
         _cb_log("phy", f"relax={d['relaxation']:.2f} conc={d['concentration']:.2f} fatigue={d['fatigue']:.2f}")
     except BaseException as exc:
         log.warning("[cb] on_phy_states EXC: %r", exc)
+
+
+def _baseline_progress(name: str, progress: float) -> None:
+    if not math.isfinite(progress):
+        return
+    with STATE_LOCK:
+        stage = S.baselines.get(name)
+        if stage and stage["state"] == "running":
+            stage["progress"] = max(0.0, min(1.0, progress))
+
+
+def _baseline_completed(name: str) -> None:
+    with STATE_LOCK:
+        stage = S.baselines.get(name)
+        if stage and stage["state"] == "running":
+            stage.update(state="complete", progress=1.0)
 
 
 def on_phy_calibrated(phy, baselines) -> None:
@@ -789,8 +871,10 @@ def on_phy_calibrated(phy, baselines) -> None:
         d = {n: float(getattr(baselines, n)) for n in
              ["alpha", "alphaGravity", "beta", "betaGravity",
               "concentration", "timestampMilli"]}
-        if RECORDER:
-            RECORDER.record_metric("phy_baselines", d)
+        _baseline_completed("phy")
+        rec = RECORDER
+        if rec:
+            rec.record_metric("phy_baselines", d)
     except BaseException as exc:
         log.warning("[cb] on_phy_calibrated EXC: %r", exc)
 
@@ -805,8 +889,10 @@ def on_prod_baselines(prod, baselines) -> None:
             except Exception:
                 pass
         d["t"] = S.now()
-        if RECORDER:
-            RECORDER.record_metric("prod_baselines", d)
+        _baseline_completed("prod")
+        rec = RECORDER
+        if rec:
+            rec.record_metric("prod_baselines", d)
         _cb_log("prod", f"baselines={d}")
     except BaseException as exc:
         log.warning("[cb] on_prod_baselines EXC: %r", exc)
@@ -829,8 +915,9 @@ def on_prod_metrics(prod, metrics) -> None:
             S.latest_prod = d
             _stamp_metric("prod")
             _touch_data()
-        if RECORDER:
-            RECORDER.record_metric("productivity", d)
+        rec = RECORDER
+        if rec:
+            rec.record_metric("productivity", d)
         _cb_log("prod", f"prod={d['productivityScore']:.2f} fat={d['fatigueScore']:.2f} conc={d['concentrationScore']:.2f}")
     except BaseException as exc:
         log.warning("[cb] on_prod_metrics EXC: %r", exc)
@@ -850,8 +937,9 @@ def on_nfb_user_state(nfb, user_state) -> None:
             S.nfb_hist.append(d)
             _stamp_metric("nfb")
             _touch_data()
-        if RECORDER:
-            RECORDER.record_metric("nfb", d)
+        rec = RECORDER
+        if rec:
+            rec.record_metric("nfb", d)
         _cb_log("nfb", f"α={d['alpha']:.2f} β={d['beta']:.2f} θ={d['theta']:.2f}")
     except BaseException as exc:
         log.warning("[cb] on_nfb_user_state EXC: %r", exc)
@@ -913,6 +1001,8 @@ def _clear_live_connection(reason: str, status: str = "idle", *, preserve_device
         S.device_name = ""
         S.device_serial = ""
         S.device_mode = None
+        S.firmware_version = None
+        S.recording_error = None
         S.channel_names = []
         S.eeg_sample_rate = S.ppg_sample_rate = S.mems_sample_rate = 0
         S.calibrated = False
@@ -928,6 +1018,10 @@ def _clear_live_connection(reason: str, status: str = "idle", *, preserve_device
         S.res_channel_names = []
         S.contact_tracker.reset()
         S.metrics_updated_at.clear()
+        S.stream_counts.clear()
+        S.stream_support.clear()
+        S.baselines.clear()
+        S.stream_epoch += 1
         S.last_data_at = 0.0
         for key in ("eeg", "eeg_t", "ppg", "ppg_t", "mems_acc", "mems_gyro", "mems_t",
                     "resistances_hist", "resistances_t", "emotions_hist", "cardio_hist", "nfb_hist"):
@@ -975,7 +1069,7 @@ def _make_device_list_handler(locator=None, lib=None):
     return on_devices
 
 
-def _prepare_device(device, lib) -> tuple[list[Any], list[Any]]:
+def _prepare_device(device, lib) -> tuple[list[Any], dict, dict]:
     """Called after verified connect() on the sole SDK pump thread."""
     # Firmware may discard EEG/resistance subscriptions set before connection.
     device.set_on_battery_charge_changed(on_battery)
@@ -989,35 +1083,44 @@ def _prepare_device(device, lib) -> tuple[list[Any], list[Any]]:
         log.info("[capsule] EEG artifact stream unavailable in this SDK")
     except Exception:
         log.exception("[capsule] cannot subscribe to EEG artifacts")
-    baseline_handlers: list[Any] = []
-    for label, factory in (("Emotions", Emotions), ("Cardio", Cardio),
-                           ("PhysiologicalStates", PhysiologicalStates),
-                           ("Productivity", Productivity), ("MEMS", MEMS)):
+    baseline_handlers = {}
+    support = {"eeg": True}
+    for label, factory, subscriptions in (
+        ("Emotions", Emotions, (("emotions", "set_on_states_update", on_emotions_states),)),
+        ("Cardio", Cardio, (("cardio", "set_on_indexes_update", on_cardio_indexes),
+                           ("ppg", "set_on_ppg", on_ppg))),
+        ("Productivity", Productivity, (("prod", "set_on_metrics_update", on_prod_metrics),)),
+        ("PhysiologicalStates", PhysiologicalStates, (("phy", "set_on_states", on_phy_states),)),
+        ("MEMS", MEMS, (("mems", "set_on_update", on_mems),)),
+    ):
+        for name, _, _ in subscriptions:
+            support[name] = False
         try:
             obj = factory(device, lib)
             handles.append(obj)
-            if label == "Emotions":
-                obj.set_on_states_update(on_emotions_states)
-            elif label == "Cardio":
-                obj.set_on_indexes_update(on_cardio_indexes)
-                obj.set_on_ppg(on_ppg)
-            elif label == "PhysiologicalStates":
-                obj.set_on_states(on_phy_states)
-                obj.set_on_calibrated(on_phy_calibrated)
-                # Baseline calibration is deferred until the user explicitly asks.
-                baseline_handlers.append(obj)
-            elif label == "Productivity":
-                obj.set_on_metrics_update(on_prod_metrics)
-                try:
-                    obj.set_on_baseline_update(on_prod_baselines)
-                except Exception:
-                    pass
-                baseline_handlers.append(obj)
-            elif label == "MEMS":
-                obj.set_on_update(on_mems)
         except Exception as exc:
-            log.warning("[capsule] optional stream %s unavailable: %s", label, exc)
-    return handles, baseline_handlers
+            log.warning("[capsule] module %s unavailable: %s", label, exc)
+            continue
+        for name, method, callback in subscriptions:
+            try:
+                getattr(obj, method)(callback)
+                support[name] = True
+            except Exception as exc:
+                log.warning("[capsule] stream %s unavailable: %s", name, exc)
+        if label in ("Productivity", "PhysiologicalStates"):
+            name, method, callback = (("prod", "set_on_baseline_update", on_prod_baselines)
+                                      if label == "Productivity" else
+                                      ("phy", "set_on_calibrated", on_phy_calibrated))
+            baseline_handlers[name] = obj
+            try:
+                getattr(obj, method)(callback)
+            except Exception as exc:
+                log.info("[capsule] %s baseline result event unavailable: %s", name, exc)
+            try:
+                obj.set_on_calibration_progress(lambda _, progress, key=name: _baseline_progress(key, progress))
+            except Exception as exc:
+                log.info("[capsule] %s baseline progress unavailable: %s", name, exc)
+    return handles, baseline_handlers, support
 
 
 def capsule_worker() -> None:
@@ -1057,7 +1160,7 @@ def capsule_worker() -> None:
 
     active_device = None
     handles: list[Any] = []  # Keep native callback owners alive until device release.
-    baseline_handlers: list[Any] = []
+    baseline_handlers = {}
     next_check = 0.0
     negative_checks = 0
     scan_window_s = 8.0
@@ -1070,6 +1173,7 @@ def capsule_worker() -> None:
         with STATE_LOCK:
             if S.calibration_phase == "running":
                 _fail_calibration_locked(reason="disconnected", message=message)
+            S._device_ready = False
         try:
             if old is not None:
                 try:
@@ -1082,7 +1186,7 @@ def capsule_worker() -> None:
                     log.debug("[capsule] release: %s", exc)
         finally:
             handles = []
-            baseline_handlers = []
+            baseline_handlers = {}
             _rec_close()
             _clear_live_connection(message, state)
             negative_checks = 0
@@ -1164,13 +1268,20 @@ def capsule_worker() -> None:
                         S.last_error = "" if cancelled else "Не удалось установить соединение за 20 секунд. Проверьте питание, Bluetooth и попробуйте снова."
                         S.status_message = "Подключение отменено." if cancelled else S.last_error
                     continue
-                handles, baseline_handlers = _prepare_device(device, lib)
+                handles, baseline_handlers, support = _prepare_device(device, lib)
                 channel_names_obj = device.get_channel_names()
                 channels = [str(channel_names_obj.get_name_by_index(i)) for i in range(len(channel_names_obj))]
                 rates = {"eeg": _query_sample_rate(device, "get_eeg_sample_rate", DEFAULT_EEG_SR),
                          "ppg": _query_sample_rate(device, "get_ppg_sample_rate", DEFAULT_PPG_SR),
                          "mems": _query_sample_rate(device, "get_mems_sample_rate", DEFAULT_MEMS_SR)}
                 info_obj = device.get_info()
+                firmware = None
+                try:
+                    firmware = device.get_firmware_version() or None
+                except Exception as exc:
+                    log.debug("[capsule] firmware version unavailable: %s", exc)
+                if isinstance(firmware, bytes):
+                    firmware = firmware.decode("utf-8", errors="replace")
                 device.start()
                 # Initialize the opt-in calibrator and retain its native callbacks.
                 cal = None
@@ -1196,10 +1307,12 @@ def capsule_worker() -> None:
                             lib, cal, Error, _check_capsule_error, _on_calibration_stage_finished)
                     except Exception as exc:
                         log.info("[capsule] staged calibration unavailable: %s", exc)
+                support["nfb"] = False
                 try:
                     nfb = NFB(device, lib, calibrator=None)
                     nfb.set_on_user_state(on_nfb_user_state)
                     handles.append(nfb)
+                    support["nfb"] = True
                 except Exception as exc:
                     log.info("[capsule] NFB unavailable: %s", exc)
                 if REPLAY is not None:
@@ -1209,6 +1322,9 @@ def capsule_worker() -> None:
                     S.device_serial = str(info_obj.get_serial() or serial)
                     S.last_device_serial = serial
                     S.channel_names = channels
+                    S.firmware_version = firmware
+                    S.stream_support = support
+                    S.baselines = {name: {"state": "waiting", "progress": None} for name in baseline_handlers}
                     S.eeg_sample_rate, S.ppg_sample_rate, S.mems_sample_rate = (rates["eeg"], rates["ppg"], rates["mems"])
                     S._calibrator = cal
                     S._calibration_stage_start = stage_start
@@ -1222,8 +1338,9 @@ def capsule_worker() -> None:
                 negative_checks = 0
                 next_check = time.monotonic() + 2.0
                 _rec_start(S.device_name, S.device_serial, channels, rates)
-                if RECORDER:
-                    RECORDER.event("device_connected", device=S.device_name, serial=S.device_serial)
+                rec = RECORDER
+                if rec:
+                    rec.event("device_connected", device=S.device_name, serial=S.device_serial)
                 log.info("[capsule] connected to %s (channels: %s)", S.device_name, channels)
             except Exception as exc:
                 log.exception("[capsule] connect/setup failed")
@@ -1363,42 +1480,59 @@ def _report_calibration_failure_locked(reason: int) -> None:
 
 def _on_calibration(calibrator, data) -> None:
     try:
-        with STATE_LOCK:
-            if not _calibration_is_current_locked(calibrator):
-                return
-            reason = getattr(data, "failReason", 0)
-            reason = int(getattr(reason, "value", reason))
-            if reason:
-                _report_calibration_failure_locked(reason)
-                return
-            run = S._calibration_run
-            if not run.last_stage:
-                return
-            if not _contact_locked()["calibration_allowed"]:
-                _fail_calibration_locked("contact_lost", "Контакт потерян. Дождитесь стабилизации и повторите.")
-                return
-            d = {key: float(getattr(data, key)) for key in (
-                "individualFrequency", "individualPeakFrequency", "individualPeakFrequencyPower",
-                "individualPeakFrequencySuppression", "individualBandwidth",
-                "individualNormalizedPower", "lowerFrequency", "upperFrequency",
-            )}
-            if not all(math.isfinite(value) for value in d.values()):
-                _fail_calibration_locked("invalid_result", "Capsule вернул некорректный результат.")
-                return
-            d.update(mode=run.mode, timestampMilli=int(getattr(data, "timestampMilli", -1)))
-            _finish_stage_locked()
-            S.latest_calibration = d
-            S.calibrated = True
-            S.calibration_phase = "complete"
-            S.status_message = "Калибровка NFB завершена. Можно открыть глаза."
-            run.baselines_at = time.monotonic() + CUE_SECONDS
-            _calibration_event_locked("calibration_complete")
-            rec = RECORDER
-            if rec and rec.active and rec.session_id == run.session_id:
-                rec.set_calibration(d)
-        log.info("[cb] NFB calibration finished: %s", d)
+        with RECORD_LOCK:
+            _accept_calibration_result(calibrator, data)
     except Exception:
         log.exception("[cb] NFB calibration result error")
+
+
+def _accept_calibration_result(calibrator, data) -> None:
+    """Record the result and start a session, serialized with manual start/stop."""
+    with STATE_LOCK:
+        if not _calibration_is_current_locked(calibrator):
+            return
+        reason = getattr(data, "failReason", 0)
+        reason = int(getattr(reason, "value", reason))
+        if reason:
+            _report_calibration_failure_locked(reason)
+            return
+        run = S._calibration_run
+        if not run.last_stage:
+            return
+        if not _contact_locked()["calibration_allowed"]:
+            _fail_calibration_locked("contact_lost", "Контакт потерян. Дождитесь стабилизации и повторите.")
+            return
+        d = {key: float(getattr(data, key)) for key in (
+            "individualFrequency", "individualPeakFrequency", "individualPeakFrequencyPower",
+            "individualPeakFrequencySuppression", "individualBandwidth",
+            "individualNormalizedPower", "lowerFrequency", "upperFrequency",
+        )}
+        if not all(math.isfinite(value) for value in d.values()):
+            _fail_calibration_locked("invalid_result", "Capsule вернул некорректный результат.")
+            return
+        d.update(mode=run.mode, timestampMilli=int(getattr(data, "timestampMilli", -1)))
+        _finish_stage_locked()
+        S.latest_calibration = d
+        S.calibrated = True
+        S.calibration_phase = "complete"
+        S.status_message = "Калибровка NFB завершена. Можно открыть глаза."
+        run.baselines_at = time.monotonic() + CUE_SECONDS
+        S.baselines = {name: {"state": "pending", "progress": None} for name in S.baselines}
+        _calibration_event_locked("calibration_complete")
+        device = _recording_device_locked()
+
+    rec = RECORDER
+    if rec and rec.active:
+        rec.set_calibration(d)
+    elif run.auto_record:
+        try:
+            rec = _open_recorder(*device, reason="calibration", calibration=d)
+            with STATE_LOCK:
+                run.session_id = rec.session_id
+            rec.event("recording_started_after_calibration", run_id=run.run_id, mode=run.mode)
+        except Exception as exc:
+            _recording_failed(exc)
+    log.info("[cb] NFB calibration finished: %s", d)
 
 
 def _sdk_calibration_failed(calibrator) -> bool:
@@ -1419,6 +1553,8 @@ def _update_calibration(baseline_handlers) -> None:
         if phase == "complete" and run and run.baselines_at is not None and now >= run.baselines_at:
             run.baselines_at = None
             if not _contact_locked()["calibration_allowed"]:
+                for stage in S.baselines.values():
+                    stage["state"] = "interrupted"
                 return
             _calibration_event_locked("sdk_baselines_started")
         elif phase != "running":
@@ -1448,11 +1584,15 @@ def _update_calibration(baseline_handlers) -> None:
                 _calibration_event_locked("calibration_stage_start")
 
     if phase == "complete":
-        for processor in baseline_handlers:
+        for name, processor in baseline_handlers.items():
+            with STATE_LOCK:
+                S.baselines[name] = {"state": "running", "progress": None}
             try:
                 processor.calibrate_baselines()
             except Exception as exc:
-                log.warning("[capsule] baseline calibration failed: %s", exc)
+                with STATE_LOCK:
+                    S.baselines[name]["state"] = "failed"
+                log.warning("[capsule] %s baseline calibration failed: %s", name, exc)
         return
 
     try:
@@ -1506,7 +1646,7 @@ def _watchdog_tick() -> None:
         try:
             if rec.should_rotate(settings.MAX_SESSION_HOURS, settings.MAX_CSV_MB):
                 log.info("[watchdog] session %s needs rotation", rec.session_id)
-                _rec_rotate()
+                _rec_rotate(rec)
         except Exception as exc:
             log.warning("[watchdog] rotation check failed: %r", exc)
 
@@ -1599,6 +1739,13 @@ async def sessions() -> RedirectResponse:
     return RedirectResponse(url="/#sessions", status_code=307)
 
 
+def _recording_status() -> dict[str, Any]:
+    rec = RECORDER
+    if rec and rec.active:
+        return {"recording": rec.session_id, "recording_origin": rec.start_reason, "recording_error": None}
+    return {"recording": None, "recording_origin": None, "recording_error": S.recording_error}
+
+
 def _device_status_payload() -> dict[str, Any]:
     with STATE_LOCK:
         age = _data_age_s()
@@ -1610,14 +1757,17 @@ def _device_status_payload() -> dict[str, Any]:
             "device": S.device_name if ready else None,
             "serial": S.device_serial if ready else None,
             "battery": S.battery if ready else None,
-            "channels": list(S.channel_names) if ready else [],
+            "sdk_version": S.library_version or None,
+            "firmware_version": S.firmware_version if ready else None,
+            "channels": _eeg_channel_names_locked() if ready else [],
             "discovered": list(S.discovered_devices),
             "scanning": S.scan_active or S.scan_requested,
             "auto_reconnect": S.auto_reconnect,
             "last_device_serial": S.last_device_serial,
             "calibration_phase": S.calibration_phase if ready else "unavailable",
             "contact": (contact := _contact_locked()),
-            "validity": _validity_locked(contact),
+            "validity": (validity := _validity_locked(contact)),
+            "sensor_status": finite_json(_verified_sensor_status(S, validity, contact)),
             "calibration_available": ready and S._calibrator is not None and contact["calibration_allowed"]
             and S.calibration_phase != "running" and not S._calibration_reconnect,
             "calibration_modes": (["quick", "full"] if S._calibration_stage_start is not None else ["quick"])
@@ -1627,7 +1777,7 @@ def _device_status_payload() -> dict[str, Any]:
             "calibration_result": finite_json(S.latest_calibration) if ready and S.calibrated else None,
             "calibration_reconnect": S._calibration_reconnect,
             "calibrated": S.calibrated if ready else False,
-            "recording": RECORDER.session_id if ready and RECORDER and RECORDER.active else None,
+            **_recording_status(),
             "data_age_s": round(age, 2) if ready and age is not None else None,
             "stream_stale": ready and (age is None or age > LOST_TIMEOUT_S),
         }
@@ -1693,7 +1843,7 @@ async def api_device_reconnect_settings(payload: dict[str, Any]) -> dict[str, An
     return _device_status_payload()
 
 
-def _queue_calibration(mode: str, *, guided: bool) -> None:
+def _queue_calibration(mode: str, *, guided: bool, auto_record: bool = True) -> None:
     if EXPERIMENTS.status()["state"] == "running":
         raise HTTPException(409, "Завершите эксперимент перед калибровкой.")
     with STATE_LOCK:
@@ -1709,11 +1859,16 @@ def _queue_calibration(mode: str, *, guided: bool) -> None:
             raise HTTPException(409, "Контакт электродов ещё не стабилен. Дождитесь готовности и повторите.")
         rec = RECORDER
         S._calibration_run = CalibrationRun(mode, time.monotonic() + (CUE_SECONDS if guided else 0.0),
-                                             rec.session_id if rec and rec.active else None)
+                                             rec.session_id if rec and rec.active else None,
+                                             auto_record=auto_record)
+        S.recording_error = None
         S._calibration_started_at = 0.0
         S.calibration_phase = "running"
         S.calibrated = False
         S.latest_calibration = None
+        for name in ("phy", "prod", "nfb"):
+            S.metrics_updated_at.pop(name, None)
+        S.baselines = {name: {"state": "waiting", "progress": None} for name in S.baselines}
         S.status_message = "Калибровка NFB выполняется."
         _calibration_event_locked("calibration_cue")
 
@@ -1723,7 +1878,10 @@ async def api_calibration_start(payload: dict[str, Any] | None = None) -> dict[s
     mode = (payload or {}).get("mode", "quick")
     if mode not in ("quick", "full"):
         raise HTTPException(400, "Выберите быструю или полную калибровку.")
-    _queue_calibration(mode, guided=payload is not None)
+    auto_record = (payload or {}).get("auto_record", True)
+    if not isinstance(auto_record, bool):
+        raise HTTPException(400, "auto_record должен быть логическим значением.")
+    _queue_calibration(mode, guided=payload is not None, auto_record=auto_record)
     return {"accepted": True, "calibration_phase": "queued"}
 
 
@@ -1892,39 +2050,30 @@ async def api_live_spectrogram(seconds: float = Query(20, ge=3, le=30)) -> dict[
 
 @app.post("/api/recording/start")
 async def api_recording_start() -> dict[str, Any]:
-    """Ручной старт записи (работает и при RECORD_ENABLED=0)."""
-    global RECORDER
+    """Start recording explicitly, including before NFB calibration."""
     if SessionRecorder is None:
-        raise HTTPException(status_code=503, detail="recording module unavailable")
-    if not _live_connected():
-        raise HTTPException(status_code=409, detail="Сначала подключите устройство и дождитесь живых данных.")
-    with STATE_LOCK:
-        if not _validity_locked()["eeg"]:
-            raise HTTPException(status_code=409, detail="Для записи наденьте повязку и дождитесь свежего ЭЭГ и стабильного контакта электродов.")
-    if RECORDER is not None and RECORDER.active:
-        raise HTTPException(status_code=409, detail="recording already active")
-    with STATE_LOCK:
-        name, serial = S.device_name or "manual", S.device_serial or "manual"
-        channels = list(S.channel_names)
-        rates = {"eeg": S.eeg_sample_rate, "ppg": S.ppg_sample_rate,
-                 "mems": S.mems_sample_rate}
-    rec = SessionRecorder(RECORDS_DIR, device_name=name, device_serial=serial,
-                          channel_names=channels, sample_rates=rates)
-    try:
-        rec.start()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"start failed: {exc}")
-    RECORDER = rec
-    log.info("[rec] manual start: %s", rec.session_id)
+        raise HTTPException(503, "Модуль записи недоступен.")
+    with RECORD_LOCK:
+        with STATE_LOCK:
+            if not S._device_ready or S.status != "connected" or not _validity_locked()["eeg"]:
+                raise HTTPException(409, "Дождитесь свежей ЭЭГ и стабильного контакта электродов.")
+            device = _recording_device_locked()
+            calibration = S.latest_calibration if S.calibrated else None
+        if RECORDER is not None and RECORDER.active:
+            raise HTTPException(409, "Запись уже идёт.")
+        try:
+            rec = _open_recorder(*device, reason="manual", calibration=calibration)
+        except Exception as exc:
+            _recording_failed(exc)
+            raise HTTPException(500, "Не удалось начать запись.") from exc
     return {"recording": rec.session_id, "session_dir": str(rec.session_dir)}
 
 
 @app.post("/api/recording/stop")
 async def api_recording_stop() -> dict[str, Any]:
-    if RECORDER is None or not RECORDER.active:
-        raise HTTPException(status_code=404, detail="no active recording")
-    session_id = RECORDER.session_id
-    _rec_close()
+    session_id = _rec_close()
+    if session_id is None:
+        raise HTTPException(404, "Нет активной записи.")
     return {"stopped": session_id, "recording": None}
 
 
@@ -2178,20 +2327,49 @@ def _sensor_status(S) -> dict:
 
 
 def _verified_sensor_status(source: State, validity: dict[str, Any], contact: dict[str, Any]) -> dict[str, Any]:
-    """Distinguish *stream arrived* from *wear/contact verified* in live UI."""
     sensors = _sensor_status(source)
-    connected = source._device_ready and source.status == "connected"
-    if connected:
-        sensors["skin"] = {**sensors["skin"], "state": "ok" if contact["ready"] else "warn",
-                           "reason": contact["message"], "contact_state": contact["state"]}
-        for key in ("eeg", "ppg"):
-            if not validity[key]:
-                sensors[key] = {**sensors[key], "state": "warn" if sensors[key]["n"] else "none",
-                                "reason": "Сырые отсчёты без подтверждённого контакта"}
-        for key in ("cardio", "emotions", "phy", "prod", "nfb"):
-            if not validity.get(key, False):
-                sensors[key] = {"state": "warn" if sensors[key]["state"] != "none" else "none",
-                                "reason": "Результат скрыт до проверки контакта, калибровки и свежести"}
+    if not (source._device_ready and source.status == "connected"):
+        return sensors
+    sensors["skin"] = {**sensors["skin"], "state": "ok" if contact["ready"] else "warn",
+                       "reason": contact.get("message"), "contact_state": contact.get("state")}
+    now = time.monotonic()
+    for name in ("eeg", "ppg", "mems", "cardio", "emotions", "phy", "prod", "nfb"):
+        output = sensors[name]
+        raw = name in ("eeg", "ppg", "mems")
+        stamp = source.metrics_updated_at.get(name)
+        fresh = _fresh_locked(name, settings.CONTACT_STALE_SECONDS if raw else settings.METRIC_STALE_SECONDS, now)
+        output.update(received=stamp is not None, fresh=fresh)
+        if raw:
+            output["total_samples"] = source.stream_counts.get(name, 0)
+        baseline = source.baselines.get(name)
+        if baseline:
+            output["baseline"] = dict(baseline)
+        if validity.get(name):
+            output.update(state="ok", reason="Отсчёты поступают." if raw else "Capsule обновляет показатели.")
+            if name == "phy" and any((source.latest_phy or {}).get(key) for key in ("nfbArtifacts", "cardioArtifacts")):
+                output.update(state="warn", reason="Capsule пометил артефакты в одном из входных потоков.")
+        elif source.stream_support.get(name) is False:
+            output.update(state="none", reason="Поток недоступен в этом подключении Capsule.")
+        elif name == "cardio" and stamp is not None:
+            output.update(state="warn", reason=" ".join(_cardio_limits_locked(validity.get("ppg", False), now)))
+        elif baseline and baseline["state"] in ("pending", "running", "failed", "interrupted"):
+            messages = {"pending": "Готовится сбор базового уровня.",
+                        "running": "Capsule собирает базовый уровень.",
+                        "failed": "Capsule сообщил об ошибке базовой калибровки.",
+                        "interrupted": "Сбор базового уровня прерван из-за контакта."}
+            output.update(state="warn", reason=messages[baseline["state"]])
+        elif not source.calibrated and name in ("nfb", "prod", "phy"):
+            output.update(state="warn", reason="Ожидает калибровку NFB.")
+        elif stamp is None:
+            output.update(state="none", reason="От SDK пока не поступали данные.")
+        elif not fresh:
+            output.update(state="warn", reason="SDK перестал обновлять поток.")
+        elif not contact["ready"]:
+            output.update(state="warn", reason="Данные поступают; ожидаем стабильный контакт электродов.")
+        elif raw:
+            output.update(state="warn", reason="Ожидаем больше отсчётов.")
+        else:
+            output.update(state="warn", reason="Ожидаем свежую ЭЭГ для отображения оценок.")
     return sensors
 
 
@@ -2215,16 +2393,17 @@ def _sanitize(obj):
 
 
 class _WSDelta:
-    __slots__ = ("eeg_last_t", "ppg_last_t", "mems_last_t", "is_first")
+    __slots__ = ("last_times", "sample_counts", "source", "is_first")
 
     def __init__(self) -> None:
-        self.eeg_last_t: float | None = None
-        self.ppg_last_t: float | None = None
-        self.mems_last_t: float | None = None
+        self.last_times: dict[str, float] = {}
+        self.sample_counts: dict[str, int] = {}
+        self.source: tuple[str, int] | None = None
         self.is_first: bool = True
 
 
-def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, first_sync_max: int = 500):
+def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, first_sync_max: int = 500,
+                 *, include_times: bool = False):
     if not times or not samples:
         return None, last_t
     if last_t is None:
@@ -2249,10 +2428,12 @@ def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, 
         "sr": sr,
         "n": len(new_t),
     }
+    if include_times:
+        payload["times"] = new_t
     if n_ch >= 2:
         # N каналов: ch1..chN; при двух каналах — те же ch1/ch2, что и раньше.
         for c in range(n_ch):
-            payload[f"ch{c + 1}"] = [s[c] if len(s) > c else 0.0 for s in new_s]
+            payload[f"ch{c + 1}"] = [s[c] if len(s) > c else None for s in new_s]
     else:
         if isinstance(new_s[0], (list, tuple)):
             payload["samples"] = [s[0] for s in new_s]
@@ -2290,7 +2471,7 @@ def _build_tick_snapshot() -> dict[str, Any]:
             "calibration": S.latest_calibration,
             "calibration_phase": S.calibration_phase,
             "calibration_started_at": S._calibration_started_at,
-            "eeg_channels": list(S.channel_names),
+            "eeg_channels": _eeg_channel_names_locked(),
             "eeg_sr": S.eeg_sample_rate,
             "ppg_sr": S.ppg_sample_rate,
             "mems_sr": S.mems_sample_rate,
@@ -2306,6 +2487,8 @@ def _build_tick_snapshot() -> dict[str, Any]:
             "res_channel_names": S.res_channel_names,
             "nfb": list(S.nfb_hist)[-128:] if (archived or validity["nfb"]) else [],
             "sensor_status": _verified_sensor_status(S, validity, contact),
+            "stream_epoch": S.stream_epoch,
+            "stream_counts": dict(S.stream_counts) if not archived else {},
             "eeg_t": list(S.eeg_t),
             "eeg_s": list(S.eeg),
             "ppg_t": list(S.ppg_t),
@@ -2319,26 +2502,50 @@ def _build_tick_snapshot() -> dict[str, Any]:
             "ppg": list(S.ppg)[-256:],
             "mems_acc": list(S.mems_acc)[-256:],
             "mems_gyro": list(S.mems_gyro)[-256:],
-            "recording": (RECORDER.session_id if RECORDER and RECORDER.active else None),
+            **_recording_status(),
             "records_dir": RECORDS_DIR,
         }
 
 
+def _client_stream(snap, delta, name, samples, channels, sync_max):
+    times, rate = snap[f"{name}_t"], snap[f"{name}_sr"]
+    total = snap["stream_counts"].get(name)
+    last_count = delta.sample_counts.get(name)
+    if total is not None:
+        # Raw packet receipt is the cursor. Host timing can overlap or be re-projected.
+        delta.sample_counts[name] = total
+        if last_count is None:
+            cap = sync_max
+        else:
+            cap = min(total - last_count, len(times))
+            if cap <= 0:
+                return None
+        batch, _ = _build_batch(times, samples, channels, None, rate, first_sync_max=cap, include_times=True)
+        if batch is not None:
+            batch["sample_index"] = total - batch["n"]
+            batch["missed_display_samples"] = (max(0, total - last_count - batch["n"])
+                                               if last_count is not None else 0)
+        return batch
+    batch, cursor = _build_batch(times, samples, channels, delta.last_times.get(name), rate,
+                                 first_sync_max=sync_max, include_times=True)
+    if cursor is not None:
+        delta.last_times[name] = cursor
+    return batch
+
+
 def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
-    """Пер-клиентский тик: общий снапшот + дельты стримов + истории при первом тике."""
-    # На первой синхронизации разрешаем отправить полный буфер истории (до 7500 точек)
+    """Create a first sync or a per-client stream delta."""
+    source = (snap["validity"]["source_mode"], snap["stream_epoch"])
+    if source != delta.source:
+        delta.source = source
+        delta.last_times.clear()
+        delta.sample_counts.clear()
+        delta.is_first = True
     sync_max = 7500 if delta.is_first else 500
     n_ch = max(len(snap["eeg_channels"]), 1)
-    eeg_p, delta.eeg_last_t = _build_batch(snap["eeg_t"], snap["eeg_s"], n_ch,
-                                           delta.eeg_last_t, snap["eeg_sr"],
-                                           first_sync_max=sync_max)
-    ppg_p, delta.ppg_last_t = _build_batch(snap["ppg_t"], snap["ppg_s"], 1,
-                                           delta.ppg_last_t, snap["ppg_sr"],
-                                           first_sync_max=sync_max)
-    mems_p, delta.mems_last_t = _build_batch(snap["mems_t"],
-                                             list(zip(snap["mems_a"], snap["mems_g"])), 1,
-                                             delta.mems_last_t, snap["mems_sr"],
-                                             first_sync_max=sync_max)
+    eeg_p = _client_stream(snap, delta, "eeg", snap["eeg_s"], n_ch, sync_max)
+    ppg_p = _client_stream(snap, delta, "ppg", snap["ppg_s"], 1, sync_max)
+    mems_p = _client_stream(snap, delta, "mems", list(zip(snap["mems_a"], snap["mems_g"])), 1, sync_max)
     if mems_p is not None:
         n = mems_p["n"]
         mems_p["acc"] = [list(v) for v in snap["mems_a"][-n:]]
@@ -2379,6 +2586,7 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "calibration_started_at": snap["calibration_started_at"],
         "contact": snap["contact"],
         "validity": snap["validity"],
+        "stream_epoch": snap["stream_epoch"],
         "eeg_channels": snap["eeg_channels"],
         "eeg_sr": snap["eeg_sr"],
         "ppg_sr": snap["ppg_sr"],
@@ -2404,6 +2612,8 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "ppg_stream": ppg_p,
         "mems_stream": mems_p,
         "recording": snap["recording"],
+        "recording_origin": snap["recording_origin"],
+        "recording_error": snap["recording_error"],
         "records_dir": snap["records_dir"],
     }
     return payload
