@@ -510,6 +510,7 @@
       $('.export-dropdown a[href="/api/lab/report"]').href='docs/NeuroScope_Research_Report.pdf';
       $('.brand').href='#overview';
     }
+    window.NeuroCheckpoints?.init({api, preview:!!preview});
     window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions});
     $$('.nav-item[data-view], .top-help[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();if(location.hash.slice(1)===a.dataset.view)nav(a.dataset.view);else location.hash=a.dataset.view;}));
     window.addEventListener('hashchange',()=>{if(titles[location.hash.slice(1)])nav(location.hash.slice(1));});

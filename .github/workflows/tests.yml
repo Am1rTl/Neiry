@@ -42,3 +42,4 @@ jobs:
           node --check static/studio.js
           node --check static/experiment_lab.js
           node --check static/experiment_runner.js
+          node --check static/checkpoints.js

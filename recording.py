@@ -279,14 +279,15 @@ class SessionRecorder:
                 if now - self._csv_flushed_at >= self._CSV_FLUSH_SEC:
                     self._flush_csv_locked(now)
 
-    def _jsonl(self, key: str, fname: str, rec: Mapping[str, Any], counter: str) -> None:
+    def _jsonl(self, key: str, fname: str, rec: Mapping[str, Any], counter: str,
+               *, flush: bool = False) -> bool:
         if self._closed or not self.session_dir:
-            return
+            return False
         line = json.dumps(finite_json(rec), ensure_ascii=False, default=str, allow_nan=False) + "\n"
         try:
             with self._lock:
                 if self._closed:
-                    return
+                    return False
                 f = self._files.get(key)
                 if f is None:
                     # Хэндл не открылся в start() — дописываем напрямую.
@@ -295,12 +296,16 @@ class SessionRecorder:
                 else:
                     f.write(line)
                     self._jsonl_pending += 1
-                    if (self._jsonl_pending >= self._JSONL_FLUSH_LINES
-                            or time.time() - self._jsonl_flushed_ts >= self._JSONL_FLUSH_SEC):
+                    if flush:
+                        f.flush()
+                    elif (self._jsonl_pending >= self._JSONL_FLUSH_LINES
+                          or time.time() - self._jsonl_flushed_ts >= self._JSONL_FLUSH_SEC):
                         self._flush_jsonl()
                 self.counts[counter] = self.counts.get(counter, 0) + 1
+                return True
         except Exception:
             self.write_errors += 1
+            return False
 
     def _flush_jsonl(self) -> None:
         # Вызывать под self._lock.
@@ -314,11 +319,13 @@ class SessionRecorder:
         self._jsonl_pending = 0
         self._jsonl_flushed_ts = time.time()
 
-    def event(self, type_: str, **fields: Any) -> None:
+    def event(self, type_: str, *, timestamp: float | None = None, flush: bool = False,
+              **fields: Any) -> bool:
         if self._closed or not self.session_dir:
-            return
-        rec = {"ts_unix": time.time(), "ts_iso": _iso(time.time()), "type": type_, **fields}
-        self._jsonl("events", "events.jsonl", rec, "events")
+            return False
+        stamp = time.time() if timestamp is None else timestamp
+        rec = {"ts_unix": stamp, "ts_iso": _iso(stamp), "type": type_, **fields}
+        return self._jsonl("events", "events.jsonl", rec, "events", flush=flush)
 
     # ── быстрые потоки (CSV) ────────────────────────────────────────────────
     def _record_samples(self, key: str, samples: Iterable[tuple[float, Iterable[float]]],

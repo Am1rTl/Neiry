@@ -348,7 +348,10 @@
       </section>
       <section class="card live-controls">${heading('Управление сессией','Запись и метки требуют реального подключения; воспроизведение доступно без устройства')}
         <div class="controls-grid"><div><h3>Запись</h3><p id="live-recording-state">Нет активной записи</p><div class="control-actions">${pButton('Начать запись','start-record','primary')}${pButton('Остановить запись','stop-record')}</div></div>
-        <div><h3>Метка события</h3><p>Добавьте маркер к текущей записи.</p><div class="control-actions"><label for="live-marker" class="screen-reader">Название метки</label><input id="live-marker" class="live-input" maxlength="120" placeholder="Например: глаза закрыты">${pButton('Добавить метку','marker')}</div></div></div>
+        <div><h3>Чекпоинты</h3><p>Момент сохраняется сразу. Название можно добавить позже.</p><div class="control-actions">
+          <button type="button" class="button subtle" data-checkpoint-create aria-keyshortcuts="Alt+M" aria-controls="checkpoint-panel" disabled>Поставить чекпоинт <kbd aria-hidden="true">Alt+M</kbd></button>
+          <button type="button" class="button subtle" data-checkpoint-list aria-controls="checkpoint-panel" disabled>Список</button>
+        </div></div></div>
       </section>`;
   }
   function sessionsPanel() {
@@ -357,6 +360,7 @@
   }
   function previewPanel(which) { return `<section class="card"><div class="offline-icon"><svg class="icon"><use href="#i-wave"/></svg></div><h2>${which==='live'?'Живой монитор':which==='device'?'Подключение устройства':'Управление сессиями'} доступно в запущенном проекте</h2><p class="card-subtitle" style="margin-top:12px">Это автономный HTML-файл со встроенными результатами ранее записанных измерений. В нём нет сервера, WebSocket, поиска Bluetooth или управления записью. Для этих функций запустите NeuroScope через start.sh / start.bat.</p><a class="button primary" style="margin-top:22px" href="#overview" data-go="overview">Вернуться к анализу</a></section>`; }
   function setTopStatus(s) {
+    if (s && 'recording' in s) window.NeuroCheckpoints?.setRecording(s.recording);
     const badge=$('#device-top-status');if (!badge)return;
     const [title,tone]=label(s?.status);
     setMarkup(badge,`<span class="status-pin ${tone}"></span>${esc(title)}${s?.connected?` · ${esc(s.device||'Neiry')}${s.contact?.ready?' · контакт готов':' · контакт не подтверждён'}`:''}`);
@@ -368,10 +372,7 @@
       'start-record':'/api/recording/start','stop-record':'/api/recording/stop','stop-replay':'/api/replay/stop','pause-replay':'/api/replay/pause','resume-replay':'/api/replay/resume'};
     try {
       if (action==='calibration') {openCalibrationSetup();return;}
-      if (action==='marker') {
-        const input=$('#live-marker');const value=input?.value.trim();if(!value){notice('Введите название метки.','error');input?.focus();return;}
-        await api('/api/markers',{method:'POST',body:JSON.stringify({label:value})}); input.value='';notice('Метка добавлена к текущей записи.','success');
-      } else if (action.startsWith('connect:')) {
+      if (action.startsWith('connect:')) {
         await api('/api/device/connect',{method:'POST',body:JSON.stringify({serial:action.slice(8)})}); notice('Подключение начато. Дождитесь подтверждения SDK.');
       } else if(action==='seek-forward') {await api('/api/replay/seek',{method:'POST',body:JSON.stringify({offset_s:(replay?.progress_s||0)+30})});clearSamples();requestChartFrame();notice('Переходим на 30 секунд вперёд.');} else if(action==='reload-sessions') {await loadSessions();return;}
       else if(action.startsWith('replay:')) {
@@ -383,7 +384,9 @@
         await api(`/api/records/${encodeURIComponent(id)}`,{method:'DELETE'});
         await loadSessions(); await ctx.reloadSessions?.(); notice('Запись удалена.','success');return;
       } else if(map[action]) {
-        await api(map[action],{method:'POST'});notice(({scan:'Поиск запущен.',disconnect:'Отключение запрошено.','skip-cal':'Калибровка пропущена.','start-record':'Запись начата.','stop-record':'Запись остановлена.','stop-replay':'Воспроизведение остановлено.'})[action]||'Готово.','success');
+        const result=await api(map[action],{method:'POST'});
+        if (action==='start-record'||action==='stop-record') window.NeuroCheckpoints?.setRecording(result.recording);
+        notice(({scan:'Поиск запущен.',disconnect:'Отключение запрошено.','skip-cal':'Калибровка пропущена.','start-record':'Запись начата.','stop-record':'Запись остановлена.','stop-replay':'Воспроизведение остановлено.'})[action]||'Готово.','success');
       }
       await poll();
     } catch (error) { notice(error.message||'Не удалось выполнить действие.','error'); }
@@ -881,7 +884,6 @@
     const pause=$('#replay-pause');if(pause){pause.hidden=!activeReplay;pause.dataset.action=replay?.paused?'resume-replay':'pause-replay';setText(pause,replay?.paused?'Продолжить':'Пауза');}
     const forward=$('#replay-forward');if(forward)forward.hidden=!activeReplay;
     const start=$('[data-action="start-record"]');if(start)start.disabled=!isConnected||!status?.validity?.eeg||Boolean(status?.recording);
-    const marker=$('[data-action="marker"]');if(marker)marker.disabled=!isConnected||!Boolean(status?.recording);
     const stopRecord=$('[data-action="stop-record"]');if(stopRecord)stopRecord.disabled=!isConnected||!Boolean(status?.recording);
     updateRecordingStatus(status);
     if(status?.sensor_status)updateStreamSummary(status,activeReplay);
@@ -984,7 +986,7 @@
       box.innerHTML=sessionRows.map(s=>{
         const id=s.session_id,meta=s.meta||{},counts=s.summary?.counts||{};
         return `<article class="session-list-row"><div class="session-list-icon"><svg class="icon"><use href="#i-folder"/></svg></div><div class="session-list-data"><strong>${esc(id)}</strong><small>${esc(meta.started_at||meta.started_at_iso||'Сохранённая сессия')} ${s.active?' · Идёт запись':''}</small><div class="session-list-info">${Object.keys(counts).slice(0,4).map(k=>`${esc(k)}: ${fmt(counts[k],0)}`).join(' · ')}</div></div>
-        <div class="session-list-actions"><a class="button subtle" href="#signals" data-session-analysis="${esc(id)}">Анализ</a>${pButton('Воспроизвести','replay:'+id,'subtle',s.active||connected())}<a class="button subtle" href="/api/records/${encodeURIComponent(id)}/download" download>ZIP</a>${pButton('Удалить','delete:'+id,'subtle',s.active)}</div></article>`;
+        <div class="session-list-actions"><a class="button subtle" href="#signals" data-session-analysis="${esc(id)}">Анализ</a><button type="button" class="button subtle" data-checkpoint-list="${esc(id)}" aria-controls="checkpoint-panel">Чекпоинты</button>${pButton('Воспроизвести','replay:'+id,'subtle',s.active||connected())}<a class="button subtle" href="/api/records/${encodeURIComponent(id)}/download" download>ZIP</a>${pButton('Удалить','delete:'+id,'subtle',s.active)}</div></article>`;
       }).join('');
       $$('[data-session-analysis]',box).forEach(a=>a.addEventListener('click',e=>{e.preventDefault();ctx.selectSession?.(a.dataset.sessionAnalysis);location.hash='signals';}));
     }catch(err){if($('#sessions-body'))$('#sessions-body').innerHTML=`<div class="no-device">Ошибка списка записей: ${esc(err.message)}</div>`;}
@@ -1005,6 +1007,7 @@
       statusFingerprint='';box.innerHTML=devicePanel(status);bind();await poll();
     }else if(view==='live'){
       box.innerHTML=livePanel();bind();
+      window.NeuroCheckpoints?.syncControls();
       observePlots();
       openWS(); await poll();
     }else if(view==='sessions'){
