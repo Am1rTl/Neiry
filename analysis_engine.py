@@ -22,6 +22,7 @@ import numpy as np
 from scipy import signal
 
 from cardio_quality import sdk_cardio_issues
+from checkpoints import LABEL_EVENT, checkpoint_index
 
 ANALYSIS_VERSION = "2.3.0"
 SCHEMA_VERSION = "1.0"
@@ -759,6 +760,10 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
     ppg=analyze_ppg(loaded["ppg"],motion,ppg_start-mems_start,cfg)
     impedance=analyze_impedance(loaded["resistances"],origin,cfg)
     events=_read_events(p/"events.jsonl")
+    checkpoints=checkpoint_index(events)
+    events=[checkpoints.get(e.get("checkpoint_id"), e)
+            if e.get("type") == "marker" and isinstance(e.get("checkpoint_id"), str) else e
+            for e in events if e.get("type") != LABEL_EVENT]
     vendor=analyze_vendor(p/"metrics.jsonl",events,origin,loaded["eeg"]["rate"])
     flags=[];observations=[]
     def flag(code,severity,title,detail):flags.append({"code":code,"severity":severity,"title":title,"detail":detail})
@@ -799,7 +804,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
         if audit[name]["index_discontinuities"]:
             flag("index_"+name,"warning",f"Разрыв индекса {name}",f"Непоследовательных переходов индекса: {audit[name]['index_discontinuities']}; предположение равномерной сетки требует проверки.")
     markers=[e for e in events if e.get("type") in {"marker","task","condition"}]
-    if not markers:
+    if not any(not e.get("checkpoint_id") or e.get("label") for e in markers):
         flag("no_condition_markers","info","Нет разметки условий","Нет отметок глаза открыты/закрыты, заданий или событий поведения; связь ритмов с состояниями и причинные эффекты не оцениваются.")
     if not (p/"summary.json").exists():
         flag("missing_session_summary","info","Нет итогового файла закрытия","summary.json отсутствует: окончание сессии определяется по доступным строкам, корректное закрытие записи не подтверждено.")
