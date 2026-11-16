@@ -8,6 +8,7 @@
     feedback: 'Нейрообратная связь',
   };
   const ABORTED = Symbol('aborted');
+  const PAUSED = Symbol('paused');
   const REFERENCE_MS = 360;
   const INTERVAL_MS = 260;
   const STIMULUS_MS = 250;
@@ -75,6 +76,7 @@
       this.path = `${BASE}/${encodeURIComponent(run.id)}`;
       this.controller = new AbortController();
       this.pending = [];
+      this.away = new Set();
       this.sequence = 0;
       this.displayed = null;
       this.lastStatus = '';
@@ -99,13 +101,17 @@
       this.mount();
       const signal = this.controller.signal;
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden) void this.stop('tab_hidden');
+        this.setAway('tab', document.hidden);
       }, {signal});
+      this.setAway('tab', document.hidden);
+      this.setAway('section', !this.root.isConnected);
       window.addEventListener('pagehide', () => { void this.stop('page_closed'); }, {signal});
       this.flushTimer = setInterval(() => {
         this.flush().catch(() => this.checkRun());
       }, 1200);
-      this.heartbeatTimer = setInterval(() => this.event('heartbeat'), 15000);
+      this.heartbeatTimer = setInterval(() => {
+        if (!this.away.size) this.event('heartbeat');
+      }, 15000);
 
       this.execute().then(() => {
         if (!signal.aborted) void this.finish('completed');
@@ -131,6 +137,9 @@
             <span class="exp-run-count"></span>
           </div>
           <div class="exp-run-content"></div>
+          <p class="exp-run-status" data-format="warn" role="status" hidden data-exp-pause>
+            Протокол на паузе. При возвращении текущий блок или попытка начнётся заново.
+          </p>
           <footer class="exp-run-status" aria-live="polite"></footer>
         </section>`;
       const get = selector => this.root.querySelector(selector);
@@ -139,7 +148,8 @@
       this.progress = get('progress');
       this.count = get('.exp-run-count');
       this.body = get('.exp-run-content');
-      this.statusNode = get('.exp-run-status');
+      this.statusNode = get('footer.exp-run-status');
+      this.pauseNode = get('[data-exp-pause]');
       this.stopButton.addEventListener('click', () => void this.stop());
       this.heading.focus({preventScroll: true});
     }
@@ -191,8 +201,52 @@
       }
     }
 
+    setAway(source, away) {
+      if (this.controller.signal.aborted) return;
+      const wasAway = this.away.size > 0;
+      if (away) this.away.add(source);
+      else this.away.delete(source);
+      const isAway = this.away.size > 0;
+      if (wasAway === isAway) return;
+      this.body.hidden = isAway;
+      this.pauseNode.hidden = !isAway;
+      if (isAway) {
+        this.stepController?.abort(PAUSED);
+        clearTimeout(this.probeTimer);
+        if (this.trial) this.recordTrial(this.trial, 'view_away');
+        this.trial = null;
+        // Preserve only the visible portions of the overall visual task.
+        this.closePhase(this.run.kind === 'visual' ? '' : 'view_away');
+        this.event('pause', {reason: 'view_away'});
+      } else {
+        this.event('resume', {reason: 'view_returned'});
+        this.wakeStep?.();
+      }
+      this.drain().catch(() => this.checkRun());
+    }
+
+    async step(task) {
+      const run = this.controller.signal;
+      for (;;) {
+        while (this.away.size && !run.aborted) {
+          await new Promise(resolve => { this.wakeStep = resolve; });
+          this.wakeStep = null;
+        }
+        if (run.aborted) throw ABORTED;
+        this.stepController = new AbortController();
+        this.stepSignal = AbortSignal.any([run, this.stepController.signal]);
+        try {
+          return await task();
+        } catch (error) {
+          if (error !== PAUSED) throw error;
+        } finally {
+          this.stepController = this.stepSignal = null;
+        }
+      }
+    }
+
     openPhase(label, index, duration_s, details = {}) {
-      this.phase = {label, index};
+      this.phase = {label, index, phase_id: `${this.run.id}-phase-${this.sequence + 1}`};
       this.event('phase_start', {...this.phase, ...(duration_s ? {duration_s} : {}), ...details});
     }
 
@@ -203,10 +257,10 @@
     }
 
     wait(duration) {
-      if (this.controller.signal.aborted) return Promise.reject(ABORTED);
-      const signal = this.controller.signal;
+      const signal = this.stepSignal || this.controller.signal;
+      if (signal.aborted) return Promise.reject(signal.reason);
       return new Promise((resolve, reject) => {
-        const stop = () => { clearTimeout(timer); reject(ABORTED); };
+        const stop = () => { clearTimeout(timer); reject(signal.reason); };
         const timer = setTimeout(() => {
           signal.removeEventListener('abort', stop);
           resolve();
@@ -216,10 +270,10 @@
     }
 
     paint(draw) {
-      if (this.controller.signal.aborted) return Promise.reject(ABORTED);
-      const signal = this.controller.signal;
+      const signal = this.stepSignal || this.controller.signal;
+      if (signal.aborted) return Promise.reject(signal.reason);
       return new Promise((resolve, reject) => {
-        const stop = () => { cancelAnimationFrame(frame); reject(ABORTED); };
+        const stop = () => { cancelAnimationFrame(frame); reject(signal.reason); };
         const frame = requestAnimationFrame(() => {
           signal.removeEventListener('abort', stop);
           try {
@@ -288,7 +342,6 @@
     }
 
     async execute() {
-      if (document.hidden) { await this.stop('tab_hidden'); return; }
       if (this.run.kind === 'alpha') await this.alphaTask();
       if (this.run.kind === 'visual') await this.visualTask();
       if (this.run.kind === 'feedback') await this.feedbackTask();
@@ -301,7 +354,7 @@
       this.audio = this.sound && typeof this.sound.createOscillator === 'function' ? this.sound
         : this.sound ? ExperimentRunner.primeSound() : null;
       this.status(this.audio ? 'Два тона — открыть глаза. Один тон — закрыть.' : 'Переходы между этапами показаны на экране.');
-      await this.prep('Устройтесь удобно и смотрите перед собой');
+      await this.step(() => this.prep('Устройтесь удобно и смотрите перед собой'));
       if (this.audio && this.audio.state !== 'running') {
         this.status('Браузер заблокировал звук. Переходы между этапами показаны на экране.', 'warn');
       }
@@ -316,16 +369,18 @@
       const timer = panel.querySelector('output');
       const total = 2 * repeats;
       for (let index = 0; index < total; index++) {
-        const closed = index % 2 === 1;
-        this.openPhase(closed ? 'eyes_closed' : 'eyes_open', index, seconds);
-        panel.dataset.closed = String(closed);
-        heading.textContent = closed ? 'Закройте глаза' : 'Откройте глаза';
-        this.cue(closed ? 'closed' : 'open');
-        await this.countdown(seconds, (remaining, progress) => {
-          if (timer.textContent !== String(remaining)) timer.textContent = remaining;
-          this.setProgress((index + progress) / total, `Блок ${index + 1} из ${total}`);
+        await this.step(async () => {
+          const closed = index % 2 === 1;
+          this.openPhase(closed ? 'eyes_closed' : 'eyes_open', index, seconds);
+          panel.dataset.closed = String(closed);
+          heading.textContent = closed ? 'Закройте глаза' : 'Откройте глаза';
+          this.cue(closed ? 'closed' : 'open');
+          await this.countdown(seconds, (remaining, progress) => {
+            if (timer.textContent !== String(remaining)) timer.textContent = remaining;
+            this.setProgress((index + progress) / total, `Блок ${index + 1} из ${total}`);
+          });
+          this.closePhase();
         });
-        this.closePhase();
       }
       this.cue('complete');
     }
@@ -415,11 +470,12 @@
     async awaitResponse(trial) {
       if (trial.response) return;
       const duration = Math.max(0, trial.onset + RESPONSE_MS - stamp());
-      const signal = this.controller.signal;
+      const signal = this.stepSignal;
+      if (signal.aborted) throw signal.reason;
       await new Promise((resolve, reject) => {
         const abort = () => {
           clearTimeout(timeout);
-          reject(ABORTED);
+          reject(signal.reason);
         };
         const done = () => {
           signal.removeEventListener('abort', abort);
@@ -441,23 +497,27 @@
       const stimulus = this.number('stimulus_ms', STIMULUS_MS, 100, 500);
       this.gratings = new Map();
       this.status('Сравните две решётки. После второй ответьте стрелкой или нажмите кнопку.');
-      await this.prep('В какую сторону повернулась вторая решётка?');
+      await this.step(() => this.prep('В какую сторону повернулась вторая решётка?'));
       this.visualScreen();
       for (const item of tasks) {
         this.drawGrating(item.base_orientation_deg);
         this.drawGrating(item.base_orientation_deg + item.signed_offset_deg);
       }
       this.fixation();
-      this.openPhase('visual_task', 0, undefined, {
+      const context = {
         stimulus_css_px: this.canvas.getBoundingClientRect().width,
         device_pixel_ratio: window.devicePixelRatio,
         planned_reference_ms: REFERENCE_MS,
         planned_stimulus_ms: stimulus,
         response_timeout_ms: RESPONSE_MS,
-      });
+      };
       for (let index = 0; index < count; index++) {
-        this.setProgress(index / count, `Попытка ${index + 1} из ${count}`);
-        await this.visualTrial(tasks[index], index, training, stimulus);
+        await this.step(() => {
+          if (!this.phase) this.openPhase('visual_task', 0, undefined, context);
+          this.setProgress(index / count, `Попытка ${index + 1} из ${count}`);
+          return this.visualTrial(tasks[index], index, training, stimulus);
+        });
+        if (index + 1 < count) await this.step(() => this.wait(training ? 430 : 320));
       }
       this.setProgress(1, `Попытка ${count} из ${count}`);
       this.closePhase();
@@ -490,7 +550,6 @@
       else if (training) this.prompt.textContent = trial.response === (parameters.signed_offset_deg > 0 ? 'right' : 'left')
         ? 'Верно' : 'Ответ неверный';
       else this.prompt.textContent = 'Ответ записан';
-      await this.wait(training ? 430 : 320);
     }
 
     async feedbackTask() {
@@ -500,12 +559,12 @@
       const total = calibration + duration;
       if (demo) {
         this.status('Демо-сигнал');
-        await this.prep('Смотрите на центр экрана');
+        await this.step(() => this.prep('Смотрите на центр экрана'));
       } else {
-        await this.feedbackPhase('calibration', 0, calibration, false, 0, total);
+        await this.step(() => this.feedbackPhase('calibration', 0, calibration, false, 0, total));
       }
       const visible = ['live', 'control'].includes(this.run.stage);
-      await this.feedbackPhase(this.run.stage, Number(!demo), duration, visible, calibration, total);
+      await this.step(() => this.feedbackPhase(this.run.stage, Number(!demo), duration, visible, calibration, total));
     }
 
     async feedbackPhase(label, index, duration, visible, elapsed, total) {
@@ -525,13 +584,14 @@
         ? 'Ожидаем первый сигнал' : 'Обратная связь в этом блоке скрыта');
       this.openPhase(label, index, duration);
       const activePhase = this.phase;
+      const signal = this.stepSignal;
       const poll = async () => {
-        const stillActive = () => !this.controller.signal.aborted && this.phase === activePhase;
+        const stillActive = () => !signal.aborted && this.phase === activePhase;
         if (!stillActive()) return;
         const started = stamp();
         let data;
         try {
-          data = await this.request(this.path + '/feedback', {signal: this.controller.signal});
+          data = await this.request(this.path + '/feedback', {signal});
         } catch (error) {
           if (!stillActive()) return;
           data = {valid: false, alpha_valid: false, reason: 'connection_error'};
@@ -544,7 +604,7 @@
         }
         const alphaValid = Boolean(data.alpha_valid ?? (data.valid && Number.isFinite(data.alpha)));
         this.event('feedback', {
-          label, value: visible ? this.displayed : null,
+          label, phase_id: activePhase.phase_id, value: visible ? this.displayed : null,
           displayed: Boolean(visible && this.displayed !== null),
           display_updated: Boolean(visible && displayValid),
           alpha: Number.isFinite(data.alpha) ? data.alpha : null,
@@ -602,7 +662,8 @@
     }
 
     release(complete = false) {
-      this.controller.abort();
+      this.controller.abort(ABORTED);
+      this.wakeStep?.();
       clearInterval(this.flushTimer);
       clearInterval(this.heartbeatTimer);
       clearTimeout(this.probeTimer);

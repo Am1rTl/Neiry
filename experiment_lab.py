@@ -37,6 +37,19 @@ MAX_DURATION_S = 7200
 MAX_EVENTS = 48000
 
 
+def measured_feedback(events: list[dict]) -> list[dict]:
+    """Keep historical samples and exclude attempts interrupted by a pause."""
+    interrupted = {
+        event["phase_id"] for event in events
+        if event.get("type") == "phase_end" and event.get("reason") == "view_away"
+        and isinstance(event.get("phase_id"), str)
+    }
+    return [
+        event for event in events if event.get("type") == "feedback"
+        and (not isinstance(event.get("phase_id"), str) or event["phase_id"] not in interrupted)
+    ]
+
+
 def _ms() -> float:
     return round(time.time() * 1000, 3)
 
@@ -123,6 +136,7 @@ class RunningExperiment:
     started: float = field(default_factory=time.monotonic)
     touched: float = field(default_factory=time.monotonic)
     event_count: int = 0
+    paused: bool = False
     phase_at: float | None = None
     phase_label: str = ""
     calibration_at: float | None = None
@@ -251,7 +265,7 @@ class ExperimentLab:
         now = time.monotonic()
         if active.mode == "live" and self._current_recorder(active.session_id) is None:
             self._finish_locked("aborted", "recording_stopped")
-        elif now - active.touched > MAX_IDLE_S:
+        elif not active.paused and now - active.touched > MAX_IDLE_S:
             self._finish_locked("aborted", "client_inactive")
         elif now - active.started > MAX_DURATION_S:
             self._finish_locked("aborted", "time_limit")
@@ -289,8 +303,8 @@ class ExperimentLab:
     @staticmethod
     def _trace(events: list[dict]) -> list[tuple[float, float | None, bool]]:
         points = [(row["at_ms"], row.get("value"), bool(row.get("valid")))
-                  for row in events
-                  if row.get("type") == "feedback" and row.get("displayed", True)
+                  for row in measured_feedback(events)
+                  if row.get("displayed", True)
                   and row.get("label") not in {"baseline", "calibration", "transfer", "followup"}
                   and (_valid_number(row.get("value")) or row.get("valid") is False)]
         if not points:
@@ -426,9 +440,16 @@ class ExperimentLab:
                     self.active.phase_at = event["at_ms"]
                     if event["label"] == "calibration":
                         self.active.calibration_at = event["at_ms"]
+                        self.active.calibration.clear()
+                        self.active.last_calibration_ms = -math.inf
+                        self.active.baseline_power = None
+                        self.active.band = ALPHA_BAND
+                        self.active.band_source = "fixed"
                 elif event["type"] == "phase_end" and event["label"] == self.active.phase_label:
                     self.active.phase_label = ""
                     self.active.phase_at = None
+                elif event["type"] in {"pause", "resume"}:
+                    self.active.paused = event["type"] == "pause"
                 if recorder is not None and event["type"] != "heartbeat":
                     recorder.event("experiment_lab_event", run_id=ident, event=event)
             return {"accepted": len(inserted), "status": run["status"]}
@@ -489,6 +510,8 @@ class ExperimentLab:
             run = self.active
             if run is None or run.id != ident or run.kind != "feedback":
                 raise HTTPException(409, "Нет активной сессии нейрофидбека")
+            if run.paused:
+                raise HTTPException(409, "Протокол на паузе")
             run.touched = time.monotonic()
             elapsed = run.touched - run.started
             if run.mode == "demo":

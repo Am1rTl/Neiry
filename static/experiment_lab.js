@@ -186,7 +186,7 @@
       if (!window.NeuroExperimentRunner) throw Error('Модуль экспериментов не загрузился. Обнови страницу.');
       if (kind==='alpha' && s.sound) cue = window.NeuroExperimentRunner.primeSound();
       const clock = await clockSync(s);
-      if (!current(s)) return;
+      if (s!==state) return;
       if (form.mode==='live' && !clock) throw Error('Часы браузера и сервера не удалось сопоставить. Повтори запуск.');
       const settings = {...(kind==='alpha' ? {block_s:form.mode==='demo'?4:Number(form.block_s),repeats:form.mode==='demo'?2:Number(form.repeats),sound:s.sound} :
         kind==='visual' ? {trial_count:form.mode==='demo'?12:Number(form.trial_count),trained_orientation:Number(form.trained_orientation),stimulus_ms:250} :
@@ -194,7 +194,7 @@
         clock_offset_ms:clock?.offset ?? null, clock_round_trip_ms:clock?.rtt ?? null,
         time_zone:'Europe/Moscow', timing:clock ? 'browser_monotonic_software_clock' : 'browser_unsynchronized'};
       run = await request(s,'/runs',post({kind,mode:form.mode,stage:form.stage,context,settings}));
-      if (!current(s)) { await request(s,`${path(run.id)}/finish`,post({status:'aborted'})); return; }
+      if (s!==state) { await request(s,`${path(run.id)}/finish`,post({status:'aborted'})); return; }
       s.confirmed=false;
       s.mount.innerHTML='<div class="ex-shell" data-ex-runtime></div>';
       const runtime = $('[data-ex-runtime]',s.mount);
@@ -213,12 +213,13 @@
   }
   function finished(s, doc) {
     s.runner=null;
-    if (!current(s)) return;
-    if (doc.local_unsaved_events) s.notify(`Часть событий не дошла до сервера (${doc.local_unsaved_events}).`, 'error');
+    if (s!==state) return;
+    if (current(s) && doc.local_unsaved_events) s.notify(`Часть событий не дошла до сервера (${doc.local_unsaved_events}).`, 'error');
     s.runs=[doc,...s.runs.filter(row=>row.id!==doc.id)];
     s.tab='history';
     s.historyMode=doc.mode;
     s.resultId=doc.id;
+    if (!current(s)) return;
     render(s);
     refreshRuns(s);
     refreshStatus(s);
@@ -446,8 +447,15 @@
     });
   }
   function open(options) {
-    leave();
     const content=$('#content');
+    if(state){
+      const s=state;
+      content.replaceChildren(s.mount);
+      s.runner?.setAway('section',false);
+      if(!s.runner&&!s.starting){render(s);refreshStatus(s);refreshRuns(s,true);}
+      s.timer ??= setInterval(()=>{if(!s.runner&&!s.starting)refreshStatus(s);},2500);
+      return;
+    }
     if(options.preview){content.innerHTML='<section class="ex-panel"><h2>Лаборатория экспериментов</h2><p>Для запуска протоколов открой NeuroScope на локальном сервере.</p></section>';return;}
     content.innerHTML='<div id="experiment-lab"></div>';
     const s={...options,mount:$('#experiment-lab'),tab:'setup',kind:'alpha',historyMode:'live',compareMode:'live',compareKind:'alpha',
@@ -459,9 +467,13 @@
   }
   function leave() {
     if (!state) return;
-    const s=state;state=null;
-    clearInterval(s.timer);s.chart?.destroy();
-    s.runner?.stop()?.catch?.(()=>{});
+    const s=state;
+    clearInterval(s.timer);s.timer=null;
+    s.chart?.destroy();s.chart=null;
+    if(s.runner||s.starting){
+      s.runner?.setAway('section',true);
+      s.mount.remove();
+    }else state=null;
   }
   window.NeuroExperimentLab={open,leave};
 })();

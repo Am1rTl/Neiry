@@ -25,6 +25,20 @@ class LiveDiagnosticsTests(unittest.TestCase):
         self.quality = self.enterContext(patch("live_quality.assess_eeg", return_value={"available": True, "channels": []}))
         self.spectrogram = self.enterContext(patch("live_quality.live_spectrogram", return_value={"available": True, "channels": []}))
 
+    def test_monitor_reconnect_receives_requested_history_then_only_new_samples(self):
+        default = server._WSDelta(lean=True)
+        returning = server._WSDelta(lean=True, history_s=15)
+        snap = server._build_tick_snapshot((default, returning))
+        first = server._build_client_tick(snap, default)["eeg_stream"]
+        restored = server._build_client_tick(snap, returning)["eeg_stream"]
+        self.assertEqual((first["n"], restored["n"]), (1250, 1500))
+        self.assertEqual(restored["sample_index"], 0)
+        self.state.eeg.append([2.0])
+        self.state.eeg_t.append(6.0)
+        self.state.stream_counts["eeg"] += 1
+        tick = server._build_client_tick(server._build_tick_snapshot((returning,)), returning)
+        self.assertEqual(tick["eeg_stream"]["samples"], [2.0])
+
     def test_combined_endpoint_only_computes_requested_work(self):
         client = TestClient(server.app)
         result = client.get("/api/live/diagnostics?quality=false&spectrogram=false").json()
