@@ -53,7 +53,7 @@ def build(root: Path | None = None) -> Path:
         )
     html = html.replace('<script defer src="/static/vendor/chart.umd.min.js"></script>', '')
     html = html.replace('<script defer src="/static/lab.js"></script>', '')
-    modules = ("live", "studio", "experiment_runner", "experiment_lab", "checkpoints")
+    modules = ("brain_map", "paired_panel", "live", "studio", "experiment_runner", "experiment_lab", "checkpoints")
     for module in modules:
         html = html.replace(f'<script defer src="/static/{module}.js"></script>', '')
     chart = (static / "vendor" / "chart.umd.min.js").read_text(encoding="utf-8").replace("</script", "<\\/script")

@@ -43,3 +43,6 @@ jobs:
           node --check static/experiment_lab.js
           node --check static/experiment_runner.js
           node --check static/checkpoints.js
+          node --check static/brain_map.js
+          node --check static/paired_panel.js
+          node --check static/common.js

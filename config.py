@@ -46,7 +46,7 @@ class Settings:
 
     HOST: str = "127.0.0.1"
     PORT: int = 8000
-    EEG_WINDOW: int = 7500    # ~30 с при 250 Гц — запас под live+history
+    EEG_WINDOW: int = 10000   # 40 с при 250 Гц для парного анализа ЭЭГ
     PPG_WINDOW: int = 3000    # ~30 с при 100 Гц
     MEMS_WINDOW: int = 7500   # ~30 с при 250 Гц
     RES_WINDOW: int = 256
@@ -65,6 +65,7 @@ class Settings:
     CONTACT_MIN_UPDATES: int = 3
     CONTACT_MIN_CHANNELS: int = 2
     METRIC_STALE_SECONDS: float = 8.0
+    SDK_STATE_STALE_SECONDS: float = 180.0  # Редкие обновления эмоций/продуктивности SDK.
     PHY_STALE_SECONDS: float = 75.0  # PhysiologicalStates обычно обновляется раз в минуту.
     EEG_MIN_SAMPLES: int = 100  # пороги sensor_status: сколько точек считать «есть сигнал»
     PPG_MIN_SAMPLES: int = 50
@@ -79,7 +80,7 @@ class Settings:
         return cls(
             HOST=_env_str("HOST", "127.0.0.1"),
             PORT=_env_int("PORT", 8000),
-            EEG_WINDOW=_env_int("EEG_WINDOW", 7500),
+            EEG_WINDOW=_env_int("EEG_WINDOW", 10000),
             PPG_WINDOW=_env_int("PPG_WINDOW", 3000),
             MEMS_WINDOW=_env_int("MEMS_WINDOW", 7500),
             RES_WINDOW=_env_int("RES_WINDOW", 256),
@@ -100,6 +101,7 @@ class Settings:
             CONTACT_MIN_UPDATES=_env_int("CONTACT_MIN_UPDATES", 3),
             CONTACT_MIN_CHANNELS=_env_int("CONTACT_MIN_CHANNELS", 2),
             METRIC_STALE_SECONDS=_env_float("METRIC_STALE_SECONDS", 8.0),
+            SDK_STATE_STALE_SECONDS=_env_float("SDK_STATE_STALE_SECONDS", 180.0),
             PHY_STALE_SECONDS=_env_float("PHY_STALE_SECONDS", 75.0),
             EEG_MIN_SAMPLES=_env_int("EEG_MIN_SAMPLES", 100),
             PPG_MIN_SAMPLES=_env_int("PPG_MIN_SAMPLES", 50),

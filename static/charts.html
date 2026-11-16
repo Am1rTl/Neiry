@@ -81,7 +81,7 @@ footer { padding: 8px 24px 18px; color: var(--text-dim); font-size: 10px; border
   <a href="/sessions" data-i18n="navSessions">🗂 SESSIONS</a>
   <div id="status-chip" class="status-chip searching">…</div>
   <div id="battery" class="status-chip">batt: —</div>
-  <span class="chip" id="chip-stale" title="Возраст данных (t_server в тике)"><span class="dot"></span><span class="stale-val">—</span></span>
+  <span class="chip" id="chip-stale" title="Поступление данных"><span class="dot"></span><span class="stale-val">—</span></span>
   <div style="flex:1"></div>
   <div id="info" style="color:var(--text-dim); font-size:11px;"></div>
   <button id="lang-toggle" class="chip">RU</button>
@@ -557,10 +557,15 @@ function updateSetupOverlay(d, force) {
 }
 
 function sendCmd(action) { wsHandle.send({ action }); }
-document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
+function startCalibration() {
+  if (!window.confirm(t('confirmCalibrationEyes'))) return false;
+  wsHandle.send({ action: 'start_calibration', confirmed_closed_eyes: true });
+  return true;
+}
+document.getElementById('btn-start-cal').addEventListener('click', startCalibration);
 document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
-document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
+document.getElementById('btn-retry-cal').addEventListener('click', startCalibration);
 </script>
 </body>
 </html>

@@ -135,7 +135,7 @@ main { position: relative; z-index: 2; padding: 20px 28px 60px; display: grid; g
   <span class="chip" id="battery">🔋 <span class="lvl">—</span>%</span>
   <span class="chip" id="chip-mode"><span class="dot"></span><span data-i18n="mode">mode</span> <span id="mode-val">—</span></span>
   <span class="chip" id="chip-cal">⚙ <span id="cal-val">not calibrated</span></span>
-  <span class="chip" id="chip-stale" title="Возраст данных (t_server в тике)"><span class="dot"></span><span class="stale-val">—</span></span>
+  <span class="chip" id="chip-stale" title="Поступление данных"><span class="dot"></span><span class="stale-val">—</span></span>
   <a class="chip" id="chip-rec" href="/api/records" target="_blank" style="text-decoration:none; color:inherit;" title="Все показатели сессии пишутся в records/">● REC <span id="rec-val">—</span></a>
   <button class="chip" id="btn-recal" style="cursor:pointer; background:transparent; color:inherit; font:inherit;" data-i18n="recalibrate">↻ Перекалибровать</button>
   <button class="chip" id="btn-marker" style="cursor:pointer; background:transparent; color:inherit; font:inherit;" title="Отправить маркер в запись">🔖 <span data-i18n="markerBtn">маркер</span></button>
@@ -586,17 +586,22 @@ function handleTick(d) {
 })();
 
 function sendCmd(action) { wsHandle.send({ action }); }
+function startCalibration() {
+  if (!window.confirm(t('confirmCalibrationEyes'))) return false;
+  wsHandle.send({ action: 'start_calibration', confirmed_closed_eyes: true });
+  return true;
+}
 
-document.getElementById('btn-start-cal').addEventListener('click', () => sendCmd('start_calibration'));
+document.getElementById('btn-start-cal').addEventListener('click', startCalibration);
 document.getElementById('btn-recal').addEventListener('click', () => {
-  sendCmd('start_calibration');
+  if (!startCalibration()) return;
   ov.startTimer(Date.now() / 1000);
   lastOvState = 'running';
   ov.showState('running');
 });
 document.getElementById('btn-skip-cal').addEventListener('click', () => sendCmd('skip_calibration'));
 document.getElementById('btn-skip-cal-2').addEventListener('click', () => sendCmd('skip_calibration'));
-document.getElementById('btn-retry-cal').addEventListener('click', () => sendCmd('start_calibration'));
+document.getElementById('btn-retry-cal').addEventListener('click', startCalibration);
 document.getElementById('btn-marker').addEventListener('click', () => {
   const label = prompt(t('markerPrompt'));
   if (label && label.trim()) wsHandle.send({ action: 'add_marker', label: label.trim() });

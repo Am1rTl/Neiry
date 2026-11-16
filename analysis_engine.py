@@ -23,8 +23,9 @@ from scipy import signal
 
 from cardio_quality import sdk_cardio_issues
 from checkpoints import LABEL_EVENT, checkpoint_index
+from paired_eeg import analyze_pair
 
-ANALYSIS_VERSION = "2.3.0"
+ANALYSIS_VERSION = "2.4.0"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -757,6 +758,23 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
     known_units={"V":"V","mV":"mV","uV":"µV","µV":"µV","μV":"µV"}
     unit_label=known_units.get(declared) if isinstance(declared,str) else None
     eeg=analyze_eeg(loaded["eeg"],motion,eeg_start-mems_start,cfg,unit_label)
+    eeg_stream = loaded["eeg"]
+    pair_channels = eeg["channels"]
+    paired_mask = None
+    if len(pair_channels) == 2 and eeg_stream["rate"] > 0:
+        epoch = int(round(cfg.epoch_s * eeg_stream["rate"]))
+        hop = int(round(cfg.hop_s * eeg_stream["rate"]))
+        if epoch >= 8 and hop > 0:
+            left, right = (ch["timeline"] for ch in pair_channels)
+            # Match each independent epoch to the offline quality window at
+            # the same sample. The check includes sample-index continuity.
+            paired_mask = [
+                start % hop == 0 and start // hop < min(len(left), len(right))
+                and left[start // hop]["usable"] and right[start // hop]["usable"]
+                for start in range(0, len(eeg_stream["values"]) - epoch + 1, epoch)
+            ]
+    paired = analyze_pair(eeg_stream["values"], eeg_stream["rate"], epoch_s=cfg.epoch_s,
+                          names=eeg_stream["columns"], usable_window=paired_mask)
     ppg=analyze_ppg(loaded["ppg"],motion,ppg_start-mems_start,cfg)
     impedance=analyze_impedance(loaded["resistances"],origin,cfg)
     events=_read_events(p/"events.jsonl")
@@ -803,6 +821,8 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
     for name in ("eeg","ppg","mems"):
         if audit[name]["index_discontinuities"]:
             flag("index_"+name,"warning",f"Разрыв индекса {name}",f"Непоследовательных переходов индекса: {audit[name]['index_discontinuities']}; предположение равномерной сетки требует проверки.")
+    if eeg["available"] and len(pair_channels) == 2 and not paired["available"]:
+        flag("paired_unavailable", "info", "Парный анализ ЭЭГ ограничен", paired["reason"])
     markers=[e for e in events if e.get("type") in {"marker","task","condition"}]
     if not any(not e.get("checkpoint_id") or e.get("label") for e in markers):
         flag("no_condition_markers","info","Нет разметки условий","Нет отметок глаза открыты/закрыты, заданий или событий поведения; связь ритмов с состояниями и причинные эффекты не оцениваются.")
@@ -828,6 +848,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
        "alpha":"Локальный максимум строго внутри 8–13 Гц, log-PSD prominence≥3 dB и ≥15 прошедших окон. Если >50% соседних отсчётов одинаковы или медиана уровней в окне <20, alpha_peak_hz скрыт, численный кандидат только в alpha_peak. Это эвристика ограничения квантования. Отдельное моделирование апериодического фона и реактивность не выполнены.",
        "entropy":"Shannon entropy распределения мощности 1–45 Гц, нормированная на log(число частотных отсчётов); зависит от параметров PSD, шума и фильтрации, не мера интеллекта.",
        "advanced":"Исследовательские Hjorth и линейный log-PSD наклон по отобранным окнам без сильного квантования; это НЕ параметрическая модель specparam и не оценка возбуждения/торможения мозга.",
+       "paired_eeg":"MSC, |ImCoh| и wPLI двух биполярных отведений по неперекрывающимся окнам. Требуются не менее 8 и не менее 50% прошедших парных окон.",
        "ppg":ppg.get("method","Недоступно"),
        "timestamps":"Сигналы анализируются по порядку строк и номинальной частоте. Legacy callback ts_unix имеет обратные скачки. Начальные метки только грубо совмещают MEMS и EEG/PPG; аппаратная синхронизация неизвестна.",
        "comparisons":"Описательное сравнение записей; перекрывающиеся окна и строки SDK зависимы. P-values, популяционные нормы, диагнозы и причинные выводы не вычисляются.",
@@ -840,7 +861,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
            "streams":audit,"sample_rates":rates,"markers_count":len(markers),"events":sanitize(events)},
        "quality":{"status":"limited" if eeg["available"] else "no_eeg","spectral_interpretability":eeg.get("spectral_interpretability","unavailable"),"flags":flags,"usable_eeg_pct":quality_pct,
                   "usable_eeg_denominator":"Среднее по каналам процентов перекрывающихся 4-секундных окон с шагом 2 с. Это не процент чистого времени, не независимые наблюдения и не оценка здоровья."},
-       "eeg":eeg,"ppg":ppg,"motion":motion,"impedance":impedance,"vendor":vendor,
+       "eeg":eeg,"paired_eeg":paired,"ppg":ppg,"motion":motion,"impedance":impedance,"vendor":vendor,
        "observations":observations,
        "quick_review":_quick_review(audit,eeg,ppg,motion,impedance,vendor["acquisition"],cfg),
        "limitations":[

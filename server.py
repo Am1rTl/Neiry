@@ -309,14 +309,13 @@ def _nfb_user_state_impl(_nfb, state):
         log.warning("[cb] _nfb_user_state_impl EXC: %r", exc)
 
 
-# Имена потоков эмоций в SDK (focus/chill/stress/anger) отличаются от имён
-# дашборда — единый словарь соответствия, чтобы маппинг жил в одном месте.
-_EMOTION_MAP = {
-    "attention": "focus",
-    "relaxation": "chill",
-    "cognitiveLoad": "stress",
-    "cognitiveControl": "anger",
-    "selfControl": "selfControl",
+# Названия модельных показателей различаются между версиями Capsule.
+_EMOTION_FIELDS = {
+    "attention": ("focus", "attention"),
+    "relaxation": ("chill", "relaxation"),
+    "cognitiveLoad": ("stress", "cognitiveLoad"),
+    "cognitiveControl": ("anger", "cognitiveControl"),
+    "selfControl": ("selfControl",),
 }
 
 
@@ -449,6 +448,8 @@ def _stream_freshness_limit(name: str) -> float:
         return settings.CONTACT_STALE_SECONDS
     if name == "phy":
         return settings.PHY_STALE_SECONDS
+    if name in ("emotions", "prod"):
+        return settings.SDK_STATE_STALE_SECONDS
     return settings.METRIC_STALE_SECONDS
 
 
@@ -804,7 +805,20 @@ def on_ppg(cardio, ppg) -> None:
 
 def on_emotions_states(emotion, states) -> None:
     try:
-        d = {dst: float(getattr(states, src)) for dst, src in _EMOTION_MAP.items()}
+        d = {}
+        for destination, aliases in _EMOTION_FIELDS.items():
+            for alias in aliases:
+                try:
+                    raw = states.get(alias) if isinstance(states, dict) else getattr(states, alias)
+                    value = float(raw)
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    continue
+                if math.isfinite(value):
+                    d[destination] = value
+                    break
+        if not d:
+            return
+        _cb_log("emot", "fields=" + ",".join(d))
         d["t"] = S.now()
         with STATE_LOCK:
             S.latest_emotions = d
@@ -814,7 +828,6 @@ def on_emotions_states(emotion, states) -> None:
         rec = RECORDER
         if rec:
             rec.record_metric("emotions", d)
-        _cb_log("emot", f"attn={d['attention']:.2f} relax={d['relaxation']:.2f} cogL={d['cognitiveLoad']:.2f} cogC={d['cognitiveControl']:.2f}")
     except BaseException as exc:
         log.warning("[cb] on_emotions_states EXC: %r", exc)
 
@@ -1657,7 +1670,7 @@ def _watchdog_tick() -> None:
         age = _data_age_s()
         connected = S._device_ready and S.status == "connected"
         if connected and age is not None and age > LOST_TIMEOUT_S:
-            S.status_message = (f"Устройство подключено, но данные не обновлялись {age:.0f} с. "
+            S.status_message = ("Устройство подключено, но поток приостановлен. "
                                 "Проверьте посадку и контакт электродов.")
     rec = RECORDER
     if rec is not None and rec.active:
@@ -1867,7 +1880,8 @@ async def api_device_reconnect_settings(payload: dict[str, Any]) -> dict[str, An
     return _device_status_payload()
 
 
-def _queue_calibration(mode: str, *, guided: bool, auto_record: bool = True) -> None:
+def _queue_calibration(mode: str, *, guided: bool, confirmed_closed_eyes: bool,
+                       auto_record: bool = True) -> None:
     if EXPERIMENTS.status()["state"] == "running":
         raise HTTPException(409, "Завершите эксперимент перед калибровкой.")
     with STATE_LOCK:
@@ -1881,6 +1895,8 @@ def _queue_calibration(mode: str, *, guided: bool, auto_record: bool = True) -> 
             raise HTTPException(409, "Переподключите повязку перед повторной калибровкой.")
         if not _contact_locked()["calibration_allowed"]:
             raise HTTPException(409, "Контакт электродов ещё не стабилен. Дождитесь готовности и повторите.")
+        if not confirmed_closed_eyes:
+            raise HTTPException(400, "Подтвердите готовность закрыть глаза по сигналу и оставаться неподвижным.")
         rec = RECORDER
         S._calibration_run = CalibrationRun(mode, time.monotonic() + (CUE_SECONDS if guided else 0.0),
                                              rec.session_id if rec and rec.active else None,
@@ -1905,7 +1921,8 @@ async def api_calibration_start(payload: dict[str, Any] | None = None) -> dict[s
     auto_record = (payload or {}).get("auto_record", True)
     if not isinstance(auto_record, bool):
         raise HTTPException(400, "auto_record должен быть логическим значением.")
-    _queue_calibration(mode, guided=payload is not None, auto_record=auto_record)
+    _queue_calibration(mode, guided=True, auto_record=auto_record,
+                       confirmed_closed_eyes=(payload or {}).get("confirmed_closed_eyes") is True)
     return {"accepted": True, "calibration_phase": "queued"}
 
 
@@ -2132,6 +2149,58 @@ async def api_live_quality() -> dict[str, Any]:
 async def api_live_spectrogram(seconds: float = Query(20, ge=3, le=30)) -> dict[str, Any]:
     result = await asyncio.to_thread(_live_diagnostics, False, True, seconds)
     return result["spectrogram"]
+
+
+_PAIRED_LOCK = threading.Lock()
+_PAIRED_CACHE: _DiagnosticResult | None = None
+
+
+def _live_paired_eeg() -> dict[str, Any]:
+    from paired_eeg import NOTICE, analyze_pair
+
+    global _PAIRED_CACHE
+    with _PAIRED_LOCK:
+        with STATE_LOCK:
+            connected = S._device_ready and S.status == "connected"
+            archived = bool(REPLAY and REPLAY.active and not connected)
+            contact = _contact_locked() if connected else {}
+            names = _eeg_channel_names_locked()
+            if not (archived or connected and _validity_locked(contact)["eeg"]):
+                return {"available": False, "status": "contact_required", "bands": {},
+                        "reason": "Нужны устойчивый контакт электродов и свежая ЭЭГ.",
+                        "channels": names, "notice": NOTICE}
+            rate = S.eeg_sample_rate or DEFAULT_EEG_SR
+            span = 40.0 if archived else min(40.0, contact["stable_seconds"])
+            size = min(len(S.eeg), len(S.eeg_t), int(span * rate))
+            enough = size >= int(round(rate * 4.0)) * 8
+            source = (id(S), "replay" if archived else "live",
+                      REPLAY.generation if archived else S.stream_epoch, rate, tuple(names))
+            revision = (size, S.stream_counts.get("eeg"), S.eeg_t[-1] if S.eeg_t else None)
+            now = time.monotonic()
+            cached = _PAIRED_CACHE
+            if (cached and cached.source == source and cached.enough_samples == enough
+                    and (cached.revision == revision or now - cached.computed_at < 6.0)):
+                return cached.payload
+
+            rows = list(islice(reversed(S.eeg), size))[::-1]
+            times = list(islice(reversed(S.eeg_t), size))[::-1]
+
+        epoch = int(round(rate * 4.0))
+        has_continuity = [
+            all(0 < times[index] - times[index - 1] <= 3.0 / rate
+                for index in range(max(1, start), start + epoch))
+            for start in range(0, size - epoch + 1, epoch)
+        ] if epoch > 0 else None
+        result = analyze_pair(rows, rate, names=names, usable_window=has_continuity)
+        result["source_mode"] = "replay" if archived else "live"
+        result = finite_json(result)
+        _PAIRED_CACHE = _DiagnosticResult(source, revision, enough, now, result)
+        return result
+
+
+@app.get("/api/live/paired")
+async def api_live_paired() -> dict[str, Any]:
+    return await asyncio.to_thread(_live_paired_eeg)
 
 
 def _start_manual_recording():
@@ -2915,7 +2984,8 @@ async def _ws_receiver(ws: WebSocket) -> None:
             action = (data or {}).get("action")
             if action == "start_calibration":
                 try:
-                    _queue_calibration("quick", guided=False)
+                    _queue_calibration("quick", guided=False,
+                                       confirmed_closed_eyes=data.get("confirmed_closed_eyes") is True)
                 except HTTPException:
                     pass
             elif action == "skip_calibration":

@@ -70,7 +70,7 @@
 .live-banner p{font-size:11px;line-height:1.7;color:var(--muted);margin:4px 0 0}
 .live-banner-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .activity-dot{background:var(--mint);box-shadow:0 0 0 5px #7ce3cb12}
-.live-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:19px}
+.live-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:19px}
 .live-metrics .metric-card{padding:18px 21px}.live-metrics .metric-value{font-size:30px}
 .live-stream-card{margin-bottom:18px}
 .live-graph-group{margin:24px 0}
@@ -104,11 +104,11 @@
 .session-list-actions .button{min-height:32px;padding:7px 10px;font-size:10px}
 .offline-icon{height:52px;width:52px;display:grid;place-items:center;background:#183b3877;color:var(--mint);border-radius:12px;margin-bottom:20px}
 .offline-icon .icon{height:30px;width:30px}
-@media(max-width:1250px){.live-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.device-two-col{grid-template-columns:1fr}}
+@media(max-width:1250px){.device-two-col{grid-template-columns:1fr}}
 @media(max-width:850px){.device-hero{gap:16px;flex-wrap:wrap;padding:20px}.device-hero-actions{width:100%;margin-left:0}
 .controls-grid{grid-template-columns:1fr}.session-list-row{align-items:flex-start;flex-wrap:wrap}.session-list-actions{margin-left:55px}}
 @media(max-width:560px){.device-emblem{width:62px;height:62px;border-radius:16px}.device-emblem .icon{height:29px;width:29px}
-.device-hero-copy h2{font-size:22px}.live-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.live-metrics .metric-card{padding:12px}
+.device-hero-copy h2{font-size:22px}.live-metrics{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.live-metrics .metric-card{padding:12px}
 .live-metrics .metric-value{font-size:24px}.live-banner{flex-wrap:wrap}.live-banner-actions{width:100%;margin-left:24px}
 .live-graphs .card.wide .live-canvas{height:230px}.live-canvas{height:205px}.session-list-actions{margin-left:0;width:100%}
 .device-status-top{font-size:10px;max-width:170px}.found-device{flex-wrap:wrap}.found-device .button{width:100%}}
@@ -321,3 +321,54 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
   .checkpoint-dock .button { min-height: 44px; }
 }
 @media print { .checkpoint-widget { display: none; } }
+
+.pair-workbench { margin: 10px 0 6px; }
+.pair-controls, .pair-controls label, .pair-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pair-controls {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.pair-controls label, .pair-legend { color: var(--muted); font-size: 12px; }
+.pair-controls .select { min-width: 140px; }
+.pair-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.pair-dot.left { background: #74e5cf; }
+.pair-dot.right { background: #9ba9ff; }
+.pair-body { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 18px; }
+.pair-map-widget {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #0c1725;
+}
+.pair-canvas { display: block; width: 100%; height: 300px; cursor: grab; outline-offset: -4px; }
+.pair-canvas:active { cursor: grabbing; }
+.pair-map-widget [data-map-caption] { padding: 0 15px 13px; min-height: 44px; font-size: 12px; }
+.pair-results { display: grid; align-content: start; gap: 12px; }
+.pair-status {
+  font-size: 13px;
+  color: var(--text);
+  border-left: 3px solid var(--blue);
+  padding: 9px 12px;
+  background: #20344e50;
+  border-radius: 6px;
+}
+.pair-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pair-stat-grid > div { padding: 12px; border-radius: 9px; background: var(--panel-hover); border: 1px solid var(--line); }
+.pair-stat-grid small { display: block; min-height: 32px; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.pair-stat-grid strong { display: block; margin-top: 4px; font-size: 21px; font-variant-numeric: tabular-nums; }
+.pair-quality, .pair-disclaimer { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.pair-disclaimer { margin: 16px 0 3px; }
+@media (max-width: 800px) {
+  .pair-body { grid-template-columns: 1fr; }
+  .pair-canvas { height: 260px; }
+}
+@media (max-width: 440px) {
+  .live-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

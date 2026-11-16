@@ -45,7 +45,7 @@ class GuidedCalibrationTests(unittest.TestCase):
         self.client = TestClient(server.app)
 
     def begin(self, mode):
-        response = self.client.post('/api/device/calibration/start', json={'mode': mode})
+        response = self.client.post('/api/device/calibration/start', json={'mode': mode, 'confirmed_closed_eyes': True})
         self.assertEqual(response.status_code, 200)
         return self.state._calibration_run
 
@@ -138,7 +138,7 @@ class GuidedCalibrationTests(unittest.TestCase):
 
     def test_opt_out_or_sdk_failure_leaves_recorder_stopped(self):
         server.RECORDER = None
-        response = self.client.post('/api/device/calibration/start', json={'mode': 'quick', 'auto_record': False})
+        response = self.client.post('/api/device/calibration/start', json={'mode': 'quick', 'auto_record': False, 'confirmed_closed_eyes': True})
         self.assertEqual(response.status_code, 200)
         self.advance_past_cue(self.state._calibration_run)
         server._on_calibration(self.cal, nfb_result())

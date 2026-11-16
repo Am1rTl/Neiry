@@ -15,7 +15,7 @@
   let calibrationAudioRun = false, calibrationCue = '', nextPulseAt = 0;
   let plotObserver = null, chartFrame = null, lastStreamStatusAt = -Infinity, lastIndicatorsAt = -Infinity;
   let diagnosticTimer = null, diagnosticRequest = null, diagnosticSource = '';
-  const diagnosticEvery = 4000;
+  const diagnosticInterval = {quality:4000, spectrogram:4000, paired:12000};
   const lastDiagnosticAt = {};
   const visibleCharts = new Set();
   const visibleDiagnostics = new Set();
@@ -135,6 +135,7 @@
     dialog.querySelector('#calibration-mode-quick').checked = true;
     dialog.querySelector('#calibration-sound').checked = true;
     dialog.querySelector('#calibration-auto-record').checked = true;
+    dialog.querySelector('#calibration-confirmed-eyes').checked = false;
     dialog.querySelector('#calibration-dialog-error').textContent = '';
     dialog.showModal();
   }
@@ -159,6 +160,8 @@
         <button type="button" class="button text" id="calibration-preview">Прослушать подсказки</button>
         <label class="cal-choice"><input type="checkbox" id="calibration-auto-record" checked><span><strong>Начать запись после калибровки</strong>
           <small>NeuroScope сохранит сигналы сразу после результата Capsule.</small></span></label>
+        <label class="cal-choice"><input type="checkbox" id="calibration-confirmed-eyes" required><span>
+          <strong>Я готов закрыть глаза по сигналу и оставаться неподвижным</strong></span></label>
         <p id="calibration-dialog-error" role="status"></p>
         <div class="cal-actions"><button type="submit" class="button primary">Подтвердить и начать</button>
           <button type="button" class="button subtle" id="calibration-cancel">Отмена</button></div>
@@ -166,6 +169,7 @@
     document.body.append(dialog);
     const form = dialog.querySelector('form');
     const checkbox = dialog.querySelector('#calibration-sound');
+    const confirmation = dialog.querySelector('#calibration-confirmed-eyes');
     const error = dialog.querySelector('#calibration-dialog-error');
     const start = form.querySelector('[type="submit"]');
     const cancel = dialog.querySelector('#calibration-cancel');
@@ -190,6 +194,7 @@
     });
     form.addEventListener('submit', async e=>{
       e.preventDefault();
+      if (!confirmation.checked) return;
       const mode = new FormData(form).get('mode');
       const auto_record = dialog.querySelector('#calibration-auto-record').checked;
       start.disabled = cancel.disabled = previewButton.disabled = true;
@@ -200,7 +205,7 @@
         if (useCalibrationSound && !await unlockCalibrationAudio()) {
           notice('Звук недоступен. Следите за инструкцией на экране.','error');
         }
-        await api('/api/device/calibration/start',{method:'POST',body:JSON.stringify({mode,auto_record})});
+        await api('/api/device/calibration/start',{method:'POST',body:JSON.stringify({mode,auto_record,confirmed_closed_eyes:true})});
         calibrationAudioRun = true;
         calibrationCue = '';
         dialog.close();
@@ -264,12 +269,9 @@
     return `<div class="contact-panel ${c.state==='ready'?'ready':c.state==='poor'?'poor':''}">
       <div class="contact-overview"><span class="contact-flag ${esc(c.state)}">${esc(stateLabel)}</span><strong>${esc(c.message||'Ожидаем данные')}</strong></div>
       ${channelRows?`<div class="contact-electrodes">${channelRows}</div>`:'<p class="chart-caption">Нет актуальных измерений сопротивления. Значения не моделируются.</p>'}
-      ${progress}<p class="chart-caption">Только настоящие отсчёты сопротивления Capsule SDK · порог ${fmt(c.ready_below_kohm,0)} кОм по каждому каналу; желательнее ниже ${fmt(c.preferred_below_kohm,0)} кОм. Возраст данных: <span class="contact-age">${contactAge(c)}</span>. Это проверка контакта, а не подтверждение нахождения на голове или чистоты ЭЭГ.</p>
+      ${progress}<p class="chart-caption">Только настоящие отсчёты сопротивления Capsule SDK · порог ${fmt(c.ready_below_kohm,0)} кОм по каждому каналу; желательнее ниже ${fmt(c.preferred_below_kohm,0)} кОм. Это проверка контакта, а не подтверждение нахождения на голове или чистоты ЭЭГ.</p>
       ${compact?'':'<p class="chart-caption">Поправьте посадку, раздвиньте волосы под электродами. Не давите слишком сильно. При снятии или потере данных отсчёт стабильности начинается заново.</p>'}
     </div>`;
-  }
-  function contactAge(contact){
-    return contact?.updated_age_s==null?'—':`${fmt(contact.updated_age_s,1)} с`;
   }
   function contactSignature(contact){
     if(!contact)return '';
@@ -315,8 +317,7 @@
       <div id="live-contact-card" class="contact-live-wrap">${contactPanel(status?.contact,true)}</div>
       <div class="live-metrics"><section class="metric-card"><div class="metric-label">Пульс · SDK</div><div class="metric-value" id="live-hr">—</div><div class="metric-note" id="live-hr-note">уд/мин · Capsule SDK</div></section>
       <section class="metric-card"><div class="metric-label">Внимание · SDK</div><div class="metric-value" id="live-attention">—</div><div class="metric-note">Индекс производителя, не % концентрации</div></section>
-      <section class="metric-card"><div class="metric-label">Расслабление · SDK</div><div class="metric-value" id="live-relax">—</div><div class="metric-note">Индекс производителя</div></section>
-      <section class="metric-card"><div class="metric-label">Возраст данных</div><div class="metric-value" id="live-age">—</div><div class="metric-note">с · время получения сервером</div></section></div>
+      <section class="metric-card"><div class="metric-label">Расслабление · SDK</div><div class="metric-value" id="live-relax">—</div><div class="metric-note">Индекс производителя</div></section></div>
       <section class="card live-stream-card">${heading('Контакт и поток','Отсчёты датчиков и доступность расчётов Capsule')}<div id="live-sensors" class="sensor-summary"><p>Потоков пока нет.</p></div><div id="live-resistances" class="resistance-values"></div></section>
       <div class="studio-controls"><label style="max-width:200px">Сырые сигналы · окно<select id="live-time-range">${[5,15,30,60].map(s=>`<option value="${s}" ${s===liveRange?'selected':''}>${s} с</option>`).join('')}</select></label><label style="max-width:210px">Индексы SDK · окно<select id="metric-time-range">${[60,300,900].map(s=>`<option value="${s}" ${s===metricRange?'selected':''}>${s/60} мин</option>`).join('')}</select></label><label class="toggle-row raw-toggle"><input type="checkbox" id="show-unverified-raw" ${allowRaw?'checked':''}><span><strong>Диагностический сырой поток</strong><small>Показывать ЭЭГ и ФПГ до проверки контакта</small></span></label></div>
       <section class="live-graph-group" aria-labelledby="live-primary-label">
@@ -326,6 +327,7 @@
           ${livePlot('live-hr-chart','Пульс во времени · SDK','Фрагменты, прошедшие проверку флагов Capsule')}
           <section class="card wide" data-live-diagnostic="spectrogram">${heading('Спектрограмма ЭЭГ','Мощность нормируется отдельно для каждого канала')}<div class="live-spectrograms" id="live-spectrograms"></div><p class="chart-caption" id="live-spectrogram-note">Для построения нужны не менее трёх секунд ЭЭГ.</p></section>
           <section class="card wide" data-live-diagnostic="quality">${heading('Диагностика ЭЭГ','Постоянный сигнал, округление и помехи 50/60 Гц')}<div id="live-quality-state" class="studio-grid"><p class="chart-caption">Ожидаем достаточное окно ЭЭГ.</p></div></section>
+          <section class="card wide" data-live-diagnostic="paired">${heading('Сравнение двух ЭЭГ-отведений','Относительная мощность, когерентность и схема электродов')}${window.NeuroPairedPanel.markup()}</section>
         </div>
       </section>
       <section class="live-graph-group" aria-labelledby="live-motion-label">
@@ -469,6 +471,7 @@
     resistanceSince=-Infinity;
   }
   function clearGraphs(){
+    window.NeuroBrainMap.unmount($('#content [data-live-diagnostic="paired"] [data-pair-map]'));
     plotObserver?.disconnect();
     plotObserver=null;
     visibleCharts.clear();
@@ -709,6 +712,15 @@
   function diagnosticsAllowed(){
     return replay.active||status?.validity?.eeg||allowRaw&&connected();
   }
+  function diagnosticAvailable(name){
+    return name==='paired' ? connected()&&!replay.active&&Boolean(status?.validity?.eeg) : diagnosticsAllowed();
+  }
+  function pairedPanel(){
+    return $('#content [data-live-diagnostic="paired"] [data-pair-panel]');
+  }
+  function activeDiagnostics(){
+    return [...visibleDiagnostics].filter(diagnosticAvailable);
+  }
   function stopDiagnostics(){
     clearTimeout(diagnosticTimer);
     diagnosticTimer=null;
@@ -718,7 +730,8 @@
   function refreshDiagnosticSource(){
     if(view!=='live')return;
     const allowed=diagnosticsAllowed();
-    const source=`${chartSource}:${Boolean(allowed)}`;
+    const pairAllowed=diagnosticAvailable('paired');
+    const source=`${chartSource}:${Boolean(allowed)}:${pairAllowed}`;
     if(source===diagnosticSource)return;
     diagnosticSource=source;
     stopDiagnostics();
@@ -726,29 +739,25 @@
     setText($('#live-quality-state'),allowed?'Ожидаем достаточное окно ЭЭГ.':'ЭЭГ пока не подтверждена контактом. Для проверки аппаратного шума доступен диагностический показ сырого сигнала.');
     setText($('#live-spectrogram-note'),allowed?'Для построения нужны не менее трёх секунд ЭЭГ.':'Спектрограмма скрыта: контакт электродов не подтверждён.');
     renderSpectrograms(null);
+    const pairReason=replay.active
+      ? 'Парный анализ сохранённой записи доступен в разделе «Сигналы и метрики».'
+      : pairAllowed ? 'Ожидаем достаточное окно двух каналов ЭЭГ.'
+      : 'Для парного анализа нужны стабильный контакт электродов и живая ЭЭГ.';
+    window.NeuroPairedPanel.attach(pairedPanel(),{available:false,reason:pairReason});
     scheduleDiagnostics();
   }
   function scheduleDiagnostics(){
     clearTimeout(diagnosticTimer);
     diagnosticTimer=null;
-    if(view!=='live'||document.hidden||!visibleDiagnostics.size||diagnosticRequest||!diagnosticsAllowed())return;
-    const due=Math.min(...[...visibleDiagnostics].map(name=>(lastDiagnosticAt[name]??-Infinity)+diagnosticEvery));
+    if(view!=='live'||document.hidden||diagnosticRequest)return;
+    const active=activeDiagnostics();
+    if(!active.length)return;
+    const due=Math.min(...active.map(name=>(lastDiagnosticAt[name]??-Infinity)+diagnosticInterval[name]));
     diagnosticTimer=setTimeout(updateSignalQuality,Math.max(0,due-performance.now()));
   }
-  async function updateSignalQuality(){
-    diagnosticTimer=null;
-    if(view!=='live'||document.hidden||!visibleDiagnostics.size||diagnosticRequest||!diagnosticsAllowed())return;
-    const now=performance.now();
-    const due=name=>visibleDiagnostics.has(name)&&now-(lastDiagnosticAt[name]??-Infinity)>=diagnosticEvery;
-    const quality=due('quality'), spectrogram=due('spectrogram');
-    if(!quality&&!spectrogram){scheduleDiagnostics();return;}
-    if(quality)lastDiagnosticAt.quality=now;
-    if(spectrogram)lastDiagnosticAt.spectrogram=now;
-    const request=new AbortController();
-    diagnosticRequest=request;
+  async function fetchLiveDiagnostics(request, options, quality, spectrogram){
     try{
-      const result=await api(`/api/live/diagnostics?quality=${quality}&spectrogram=${spectrogram}`,
-        {signal:AbortSignal.any([request.signal,AbortSignal.timeout(5000)])});
+      const result=await api(`/api/live/diagnostics?quality=${quality}&spectrogram=${spectrogram}`,options);
       if(request!==diagnosticRequest)return;
       if(result.quality&&visibleDiagnostics.has('quality')){
         const q=result.quality;
@@ -763,6 +772,33 @@
       if(request!==diagnosticRequest)return;
       if(quality&&visibleDiagnostics.has('quality'))setText($('#live-quality-state'),'Диагностика недоступна: '+e.message);
       if(spectrogram&&visibleDiagnostics.has('spectrogram'))setText($('#live-spectrogram-note'),'Спектрограмма недоступна: '+e.message);
+    }
+  }
+  async function fetchPairedDiagnostics(request, options){
+    const current=()=>request===diagnosticRequest&&visibleDiagnostics.has('paired')&&diagnosticAvailable('paired');
+    try{
+      const pair=await api('/api/live/paired',options);
+      if(current())window.NeuroPairedPanel.attach(pairedPanel(),pair);
+    }catch(e){
+      if(current())window.NeuroPairedPanel.attach(pairedPanel(),{available:false,reason:'Парный анализ недоступен: '+e.message});
+    }
+  }
+  async function updateSignalQuality(){
+    diagnosticTimer=null;
+    if(view!=='live'||document.hidden||diagnosticRequest)return;
+    const now=performance.now();
+    const due=activeDiagnostics().filter(name=>now-(lastDiagnosticAt[name]??-Infinity)>=diagnosticInterval[name]);
+    if(!due.length){scheduleDiagnostics();return;}
+    due.forEach(name=>{lastDiagnosticAt[name]=now;});
+    const quality=due.includes('quality'), spectrogram=due.includes('spectrogram');
+    const request=new AbortController();
+    diagnosticRequest=request;
+    const options={signal:AbortSignal.any([request.signal,AbortSignal.timeout(5000)])};
+    try{
+      await Promise.all([
+        quality||spectrogram ? fetchLiveDiagnostics(request,options,quality,spectrogram) : null,
+        due.includes('paired') ? fetchPairedDiagnostics(request,options) : null,
+      ]);
     }finally{
       if(request===diagnosticRequest){
         diagnosticRequest=null;
@@ -824,7 +860,6 @@
       liveContact.dataset.contactSignature=signature;
       setMarkup(liveContact,archived?'<div class="contact-panel"><strong>Архивное воспроизведение</strong><p class="chart-caption">Данные из сохранённого файла. Текущий контакт электродов не оценивается.</p></div>':contactPanel(tick.contact,true));
     }
-    if(liveContact&&!archived)setText($('.contact-age',liveContact),contactAge(tick.contact));
     const valid=tick.validity||{};
     const field=(id,v)=>setText($(`#${id}`),fmt(v,1));
     field('live-hr',valid.cardio?tick.cardio?.heartRate:null);
@@ -833,7 +868,6 @@
       : 'уд/мин · Capsule SDK');
     field('live-attention',(valid.emotions||archived)?tick.emotions?.attention:null);
     field('live-relax',(valid.emotions||archived)?tick.emotions?.relaxation:null);
-    field('live-age',tick.data_age_s);
     setText($('#live-channels'),eegLabels.length?`Каналы (${eegLabels.length}): ${eegLabels.join(' / ')}`:'Каналы: —');
     for(const name of ['eeg','ppg','mems']){
       const rate=tick[`${name}_sr`];
@@ -932,7 +966,6 @@
       if(view==='device'&&$('#content')){
         const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,calibration_stage:s.calibration_run?.stage,calibration_result:s.calibration_result,contact:s.calibration_run?null:contactSignature(s.contact),scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery,firmware_version:s.firmware_version,sdk_version:s.sdk_version,recording:s.recording,recording_error:s.recording_error});
         if(fingerprint!==statusFingerprint){statusFingerprint=fingerprint;$('#content').innerHTML=devicePanel(s);bind();}
-        setText($('#content .contact-age'),contactAge(s.contact));
         updateCalibrationProgress(s);
       }
       if(view==='live'){

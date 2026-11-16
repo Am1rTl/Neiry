@@ -139,7 +139,9 @@ class TestLiveValidity(unittest.TestCase):
             server.S.latest_cardio['skinContact']=False
             self.assertFalse(server._validity_locked()['cardio'])
             server.S.latest_cardio['skinContact']=True
-            server.S.metrics_updated_at['emotions']=time.monotonic()-20
+            server.S.metrics_updated_at['emotions'] = time.monotonic() - 20
+            self.assertTrue(server._validity_locked()['emotions'])
+            server.S.metrics_updated_at['emotions'] = time.monotonic() - server.settings.SDK_STATE_STALE_SECONDS - 1
             self.assertFalse(server._validity_locked()['emotions'])
 
     def test_phy_remains_fresh_between_minute_updates(self):
@@ -153,7 +155,7 @@ class TestLiveValidity(unittest.TestCase):
 
         snapshot = server._build_tick_snapshot()
         self.assertTrue(snapshot['validity']['phy'])
-        self.assertFalse(snapshot['validity']['emotions'])
+        self.assertTrue(snapshot['validity']['emotions'])
         self.assertFalse(snapshot['validity']['cardio'])
         self.assertEqual(snapshot['phy']['fatigue'], 2.0)
         self.assertTrue(snapshot['sensor_status']['phy']['fresh'])
