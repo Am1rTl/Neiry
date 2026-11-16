@@ -15,6 +15,7 @@ from typing import Any, Callable
 DOOR_PROTOCOL = 'door_imagery'
 DOOR_TRIALS = 20
 DOOR_PRESENTATION_TIMEOUT_S = 1.5
+DOOR_PAUSE_TIMEOUT_S = 7200
 DOOR_PHASES = (('fixation', 2.0), ('cue', 2.0), ('task', 5.0), ('feedback', 2.0))
 
 
@@ -78,6 +79,8 @@ class ExperimentManager:
         self._tick_s = tick_s
         self._reason = ''
         self._phase_presented = False
+        self._paused_at: float | None = None
+        self._presentation_revision = 0
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -87,17 +90,20 @@ class ExperimentManager:
             result = {'state':self._state,'run_id':self._run_id,'protocol_id':self._protocol_id,
                     'session_id':self._recorder_id,'phase_index':self._phase_idx,
                     'phase': dict(p) if p else None, 'total_phases':len(self._phases),
-                    'remaining_s':max(0.0,round(p['duration_s']-(now-self._phase_started),1)) if running and p else None,
+                    'remaining_s':max(0.0,round(p['duration_s']-(now-self._phase_started),1)) if running and p and self._paused_at is None else None,
                     'elapsed_s':round(now-self._started,1) if running else None,
                     'reason':self._reason,
                     'notice':'Маркеры записаны серверным временем; не являются синхронными аппаратными триггерами.'}
             if self._protocol_id == DOOR_PROTOCOL:
-                result['total_trials'] = DOOR_TRIALS
+                result.update(total_trials=DOOR_TRIALS, paused=self._paused_at is not None,
+                              presentation_revision=self._presentation_revision)
             return result
 
     def _event(self, kind: str, **data: Any) -> None:
         recorder=self._get_recorder()
         if recorder is not None and recorder.active and recorder.session_id==self._recorder_id:
+            if self._protocol_id == DOOR_PROTOCOL:
+                data["presentation_revision"] = self._presentation_revision
             recorder.event(kind, run_id=self._run_id, protocol_id=self._protocol_id, **data)
 
     def start(self, protocol_id: str, phases: list[dict] | None = None) -> dict[str, Any]:
@@ -128,6 +134,8 @@ class ExperimentManager:
             self._reason=''
             self._started=time.monotonic()
             self._state='running'
+            self._paused_at = None
+            self._presentation_revision = 0
             metadata = {'protocol_version': 1, 'eye_state': 'open',
                         'imagery': 'kinesthetic_right_hand'} if protocol_id == DOOR_PROTOCOL else {}
             self._event('protocol_start', phases=validated, **metadata)
@@ -147,18 +155,43 @@ class ExperimentManager:
             self._state='completed'
             self._stop.set()
             return
-        self._phase_started=time.monotonic()
+        self._begin_phase()
+
+    def _begin_phase(self) -> None:
+        self._phase_started = time.monotonic()
         self._phase_presented = False
         phase=self._phases[self._phase_idx]
         self._event('protocol_phase_start', index=self._phase_idx, **phase)
 
-    def door_presented(self, run_id: str, phase_index: int, client_unix_ms: float) -> None:
-        if (type(phase_index) is not int or type(client_unix_ms) not in (int, float)
+    def door_visibility(self, run_id: str, paused: bool) -> dict[str, Any]:
+        if not isinstance(run_id, str) or type(paused) is not bool:
+            raise ValueError('Некорректное состояние показа')
+        with self._lock:
+            if self._state != 'running' or self._protocol_id != DOOR_PROTOCOL or run_id != self._run_id:
+                raise RuntimeError('Эксперимент уже завершён или изменился')
+            if paused and self._paused_at is None:
+                self._paused_at = time.monotonic()
+                self._event('protocol_paused', phase_index=self._phase_idx,
+                            trial=self._phases[self._phase_idx]['trial'], reason='view_away')
+            elif not paused and self._paused_at is not None:
+                self._paused_at = None
+                self._presentation_revision += 1
+                self._phase_idx -= self._phase_idx % len(DOOR_PHASES)
+                self._event('protocol_resumed', phase_index=self._phase_idx,
+                            trial=self._phases[self._phase_idx]['trial'])
+                self._begin_phase()
+            return self.status()
+
+    def door_presented(self, run_id: str, phase_index: int, client_unix_ms: float,
+                       presentation_revision: int = 0) -> None:
+        if (type(phase_index) is not int or type(presentation_revision) is not int
+                or type(client_unix_ms) not in (int, float)
                 or not 0 < client_unix_ms < 1e14):
             raise ValueError('Некорректная метка показа')
         with self._lock:
             if (self._state != 'running' or self._protocol_id != DOOR_PROTOCOL or run_id != self._run_id
-                    or phase_index != self._phase_idx):
+                    or phase_index != self._phase_idx or self._paused_at is not None
+                    or presentation_revision != self._presentation_revision):
                 raise RuntimeError('Этап эксперимента уже изменился')
             if self._phase_presented:
                 return
@@ -176,6 +209,7 @@ class ExperimentManager:
             if self._state=='running':
                 self._event('protocol_aborted',reason=reason,phase_index=self._phase_idx)
                 self._state='aborted'; self._reason=reason
+                self._paused_at = None
             self._stop.set()
             return self.status()
 
@@ -195,7 +229,13 @@ class ExperimentManager:
                 rec=self._get_recorder()
                 if rec is None or not rec.active or rec.session_id!=self._recorder_id:
                     self.stop('recording_stopped');break
-                elapsed = time.monotonic() - self._phase_started
+                now = time.monotonic()
+                if self._paused_at is not None:
+                    if now - self._paused_at > DOOR_PAUSE_TIMEOUT_S:
+                        self.stop('pause_timeout')
+                        break
+                    continue
+                elapsed = now - self._phase_started
                 duration = self._phases[self._phase_idx]['duration_s']
                 if self._protocol_id == DOOR_PROTOCOL:
                     if not self._door_ready():

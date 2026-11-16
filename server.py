@@ -2561,14 +2561,15 @@ def _sanitize(obj):
 
 
 class _WSDelta:
-    __slots__ = ("last_times", "sample_counts", "source", "is_first", "lean")
+    __slots__ = ("last_times", "sample_counts", "source", "is_first", "lean", "history_s")
 
-    def __init__(self, *, lean: bool = False) -> None:
+    def __init__(self, *, lean: bool = False, history_s: int = 5) -> None:
         self.last_times: dict[str, float] = {}
         self.sample_counts: dict[str, int] = {}
         self.source: tuple[str, int] | None = None
         self.is_first: bool = True
         self.lean = lean
+        self.history_s = history_s
 
     def first_for(self, source: tuple[str, int]) -> bool:
         return self.is_first or self.source != source
@@ -2578,7 +2579,8 @@ class _WSDelta:
             return 7500 if first else 500
         if not math.isfinite(sample_rate) or sample_rate <= 0:
             return 500
-        return max(1, math.ceil(min(7500, sample_rate * 5)))
+        seconds = self.history_s if first else 5
+        return max(1, math.ceil(min(10_000, sample_rate * seconds)))
 
 
 def _build_batch(times: list[float], samples: list, n_ch: int, last_t, sr: int, first_sync_max: int = 500,
@@ -2957,7 +2959,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
         return
     await ws.accept()
     S.connected_clients.add(ws)
-    _WS_DELTAS[ws] = _WSDelta(lean=ws.query_params.get("profile") == "live")
+    history = ws.query_params.get("history", "")
+    history_s = int(history) if history in {"5", "15", "30", "60"} else 5
+    _WS_DELTAS[ws] = _WSDelta(lean=ws.query_params.get("profile") == "live", history_s=history_s)
     try:
         await _ws_receiver(ws)
     finally:
@@ -3015,11 +3019,21 @@ async def experiment_stop(run_id: str | None = None):
     return EXPERIMENTS.stop('stimulus_hidden' if run_id else 'user_stop', run_id=run_id)
 
 
+@app.post("/api/experiments/door/visibility")
+async def door_visibility(payload: dict[str, Any]):
+    try:
+        return EXPERIMENTS.door_visibility(payload.get("run_id"), payload.get("paused"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @app.post("/api/experiments/door/presented")
 async def door_phase_presented(payload: dict[str, Any]):
     try:
         EXPERIMENTS.door_presented(payload.get('run_id'), payload.get('phase_index'),
-                                   payload.get('client_unix_ms'))
+                                   payload.get('client_unix_ms'), payload.get('presentation_revision', 0))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:

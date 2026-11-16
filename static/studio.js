@@ -8,12 +8,14 @@
   const fmt=(v,d=1)=>Number.isFinite(Number(v))&&v!==null?Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d}):'—';
   const btn=(label,act,style='subtle',disabled=false)=>`<button class="button ${style}" data-studio="${esc(act)}" ${disabled?'disabled':''}>${esc(label)}</button>`;
   let ctx={},view=null,poller=null,chart=null,sessions=[],history=null;
-  let viewEvents, doorRun, presentedPhase, experimentBusy=false;
+  let viewEvents, doorRun, presentedPhase, doorAway, experimentBusy=false;
+  let visibilityRequest=Promise.resolve();
   const doorProtocol='door_imagery';
   const doorStopReasons={
     signal_lost:'Свежая ЭЭГ или контакт электродов пропали.',
     stimulus_hidden:'Вкладка с экспериментом стала недоступна.',
     stimulus_missing:'Браузер не подтвердил показ этапа вовремя.',
+    pause_timeout:'Истекло время ожидания возвращения к заданию.',
     recording_stopped:'Запись завершилась до конца эксперимента.',
     recording_rotated:'Во время эксперимента начался новый файл записи.',
   };
@@ -26,8 +28,21 @@
     doorRun=null;
     api(`/api/experiments/stop?run_id=${encodeURIComponent(run)}`,{method:'POST',keepalive:true}).catch(()=>{});
   }
+  window.addEventListener('pagehide',leaveDoor);
+  function setDoorAway(away){
+    const run=doorRun;
+    if(!run||doorAway===away)return visibilityRequest;
+    doorAway=away;
+    presentedPhase=null;
+    visibilityRequest=visibilityRequest.then(()=>api('/api/experiments/door/visibility',{
+      method:'POST',keepalive:true,body:JSON.stringify({run_id:run,paused:away}),
+    })).catch(()=>{
+      if(doorRun===run&&doorAway===away)doorAway=null;
+    });
+    return visibilityRequest;
+  }
   function shutdown(){
-    leaveDoor();
+    if(view==='experiments')void setDoorAway(true);
     viewEvents?.abort();
     clearTimeout(poller);
     poller=null;
@@ -47,9 +62,9 @@
         `<p>${esc(value.description)}</p><ol class="studio-list">${value.phases.map(p=>`<li>${esc(p.label)} · ${fmt(p.duration_s,0)} с</li>`).join('')}</ol>${btn('Запустить протокол',`start:${key}`,'primary',true)}`));
       content().insertAdjacentHTML('beforeend',doorCard(payload.door_trials)+`<div class="studio-grid">${list.join('')}</div>`);
       bindActions();
-      document.addEventListener('visibilitychange',()=>{if(document.hidden)leaveDoor();},{signal});
-      window.addEventListener('pagehide',leaveDoor,{signal});
-      await pollExperiment(signal);
+      document.addEventListener('visibilitychange',()=>{void setDoorAway(document.hidden);},{signal});
+      await setDoorAway(document.hidden);
+      if(!signal.aborted)await pollExperiment(signal);
     } catch(e){if(!signal.aborted)message(e.message,true);}
   }
   function doorCard(trials){
@@ -68,13 +83,15 @@
         ${btn('Запустить эксперимент',`start:${doorProtocol}`,'primary',true)}
         <a id="door-download" class="button subtle" hidden>Скачать ZIP</a>
       </div>
-      <p class="chart-caption">Дверь открывается по таймеру после обоих заданий. Оставайтесь на этой вкладке до завершения эксперимента.</p>`,
+      <p class="chart-caption">При уходе со вкладки эксперимент ставится на паузу. При возвращении текущая проба начнётся заново.</p>`,
       `${trials} испытаний · поровну покоя и воображаемого движения · около 4 минут`);
   }
   function renderDoor(s,d,signal){
     const isDoor=s.protocol_id===doorProtocol;
     const phase=isDoor&&s.state==='running'&&s.phase;
-    const own=phase&&s.run_id===doorRun&&!document.hidden;
+    const local=phase&&s.run_id===doorRun;
+    const own=local&&!document.hidden&&!s.paused&&doorAway!==true;
+    const presentation=`${s.presentation_revision ?? 0}:${s.phase_index}`;
     const stage=$('#door-stage'), status=$('#door-status'), download=$('#door-download');
     stage.dataset.open=String(Boolean(own&&phase.label==='feedback'));
     const cue=own&&phase.label==='cue'?(phase.condition==='imagery'?'Представьте движение':'Покой'):'+';
@@ -82,7 +99,8 @@
     if(cueElement.textContent!==cue)cueElement.textContent=cue;
     let label=d.recording?'Запись активна. Можно запустить эксперимент.':'Начните запись, затем запустите эксперимент.';
     if(isDoor){
-      if(phase)label=own?`Испытание ${phase.trial} из ${s.total_trials}`:'Эксперимент запущен в другой вкладке или завершается.';
+      if(phase&&s.paused)label='Протокол на паузе. При возвращении текущая проба начнётся заново.';
+      else if(phase)label=own?`Испытание ${phase.trial} из ${s.total_trials}`:'Эксперимент запущен в другой вкладке или завершается.';
       else if(s.state==='completed')label=`Готово · ${s.total_trials} испытаний · ${s.session_id}`;
       else if(s.state==='aborted')label=`Остановлено. ${doorStopReasons[s.reason]||'Сохранены уже записанные данные.'}`;
     }
@@ -92,13 +110,15 @@
       download.href=`/api/records/${encodeURIComponent(s.session_id)}/download`;
     }
     if(!phase&&s.run_id===doorRun)doorRun=null;
-    if(!own||presentedPhase===s.phase_index)return;
-    presentedPhase=s.phase_index;
+    if(local&&doorAway===null)void setDoorAway(document.hidden);
+    if(!own||presentedPhase===presentation)return;
+    presentedPhase=presentation;
     requestAnimationFrame(()=>requestAnimationFrame(frameTime=>{
-      if(signal.aborted||document.hidden||doorRun!==s.run_id||presentedPhase!==s.phase_index)return;
+      if(signal.aborted||document.hidden||doorRun!==s.run_id||presentedPhase!==presentation)return;
       api('/api/experiments/door/presented',{method:'POST',signal,body:JSON.stringify({
-        run_id:s.run_id,phase_index:s.phase_index,client_unix_ms:performance.timeOrigin+frameTime,
-      })}).catch(()=>{if(presentedPhase===s.phase_index&&doorRun===s.run_id)presentedPhase=null;});
+        run_id:s.run_id,phase_index:s.phase_index,presentation_revision:s.presentation_revision ?? 0,
+        client_unix_ms:performance.timeOrigin+frameTime,
+      })}).catch(()=>{if(presentedPhase===presentation&&doorRun===s.run_id)presentedPhase=null;});
     }));
   }
   async function pollExperiment(signal){
@@ -202,13 +222,11 @@
           if(protocol===doorProtocol)$('#door-stage').scrollIntoView({block:'center',behavior:'instant'});
           const result=await api('/api/experiments/start',{method:'POST',body:JSON.stringify({protocol_id:protocol})});
           if(protocol===doorProtocol){
-            if(signal.aborted||document.hidden){
-              await api(`/api/experiments/stop?run_id=${encodeURIComponent(result.run_id)}`,{method:'POST',keepalive:true});
-            }else{
-              doorRun=result.run_id;
-              presentedPhase=null;
-              renderDoor(result,{recording:result.session_id},signal);
-            }
+            doorRun=result.run_id;
+            doorAway=null;
+            presentedPhase=null;
+            if(view!=='experiments'||document.hidden)await setDoorAway(true);
+            else if(!signal.aborted)renderDoor(result,{recording:result.session_id},signal);
           }else if(!signal.aborted)message('Протокол запущен. Маркеры будут сохранены с записью.');
         }
         else if(action==='segment'){await fetchSegment();}

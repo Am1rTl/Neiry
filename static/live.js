@@ -403,7 +403,13 @@
       if(go){e.preventDefault();location.hash=go.dataset.go;}
     });
     root.addEventListener('change', async e=>{
-      if(e.target.id==='live-time-range'){liveRange=Number(e.target.value)||15;requestChartFrame();return;}
+      if(e.target.id==='live-time-range'){
+        const previous=liveRange;
+        liveRange=Number(e.target.value)||15;
+        if(liveRange>previous){closeWS();openWS();}
+        else requestChartFrame();
+        return;
+      }
       if(e.target.id==='metric-time-range'){metricRange=Number(e.target.value)||300;requestChartFrame();return;}
       if(e.target.id==='show-unverified-raw'){
         allowRaw=Boolean(e.target.checked);
@@ -543,14 +549,16 @@
       else dst.push(...(lo.x<hi.x?[lo,hi]:[hi,lo]));
       lo=hi=null;
     };
+    let missed=packet.missed_display_samples>0;
     for(let i=0;i<values.length;i++){
       const x=n(packet.times?.[i])??(step!==null&&t0!==null?t0+i*step:null);
       if(x===null || x<=previous)continue;
       const y=n(values[i]);
-      if(y===null || x-previous>Math.max(.05,4*(step||0))){
+      if(y===null || missed || x-previous>Math.max(.05,4*(step||0))){
         flush();
         if(dst.length && dst.at(-1).y!==null)dst.push({x:y===null?x:(x+previous)/2,y:null});
       }
+      missed=false;
       previous=x;
       if(y===null)continue;
       const point={x,y};
@@ -806,7 +814,7 @@
       }
     }
   }
-  function updateLiveTick(tick) {
+  function updateLiveTick(tick, firstFrame) {
     if(view!=='live'||document.hidden)return;
     const now=performance.now();
     const eeg=tick.eeg_stream,ppg=tick.ppg_stream,mems=tick.mems_stream;
@@ -821,6 +829,17 @@
     const source=archived?`replay:${tick.stream_epoch??''}`:tick.connected?`live:${tick.serial||''}:${tick.stream_epoch??''}`:'idle';
     const sourceChanged=source!==chartSource;
     if(sourceChanged){clearSamples();chartSource=source;}
+    else if(firstFrame){
+      // The server sends a fresh window. Preserve slow metrics but break the
+      // line between readings separated by a disconnected display.
+      for(const cfg of chartDefs)for(const key of cfg.keys){
+        if(cfg.raw)clearSeries(key);
+        else{
+          const last=samples[key].at(-1);
+          if(last&&last.y!==null)addPoint(key,last.x+1e-6,null);
+        }
+      }
+    }
     const names=tick.eeg_channels||[];
     const packetCount=eeg?.samples?1:Object.keys(eeg||{}).filter(key=>/^ch[1-9]\d*$/.test(key)).length;
     const currentCount=plotConfig('live-eeg').keys.length;
@@ -849,7 +868,7 @@
     }
     const newest=Math.max(0,...Object.values(samples).map(series=>series.at(-1)?.x??0));
     chartEnd=Math.max(chartEnd,newest,archived?0:n(tick.t)||0);
-    if(now-chartClock<400&&!sourceChanged)return;
+    if(now-chartClock<400&&!sourceChanged&&!firstFrame)return;
     chartClock=now;
     requestChartFrame();
   }
@@ -925,12 +944,18 @@
   function openWS() {
     if(preview||view!=='live'||document.hidden||ws)return;
     const scheme=location.protocol==='https:'?'wss':'ws';
-    const socket=new WebSocket(`${scheme}://${location.host}/ws?profile=live`);
+    const socket=new WebSocket(`${scheme}://${location.host}/ws?profile=live&history=${liveRange}`);
+    let firstFrame=true;
     ws=socket;
     socket.onmessage=e=>{
-      if(ws!==socket)return;
-      try{const tick=JSON.parse(e.data);if(tick.type==='tick')updateLiveTick(tick);}
-      catch(err){console.warn('NeuroScope WS data:',err);}
+      if(ws!==socket||document.hidden)return;
+      try{
+        const tick=JSON.parse(e.data);
+        if(tick.type==='tick'){
+          updateLiveTick(tick,firstFrame);
+          firstFrame=false;
+        }
+      }catch(err){console.warn('NeuroScope WS data:',err);}
     };
     socket.onclose=()=>{
       if(ws!==socket)return;
@@ -1004,7 +1029,6 @@
       }
     }else if(view==='live'){
       openWS();
-      requestChartFrame();
       scheduleDiagnostics();
     }
     scheduleStatusPoll(0);

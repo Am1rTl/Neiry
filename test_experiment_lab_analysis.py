@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import numpy as np
 
+from experiment_lab import MAX_IDLE_S, ExperimentLab
 from experiment_lab_analysis import summarize_run
 from recording import SessionRecorder
 
@@ -98,6 +99,36 @@ class ExperimentAnalysisTests(unittest.TestCase):
         self.assertTrue(window["ready"])
         self.assertEqual(window["channels"], ["O1-T3"])
         self.assertAlmostEqual(window["window_end_ms"], (now - 0.1) * 1000)
+
+    def test_paused_run_survives_inactivity_and_preserves_its_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            lab = ExperimentLab(lambda: Path(temporary), dict, lambda: None,
+                                lambda: (None, False), lambda _: None, dict)
+            run = lab.start({"kind": "alpha", "mode": "demo", "stage": "baseline"})
+
+            def event(kind):
+                lab.add_events(run["id"], {"events": [{"type": kind, "at_ms": time.time() * 1000}]})
+
+            event("pause")
+            lab.active.touched -= MAX_IDLE_S + 1
+            lab.monitor()
+            self.assertEqual(lab.detail(run["id"])["status"], "running")
+            event("resume")
+            self.assertFalse(lab.active.paused)
+            self.assertEqual(lab.finish(run["id"], {"status": "completed"})["id"], run["id"])
+
+    def test_interrupted_feedback_is_excluded_from_results_and_control_trace(self):
+        events = [
+            {"type": "feedback", "phase_id": "partial", "at_ms": 1000, "label": "live",
+             "alpha": 100, "band": [8, 13], "value": .9, "valid": True},
+            {"type": "phase_end", "phase_id": "partial", "at_ms": 1200, "label": "live",
+             "reason": "view_away"},
+            {"type": "feedback", "phase_id": "repeat", "at_ms": 3000, "label": "live",
+             "alpha": 2, "band": [8, 13], "value": .2, "valid": True},
+        ]
+        result = summarize_run({"kind": "feedback", "mode": "demo", "events": events}, None)
+        self.assertEqual(result["feedback"]["median_alpha"], 2)
+        self.assertEqual(ExperimentLab._trace(events), [(0, .2, True)])
 
     def test_feedback_compares_measured_alpha_and_same_band_only(self):
         data = [

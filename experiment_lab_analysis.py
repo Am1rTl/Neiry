@@ -15,6 +15,7 @@ import numpy as np
 from scipy.signal import welch
 
 from analysis_engine import BANDS, _robust_upper, integrate_band
+from experiment_lab import measured_feedback
 from json_utils import finite_json
 
 
@@ -413,7 +414,7 @@ def _visual_summary(events: list[dict], sections: list[dict], stage: str) -> dic
 
 
 def _feedback_summary(events: list[dict], run: dict) -> dict:
-    stages = [e for e in events if e.get("type") == "feedback"]
+    stages = measured_feedback(events)
     feedback = [e for e in stages if e.get("label") != "calibration"]
     by_band: dict[tuple[float, float], list[float]] = defaultdict(list)
     baseline_by_band: dict[tuple[float, float], list[float]] = defaultdict(list)

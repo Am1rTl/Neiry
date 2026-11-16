@@ -82,6 +82,33 @@ class TestDoorExperiment(unittest.TestCase):
         self.assertEqual(Counter(event['condition'] for event in tasks), {'imagery': 10, 'rest': 10})
         self.assertEqual([event['trial'] for event in tasks], list(range(1, DOOR_TRIALS + 1)))
 
+    def test_background_door_repeats_the_same_trial_and_rejects_old_ack(self):
+        run = self.start().json()
+        self.assertEqual(self.present(run).status_code, 200)
+        with self.manager._lock:
+            self.manager._next_phase()
+            self.manager._next_phase()
+        checkpoint = self.manager.status()
+        self.assertEqual(checkpoint["phase"]["label"], "task")
+
+        def set_paused(paused):
+            response = self.client.post('/api/experiments/door/visibility',
+                                        json={"run_id": run["run_id"], "paused": paused})
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        paused = set_paused(True)
+        self.assertEqual((paused["state"], paused["paused"]), ("running", True))
+        self.assertIsNone(paused["remaining_s"])
+        self.assertEqual(self.present(paused).status_code, 409)
+        resumed = set_paused(False)
+        self.assertFalse(resumed["paused"])
+        self.assertEqual(resumed["phase"]["trial"], paused["phase"]["trial"])
+        self.assertEqual(resumed["phase"]["label"], "fixation")
+        self.assertEqual(resumed["presentation_revision"], 1)
+        self.assertEqual(self.present(resumed).status_code, 409)
+        self.assertEqual(self.present(resumed, presentation_revision=1).status_code, 200)
+
     def test_requires_signal_and_flushes_abort_on_recording_stop(self):
         self.signal_ready = False
         self.assertEqual(self.start().status_code, 409)
