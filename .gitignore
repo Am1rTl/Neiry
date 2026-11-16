@@ -2,6 +2,7 @@
 __pycache__/
 records/
 state_snapshot.json
+state_snapshot.json.tmp
 Logs/
 logs/
 *.pyc
