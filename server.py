@@ -35,6 +35,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Quer
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from experiment_lab import ExperimentLab, create_experiment_lab_router
+
 from config import find_sdk_dir, settings, setup_logging
 from cardio_quality import sdk_cardio_issues
 from json_utils import finite_json
@@ -76,7 +78,8 @@ except Exception:  # /api/replay/* вернут 503
 
 RECORDS_DIR = settings.RECORDS_DIR
 RECORDER = None  # SessionRecorder | None
-RECORD_LOCK = threading.RLock()  # Recorder lifecycle; acquire before STATE_LOCK when both are required.
+# Lock order when needed together: Experiment Lab, recorder lifecycle, live state.
+RECORD_LOCK = threading.RLock()
 
 # Дефолты частот, если устройство их не отдало (см. STAGE 9: API позволяет
 # запросить все три через get_*_sample_rate, дефолты — только на случай сбоя).
@@ -162,12 +165,25 @@ def _rec_close() -> str | None:
         return closed_id
 
 
+def _stop_recording(reason: str) -> str | None:
+    with EXPERIMENT_LAB.lock, RECORD_LOCK:
+        if RECORDER is None:
+            return None
+        session_id = RECORDER.session_id
+        EXPERIMENT_LAB.interrupt_recording(session_id, reason)
+        _rec_close()
+        return session_id
+
+
 def _rec_rotate(expected) -> None:
     """Rotate only the recording checked by the watchdog."""
-    with RECORD_LOCK:
+    with EXPERIMENT_LAB.lock, RECORD_LOCK:
         if RECORDER is not expected or not expected.active:
             return
         old_id = expected.session_id
+        EXPERIMENT_LAB.interrupt_recording(old_id, "recording_rotated")
+        if RECORDER is not expected:
+            return
         m = re.search(r"_p(\d+)$", old_id)
         base = old_id[:m.start()] if m else old_id
         nxt = (int(m.group(1)) + 1) if m else 2
@@ -1187,7 +1203,7 @@ def capsule_worker() -> None:
         finally:
             handles = []
             baseline_handlers = {}
-            _rec_close()
+            _stop_recording("device_disconnected")
             _clear_live_connection(message, state)
             negative_checks = 0
             if retry:
@@ -1649,6 +1665,9 @@ def _watchdog_tick() -> None:
                 _rec_rotate(rec)
         except Exception as exc:
             log.warning("[watchdog] rotation check failed: %r", exc)
+    experiment_lab = globals().get("EXPERIMENT_LAB")
+    if experiment_lab is not None:
+        experiment_lab.monitor()
 
 
 def _watchdog_loop() -> None:
@@ -1682,7 +1701,10 @@ async def lifespan(app: FastAPI):
         t.join(timeout=2.0)
     if REPLAY is not None:
         REPLAY.stop()
-    _rec_close()
+    try:
+        EXPERIMENT_LAB.shutdown()
+    finally:
+        _rec_close()
     _save_snapshot()
     log.info("[web] shutdown complete")
 
@@ -2110,8 +2132,7 @@ async def api_live_spectrogram(seconds: float = Query(20, ge=3, le=30)) -> dict[
     return result["spectrogram"]
 
 
-@app.post("/api/recording/start")
-async def api_recording_start() -> dict[str, Any]:
+def _start_manual_recording():
     """Start recording explicitly, including before NFB calibration."""
     if SessionRecorder is None:
         raise HTTPException(503, "Модуль записи недоступен.")
@@ -2128,12 +2149,18 @@ async def api_recording_start() -> dict[str, Any]:
         except Exception as exc:
             _recording_failed(exc)
             raise HTTPException(500, "Не удалось начать запись.") from exc
+        return rec
+
+
+@app.post("/api/recording/start")
+async def api_recording_start() -> dict[str, Any]:
+    rec = _start_manual_recording()
     return {"recording": rec.session_id, "session_dir": str(rec.session_dir)}
 
 
 @app.post("/api/recording/stop")
 async def api_recording_stop() -> dict[str, Any]:
-    session_id = _rec_close()
+    session_id = _stop_recording("recording_stopped")
     if session_id is None:
         raise HTTPException(404, "Нет активной записи.")
     return {"stopped": session_id, "recording": None}
@@ -2892,15 +2919,22 @@ async def experiment_status():
 
 @app.post("/api/experiments/start")
 async def experiment_start(payload: dict[str, Any]):
-    if not _live_connected() or RECORDER is None or not RECORDER.active:
-        raise HTTPException(409,"Сначала подключите повязку и начните запись")
-    with STATE_LOCK:
-        if S.calibration_phase == "running":
-            raise HTTPException(409, "Дождитесь завершения калибровки.")
-    try:
-        return EXPERIMENTS.start(payload.get('protocol_id',''), payload.get('phases'))
-    except ValueError as exc:raise HTTPException(400,str(exc))
-    except RuntimeError as exc:raise HTTPException(409,str(exc))
+    with EXPERIMENT_LAB.lock, RECORD_LOCK:
+        running = EXPERIMENT_LAB.active
+        if running is not None and running.mode == "live":
+            raise HTTPException(409, "Дождитесь завершения эксперимента с повязкой.")
+        if not _live_connected() or RECORDER is None or not RECORDER.active:
+            raise HTTPException(409, "Сначала подключите повязку и начните запись.")
+        with STATE_LOCK:
+            if S.calibration_phase == "running":
+                raise HTTPException(409, "Дождитесь завершения калибровки.")
+        try:
+            return EXPERIMENTS.start(payload.get("protocol_id", ""), payload.get("phases"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
 
 @app.post("/api/experiments/stop")
 async def experiment_stop(run_id: str | None = None):
@@ -2918,6 +2952,78 @@ async def door_phase_presented(payload: dict[str, Any]):
         raise HTTPException(409, str(exc)) from exc
     return {"ok": True}
 
+
+def _occipital_channels(names: list[str]) -> list[tuple[int, str]]:
+    normalized = [name.upper().strip().replace("–", "-").replace("—", "-").replace(" ", "")
+                  for name in names]
+    return [(i, name) for i, name in enumerate(names)
+            if re.fullmatch(r"O[12](?:-[A-Z0-9]+)?", normalized[i])]
+
+
+def _experiment_device_info() -> dict[str, Any]:
+    with STATE_LOCK:
+        contact = _contact_locked()
+        validity = _validity_locked(contact)
+        channels = list(S.channel_names)
+        sample_rate = S.eeg_sample_rate
+        recorder = RECORDER
+        return {
+            "ready": (validity["source_mode"] == "live" and validity["eeg"]
+                      and S.calibration_phase != "running"
+                      and not (REPLAY is not None and REPLAY.active)),
+            "recording": recorder.session_id if recorder is not None and recorder.active else None,
+            "channels": channels,
+            "occipital_channels": [name for _, name in _occipital_channels(channels)],
+            "sample_rate": sample_rate or None,
+            "contact": contact,
+        }
+
+
+def _experiment_open_recording():
+    with RECORD_LOCK:
+        if REPLAY is not None and REPLAY.active:
+            raise HTTPException(409, "Остановите воспроизведение перед живым экспериментом")
+        if EXPERIMENTS.status()["state"] == "running":
+            raise HTTPException(409, "Дождитесь завершения уже запущенного протокола")
+        if not _experiment_device_info()["ready"]:
+            raise HTTPException(409, "Дождитесь свежей ЭЭГ, устойчивого контакта и завершения калибровки.")
+        if RECORDER is not None and RECORDER.active:
+            return RECORDER, False
+        return _start_manual_recording(), True
+
+
+def _experiment_close_recording(session_id: str) -> None:
+    with RECORD_LOCK:
+        if RECORDER is not None and RECORDER.active and RECORDER.session_id == session_id:
+            _rec_close()
+
+
+def _experiment_eeg_window() -> dict[str, Any]:
+    with STATE_LOCK:
+        indices = _occipital_channels(S.channel_names)
+        sr = S.eeg_sample_rate
+        ready = bool(indices) and 32 <= sr <= 4096 and _validity_locked()["eeg"]
+        if not ready:
+            return {"ready": False}
+        n = int(sr * 2)
+        times = list(reversed(list(islice(reversed(S.eeg_t), n))))
+        rows = list(reversed(list(islice(reversed(S.eeg), n))))
+        if not times:
+            return {"ready": False}
+        age = S.now() - times[-1]
+        if age > 1:
+            return {"ready": False}
+        window_end_ms = (time.time() - age) * 1000
+    samples = [[row[i] if i < len(row) else float("nan") for i, _ in indices] for row in rows]
+    return {"ready": True, "sample_rate": sr, "channels": [name for _, name in indices],
+            "times": times, "samples": samples, "window_end_ms": window_end_ms}
+
+
+EXPERIMENT_LAB = ExperimentLab(
+    lambda: Path(RECORDS_DIR), _experiment_device_info, lambda: RECORDER,
+    _experiment_open_recording, _experiment_close_recording, _experiment_eeg_window,
+)
+app.include_router(create_experiment_lab_router(EXPERIMENT_LAB))
 
 
 if __name__ == "__main__":
