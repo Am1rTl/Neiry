@@ -409,3 +409,23 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
 @media (max-width: 440px) {
   .live-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.rhythm-controls, .rhythm-controls label, .rhythm-legend, .rhythm-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rhythm-controls { flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }
+.rhythm-controls label, .rhythm-legend { color: var(--muted); font-size: 12px; }
+.rhythm-legend { flex-wrap: wrap; gap: 8px 16px; margin-bottom: 10px; }
+.rhythm-name i { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; }
+.rhythm-name .rhythm-line { flex-basis: 18px; height: 0; border-top: 2px solid currentColor; border-radius: 0; }
+.rhythm-name small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.rhythm-plots { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+.rhythm-plots h3 { font-size: 13px; margin: 0 0 6px; }
+.rhythm-empty { display: grid; place-items: center; height: 100%; padding: 10px; margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+.rhythm-table th[scope="row"] { color: var(--text); }
+.rhythm-table td { font-variant-numeric: tabular-nums; }
+@media (max-width: 800px) {
+  .rhythm-plots { grid-template-columns: minmax(0, 1fr); }
+}
