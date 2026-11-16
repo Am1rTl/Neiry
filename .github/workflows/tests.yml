@@ -30,3 +30,5 @@ jobs:
           node --check static/lab.js
           node --check static/live.js
           node --check static/studio.js
+          node --check static/experiment_lab.js
+          node --check static/experiment_runner.js

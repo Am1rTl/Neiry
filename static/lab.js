@@ -21,7 +21,8 @@
     device: ['Подключение устройства', 'Поиск, состояние Bluetooth и калибровка без навязанных экранов.', 'Устройство'],
     live: ['Живой монитор', 'ЭЭГ, ФПГ, движение и показатели SDK в реальном времени.', 'Живой монитор'],
     sessions: ['Записи и воспроизведение', 'Управляйте сессиями, анализом, загрузкой и replay в одном окне.', 'Записи'],
-    experiments: ['Эксперименты', 'Выполнение протоколов с временными маркерами без отдельного интерфейса.', 'Эксперименты'],
+    experiments: ['Лаборатория экспериментов', 'Альфа-ритм, зрительное обучение и нейрообратная связь с Neiry Headband.', 'Эксперименты'],
+    'timed-protocol': ['Протоколы с таймером', 'Настраиваемые этапы для записи покоя, задачи и восстановления.', 'Протоколы с таймером'],
     segment: ['Исследование фрагмента', 'Выделяйте участки сигнала, сохраняйте аннотации и экспортируйте данные.', 'Исследователь'],
     history: ['История исследований', 'Сопоставляйте только явно отмеченные измерения одного участника.', 'История'],
     overview: ['Лаборатория сигналов', 'Отдельные измерения. Общая картина. Проверяемые выводы.', 'Обзор записей'],
@@ -123,13 +124,13 @@
   function renderSessions() {
     $('#session-selector').innerHTML = state.sessions.map(s => `<button class="session-option ${s.id===state.current?'selected':''}" data-session="${esc(s.id)}" aria-pressed="${s.id===state.current}" title="${esc(s.id)}"><span class="session-symbol">${icon(s.eeg_available?'wave':'heart')}</span><span class="session-info"><strong>${esc(dateLabel(s.started_at))}</strong><small>${esc(duration(s.wall_duration_s??s.duration_s))} · ${s.active?'Идёт запись':s.analysis_ready?'Анализ готов':'Сохранённая запись'}</small></span><span class="session-state" aria-hidden="true"></span></button>`).join('');
     $$('#session-selector [data-session]').forEach(b => b.addEventListener('click',()=>selectSession(b.dataset.session)));
-    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','segment','history'].includes(state.view);
+    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(state.view);
   }
   function updateExports() {
     ['html','json','csv'].forEach(format => { $(`#export-${format}`).href = `/api/lab/analysis/${encodeURIComponent(state.current || '')}/export?format=${format}`; });
     if (preview && state.analysis) previewExports(state.analysis);
     $('#analysis-version').textContent = state.analysis?.analysis_version ? `Анализ ${state.analysis.analysis_version}` : 'Воспроизводимый анализ';
-    $('#analysis-actions').hidden = ['knowledge','protocol','compare','device','live','sessions','experiments','segment','history'].includes(state.view)||!state.current||!state.analysis;
+    $('#analysis-actions').hidden = ['knowledge','protocol','compare','device','live','sessions','experiments','timed-protocol','segment','history'].includes(state.view)||!state.current||!state.analysis;
   }
   function previewExports(a) {
     exportUrls.splice(0).forEach(url=>URL.revokeObjectURL(url));
@@ -152,7 +153,7 @@
     $('#page-subtitle').textContent = subtitle;
     $('#breadcrumb-current').textContent = short;
     $$('.nav-item[data-view]').forEach(a=>{const active=a.dataset.view===view;a.classList.toggle('active',active);if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
-    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions'].includes(view);
+    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(view);
     updateExports(); closeMenu(); render({refreshList});
   }
   async function selectSession(id) {
@@ -192,14 +193,21 @@
     const renderId = ++state.renderId; destroyCharts(); notify('');
     state.analysis = null;
     updateExports();
+    if (state.view === 'experiments') {
+      window.NeuroLive?.leave();
+      window.NeuroStudio?.leave();
+      window.NeuroExperimentLab?.open({api,notify,preview:Boolean(preview)});
+      return;
+    }
+    window.NeuroExperimentLab?.leave();
     if (['device','live','sessions'].includes(state.view)) {
       window.NeuroStudio?.leave();
       await window.NeuroLive.renderView(state.view);
       return;
     }
     window.NeuroLive?.leave();
-    if (['experiments','segment','history'].includes(state.view)) {
-      await window.NeuroStudio?.renderView(state.view,{api,notify,preview:Boolean(preview)});
+    if (['timed-protocol','segment','history'].includes(state.view)) {
+      await window.NeuroStudio?.renderView(state.view==='timed-protocol'?'experiments':state.view,{api,notify,preview:Boolean(preview)});
       return;
     }
     window.NeuroStudio?.leave();
