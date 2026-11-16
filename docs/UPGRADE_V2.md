@@ -57,7 +57,7 @@ bash start.sh --open
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m unittest discover -p 'test_*.py' -q
+python -m scripts.run_tests
 node --check static/studio.js
 ```
 
