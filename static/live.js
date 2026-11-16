@@ -327,7 +327,7 @@
           ${livePlot('live-hr-chart','Пульс во времени · SDK','Фрагменты, прошедшие проверку флагов Capsule')}
           <section class="card wide" data-live-diagnostic="spectrogram">${heading('Спектрограмма ЭЭГ','Мощность нормируется отдельно для каждого канала')}<div class="live-spectrograms" id="live-spectrograms"></div><p class="chart-caption" id="live-spectrogram-note">Для построения нужны не менее трёх секунд ЭЭГ.</p></section>
           <section class="card wide" data-live-diagnostic="quality">${heading('Диагностика ЭЭГ','Постоянный сигнал, округление и помехи 50/60 Гц')}<div id="live-quality-state" class="studio-grid"><p class="chart-caption">Ожидаем достаточное окно ЭЭГ.</p></div></section>
-          <section class="card wide" data-live-diagnostic="paired">${heading('Сравнение двух ЭЭГ-отведений','Относительная мощность, когерентность и схема электродов')}${window.NeuroPairedPanel.markup()}</section>
+          <section class="card wide" data-live-diagnostic="paired">${heading('Спектр ЭЭГ на 3D-схеме','Доли мощности обоих отведений по частотным полосам')}${window.NeuroPairedPanel.markup()}</section>
         </div>
       </section>
       <section class="live-graph-group" aria-labelledby="live-motion-label">
