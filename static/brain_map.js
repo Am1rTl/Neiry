@@ -17,7 +17,7 @@
   function mount(canvas,data,band='alpha'){
     if(!canvas?.getContext)return;
     if(!canvas._nsMap){
-      const state={yaw:-.48,pitch:-.28,band:'alpha',data:null,down:false,startX:0,startY:0};
+      const state={yaw:0,pitch:-.28,band:'alpha',data:null,down:false,startX:0,startY:0};
       canvas._nsMap=state;canvas.tabIndex=0;
       canvas.style.touchAction='none';
       canvas.addEventListener('pointerdown',e=>{state.down=true;state.startX=e.clientX;state.startY=e.clientY;canvas.setPointerCapture?.(e.pointerId);});
@@ -31,30 +31,39 @@
       canvas.addEventListener('keydown',e=>{
         if(!['ArrowRight','ArrowLeft','ArrowUp','ArrowDown','Home'].includes(e.key))return;
         e.preventDefault();
-        if(e.key==='Home'){state.yaw=-.48;state.pitch=-.28;}
+        if(e.key==='Home'){state.yaw=0;state.pitch=-.28;}
         else if(e.key==='ArrowLeft')state.yaw-=.15;
         else if(e.key==='ArrowRight')state.yaw+=.15;
         else if(e.key==='ArrowUp')state.pitch=Math.max(-1.3,state.pitch-.15);
         else if(e.key==='ArrowDown')state.pitch=Math.min(1.3,state.pitch+.15);
         draw(canvas,state);
       });
-      if(typeof ResizeObserver!=='undefined'){
-        state.resize=new ResizeObserver(()=>draw(canvas,state));state.resize.observe(canvas);
-      }
     }
-    canvas._nsMap.band=band;
-    canvas._nsMap.data=data;
-    draw(canvas,canvas._nsMap);
+    const state=canvas._nsMap;
+    if(!state.resize&&typeof ResizeObserver!=='undefined'){
+      state.resize=new ResizeObserver(()=>draw(canvas,state));
+      state.resize.observe(canvas);
+    }
+    state.band=band;
+    state.data=data;
+    draw(canvas,state);
+  }
+  function unmount(canvas){
+    const state=canvas?._nsMap;
+    state?.resize?.disconnect();
+    if(state)state.resize=null;
   }
   function draw(canvas,state){
     const rect=canvas.getBoundingClientRect();
-    const width=Math.max(280,Math.round(rect.width||560));
-    const height=Math.max(230,Math.round(rect.height||300));
+    const width=Math.round(rect.width),height=Math.round(rect.height);
+    if(!width||!height)return;
     const dpr=Math.min(2,root.devicePixelRatio||1);
     if(canvas.width!==Math.round(width*dpr)||canvas.height!==Math.round(height*dpr)){
       canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);
     }
-    const g=canvas.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
+    const g=canvas.getContext('2d');
+    if(!g)return;
+    g.setTransform(dpr,0,0,dpr,0,0);
     g.clearRect(0,0,width,height);
     const cx=width*.5,cy=height*.52,r=Math.min(height*.4,width*.28);
     const proj=p=>{
@@ -112,10 +121,10 @@
     const parent=canvas.closest('.pair-map-widget');
     if(parent){
       const out=parent.querySelector('[data-map-caption]');
-      if(out)out.textContent=available?
-        `${bandNames[state.band]||state.band}. O1–T3: ${(powers[0]*100).toFixed(1)}%; O2–T4: ${(powers[1]*100).toFixed(1)}%. Подсвечены только линии отведений, НЕ области коры.`:
-        'Нет проверенного парного спектра. Электроды показаны условно, без подсветки активности.';
+      if(out)out.textContent=powers.every(v=>v!==null)
+        ? `${bandNames[state.band]||state.band}. O1–T3: ${(powers[0]*100).toFixed(1)}%; O2–T4: ${(powers[1]*100).toFixed(1)}%. Цвета обозначают линии отведений.`
+        : 'Условная схема расположения электродов. Парные оценки пока недоступны.';
     }
   }
-  root.NeuroBrainMap={mount,bandNames};
+  root.NeuroBrainMap={mount,unmount};
 })(typeof window!=='undefined'?window:globalThis);

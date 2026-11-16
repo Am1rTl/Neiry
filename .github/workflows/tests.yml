@@ -22,7 +22,17 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Python tests (SDK hardware mocked)
-        run: python -m unittest discover -p 'test_*.py' -q
+        run: |
+          python - <<'PYTHON'
+          import unittest
+
+          from _sdk_stubs import install
+
+          install()
+          tests = unittest.defaultTestLoader.discover(".", pattern="test_*.py")
+          result = unittest.TextTestRunner(verbosity=0).run(tests)
+          raise SystemExit(not result.wasSuccessful())
+          PYTHON
       - name: Python syntax
         run: python -m compileall -q .
       - name: Browser script syntax
@@ -30,3 +40,9 @@ jobs:
           node --check static/lab.js
           node --check static/live.js
           node --check static/studio.js
+          node --check static/experiment_lab.js
+          node --check static/experiment_runner.js
+          node --check static/checkpoints.js
+          node --check static/brain_map.js
+          node --check static/paired_panel.js
+          node --check static/common.js

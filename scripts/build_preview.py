@@ -46,25 +46,27 @@ def build(root: Path | None = None) -> Path:
     data = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     data = data.replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
     html = (static / "lab.html").read_text(encoding="utf-8")
-    html = html.replace(
-        '<link rel="stylesheet" href="/static/lab.css">',
-        '<style>' + (static / "lab.css").read_text(encoding="utf-8") + '</style>',
-    )
+    for stylesheet in ("lab", "experiment_lab", "experiment_runner"):
+        html = html.replace(
+            f'<link rel="stylesheet" href="/static/{stylesheet}.css">',
+            '<style>' + (static / f"{stylesheet}.css").read_text(encoding="utf-8") + '</style>',
+        )
     html = html.replace('<script defer src="/static/vendor/chart.umd.min.js"></script>', '')
     html = html.replace('<script defer src="/static/lab.js"></script>', '')
-    for module in ("live_charts_core", "brain_map", "paired_panel", "live", "studio"):
+    modules = ("brain_map", "paired_panel", "live", "studio", "experiment_runner", "experiment_lab", "checkpoints")
+    for module in modules:
         html = html.replace(f'<script defer src="/static/{module}.js"></script>', '')
     chart = (static / "vendor" / "chart.umd.min.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
     script = (static / "lab.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
     runtime_scripts = [
         (static / f"{name}.js").read_text(encoding="utf-8").replace("</script", "<\\/script")
-        for name in ("live_charts_core", "brain_map", "paired_panel", "live", "studio")
+        for name in modules
     ]
     assets = (
         '<script id="neuroscope-data" type="application/json">' + data + '</script>'
-        + '<script>window.NEUROSCOPE_PREVIEW=JSON.parse(document.getElementById("neuroscope-data").textContent);</script>'
-        + '<script>' + chart + '</script>'
-        + ''.join('<script>' + chunk + '</script>' for chunk in runtime_scripts)
+        '<script>window.NEUROSCOPE_PREVIEW=JSON.parse(document.getElementById("neuroscope-data").textContent);</script>'
+        '<script>' + chart + '</script>'
+        + ''.join('<script>' + module + '</script>' for module in runtime_scripts)
         + '<script>' + script + '</script>'
     )
     html = html.replace('</body>', assets + '</body>')

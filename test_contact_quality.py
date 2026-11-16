@@ -2,6 +2,8 @@
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _sdk_stubs import install
@@ -137,12 +139,159 @@ class TestLiveValidity(unittest.TestCase):
             server.S.latest_cardio['skinContact']=False
             self.assertFalse(server._validity_locked()['cardio'])
             server.S.latest_cardio['skinContact']=True
-            # SDK may publish psychophysiological estimates far less often than EEG.
-            # A 20-second gap is normal; two minutes of silence is not a 0.1s dropout.
-            server.S.metrics_updated_at['emotions']=time.monotonic()-20
+            server.S.metrics_updated_at['emotions'] = time.monotonic() - 20
             self.assertTrue(server._validity_locked()['emotions'])
-            server.S.metrics_updated_at['emotions']=time.monotonic()-181
+            server.S.metrics_updated_at['emotions'] = time.monotonic() - server.settings.SDK_STATE_STALE_SECONDS - 1
             self.assertFalse(server._validity_locked()['emotions'])
+
+    def test_phy_remains_fresh_between_minute_updates(self):
+        now = time.monotonic()
+        with server.STATE_LOCK:
+            settled(server.S.contact_tracker, now)
+            server.S.latest_phy = {'fatigue': 2.0, 't': 5.0}
+            server.S.metrics_updated_at['phy'] = now - 60
+            server.S.metrics_updated_at['emotions'] = now - 60
+            server.S.metrics_updated_at['cardio'] = now - 60
+
+        snapshot = server._build_tick_snapshot()
+        self.assertTrue(snapshot['validity']['phy'])
+        self.assertTrue(snapshot['validity']['emotions'])
+        self.assertFalse(snapshot['validity']['cardio'])
+        self.assertEqual(snapshot['phy']['fatigue'], 2.0)
+        self.assertTrue(snapshot['sensor_status']['phy']['fresh'])
+        self.assertEqual(snapshot['sensor_status']['phy']['expected_interval_s'], 60)
+
+        with server.STATE_LOCK:
+            server.S.metrics_updated_at['phy'] = now - server.settings.PHY_STALE_SECONDS - 1
+
+        delayed = server._build_tick_snapshot()
+        self.assertFalse(delayed['validity']['phy'])
+        self.assertIsNone(delayed['phy'])
+        self.assertFalse(delayed['sensor_status']['phy']['fresh'])
+        self.assertEqual(delayed['sensor_status']['phy']['state'], 'warn')
+
+    def test_phy_still_requires_current_contact_and_calibration(self):
+        now = time.monotonic()
+        with server.STATE_LOCK:
+            server.S.latest_phy = {'fatigue': 2.0, 't': 5.0}
+            server.S.metrics_updated_at['phy'] = now - 30
+            self.assertFalse(server._validity_locked()['phy'])
+
+            settled(server.S.contact_tracker, now)
+            self.assertTrue(server._validity_locked()['phy'])
+            server.S.calibrated = False
+            self.assertFalse(server._validity_locked()['phy'])
+
+    def test_ppg_stays_visible_when_cardio_reports_motion(self):
+        with server.STATE_LOCK:
+            settled(server.S.contact_tracker, time.monotonic())
+            server.S.latest_cardio['motionArtifacts'] = True
+            server.S.calibrated = False
+        snapshot = server._build_tick_snapshot()
+        self.assertTrue(snapshot['validity']['ppg'])
+        self.assertFalse(snapshot['validity']['cardio'])
+        self.assertTrue(snapshot['validity']['emotions'])
+        self.assertEqual(snapshot['sensor_status']['ppg']['state'], 'ok')
+        self.assertIn('движение', snapshot['sensor_status']['cardio']['reason'])
+        self.assertIsNone(snapshot['cardio'])
+
+    def test_websocket_counts_new_rows_even_with_overlapping_callback_time(self):
+        delta = server._WSDelta()
+        snapshot = {'stream_counts': {'ppg': 2}, 'ppg_t': [1, 1.01], 'ppg_sr': 100}
+        first = server._client_stream(snapshot, delta, 'ppg', [4, 5], 1, 500)
+        self.assertEqual(first['samples'], [4, 5])
+        snapshot.update(stream_counts={'ppg': 5}, ppg_t=[1, 1.01, 1, 1.01, 1.02])
+        second = server._client_stream(snapshot, delta, 'ppg', [4, 5, 6, 7, 8], 1, 500)
+        self.assertEqual(second['samples'], [6, 7, 8])
+        self.assertEqual(second['sample_index'], 2)
+        self.assertEqual(second['times'], [1, 1.01, 1.02])
+        self.assertIsNone(server._client_stream(snapshot, delta, 'ppg', [4, 5, 6, 7, 8], 1, 500))
+
+    def test_live_websocket_copies_and_sends_only_fresh_rows(self):
+        lean = server._WSDelta(lean=True)
+        with server.STATE_LOCK:
+            settled(server.S.contact_tracker, time.monotonic())
+            server.S.metrics_updated_at['nfb'] = time.monotonic()
+            server.S.eeg.extend([[1, 2]] * 1250)
+            server.S.eeg_t.extend(range(250, 1500))
+            server.S.stream_counts['eeg'] = 1500
+            server.S.resistances_hist.extend([[220000, 230000], [240000, 250000]])
+            server.S.resistances_t.extend([1, 2])
+            server.S.nfb_hist.extend([{'t': 1, 'alpha': 2}, {'t': 2, 'alpha': 3}])
+
+        first_snapshot = server._build_tick_snapshot((lean,))
+        first = server._build_client_tick(first_snapshot, lean)
+        self.assertEqual(len(first_snapshot['eeg_t']), 1250)
+        self.assertEqual(first['eeg_stream']['sample_index'], 250)
+        self.assertEqual(first['resistances_times'], [1, 2])
+        self.assertEqual(len(first['nfb']), 2)
+        self.assertIn('replay', first)
+        for legacy_field in ('eeg', 'ppg', 'mems_acc', 'mems_gyro', 'nfb_history_list'):
+            self.assertNotIn(legacy_field, first)
+
+        idle = server._build_client_tick(server._build_tick_snapshot((lean,)), lean)
+        self.assertIsNone(idle['eeg_stream'])
+        self.assertEqual(idle['nfb'], [])
+        self.assertEqual(idle['resistances_times'], [])
+
+        with server.STATE_LOCK:
+            server.S.eeg.append([3, 4])
+            server.S.eeg_t.append(1500)
+            server.S.stream_counts['eeg'] += 1
+            server.S.resistances_hist.append([260000, 270000])
+            server.S.resistances_t.append(3)
+            server.S.nfb_hist.append({'t': 3, 'alpha': 4})
+        next_snapshot = server._build_tick_snapshot((lean,))
+        followup = server._build_client_tick(next_snapshot, lean)
+        self.assertEqual(next_snapshot['eeg_t'], [1500])
+        self.assertEqual(followup['eeg_stream']['ch1'], [3])
+        self.assertEqual(followup['resistances_hist'], [[260000, 270000]])
+        self.assertEqual(followup['nfb'], [{'t': 3, 'alpha': 4}])
+
+    def test_early_live_socket_receives_first_samples_alongside_legacy_client(self):
+        legacy = server._WSDelta()
+        lean = server._WSDelta(lean=True)
+        with server.STATE_LOCK:
+            server.S.eeg.clear()
+            server.S.eeg_t.clear()
+        first_snapshot = server._build_tick_snapshot((lean, legacy))
+        self.assertIsNone(server._build_client_tick(first_snapshot, lean)['eeg_stream'])
+        self.assertEqual(server._build_client_tick(first_snapshot, legacy)['eeg'], [])
+
+        with server.STATE_LOCK:
+            server.S.eeg.extend([[7, 8], [9, 10]])
+            server.S.eeg_t.extend([1.0, 1.05])
+            server.S.stream_counts['eeg'] = 2
+        next_snapshot = server._build_tick_snapshot((lean, legacy))
+        live = server._build_client_tick(next_snapshot, lean)
+        legacy_tick = server._build_client_tick(next_snapshot, legacy)
+        self.assertEqual(live['eeg_stream']['times'], [1.0, 1.05])
+        self.assertEqual(live['eeg_stream'], legacy_tick['eeg_stream'])
+        self.assertEqual(legacy_tick['eeg'], [[7, 8], [9, 10]])
+
+    def test_replay_seek_reprimes_live_socket_even_when_timestamps_go_back(self):
+        lean = server._WSDelta(lean=True)
+        playback = SimpleNamespace(generation=1, status=lambda: {'active': True, 'paused': False})
+        with server.STATE_LOCK:
+            server.S._device_ready = False
+            server.S.eeg.clear()
+            server.S.eeg_t.clear()
+            server.S.eeg.extend([[1, 2]])
+            server.S.eeg_t.extend([80])
+        with patch.object(server, 'REPLAY', playback):
+            first = server._build_client_tick(server._build_tick_snapshot((lean,)), lean)
+            self.assertEqual(first['eeg_stream']['times'], [80])
+            self.assertEqual(first['validity']['source_mode'], 'replay')
+            with server.STATE_LOCK:
+                playback.generation += 1
+                server.S.eeg.clear()
+                server.S.eeg_t.clear()
+                server.S.eeg.extend([[3, 4]])
+                server.S.eeg_t.extend([5])
+            sought = server._build_client_tick(server._build_tick_snapshot((lean,)), lean)
+            self.assertEqual(sought['stream_epoch'], 2)
+            self.assertEqual(sought['eeg_stream']['times'], [5])
+            self.assertEqual(sought['eeg_stream']['ch1'], [3])
 
     def test_failed_contact_resets_after_disconnect(self):
         with server.STATE_LOCK:

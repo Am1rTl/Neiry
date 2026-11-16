@@ -24,4 +24,14 @@ class TestLiveQuality(unittest.TestCase):
         self.assertGreater(len(a['freq_hz']),25)
         self.assertEqual(len(a['log10_psd']),len(a['freq_hz']))
 
+    def test_spectrogram_preserves_channel_labels_and_missing_input(self):
+        sr = 250
+        t = np.arange(1500) / sr
+        x = np.sin(2 * np.pi * 10 * t)
+        data = np.column_stack((x, x / 2, np.full_like(x, np.nan), x * 2))
+        result = live_spectrogram(data, sr, ['T3', 'T4', 'O1', 'O2'])
+        self.assertTrue(result['available'])
+        self.assertEqual([c['name'] for c in result['channels']], ['T3', 'T4', 'O1', 'O2'])
+        self.assertEqual([c['available'] for c in result['channels']], [True, True, False, True])
+
 if __name__=='__main__': unittest.main()

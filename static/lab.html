@@ -8,12 +8,16 @@
   <title>NeuroScope — лаборатория сигналов</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b111b'/%3E%3Cpath d='M10 33h10l5-15 10 29 6-14h13' fill='none' stroke='%237ce3cb' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/lab.css">
+  <link rel="stylesheet" href="/static/experiment_lab.css">
+  <link rel="stylesheet" href="/static/experiment_runner.css">
   <script defer src="/static/vendor/chart.umd.min.js"></script>
-  <script defer src="/static/live_charts_core.js"></script>
   <script defer src="/static/brain_map.js"></script>
   <script defer src="/static/paired_panel.js"></script>
   <script defer src="/static/live.js"></script>
   <script defer src="/static/studio.js"></script>
+  <script defer src="/static/experiment_runner.js"></script>
+  <script defer src="/static/experiment_lab.js"></script>
+  <script defer src="/static/checkpoints.js"></script>
   <script defer src="/static/lab.js"></script>
 </head>
 <body>
@@ -37,6 +41,8 @@
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7V4h7l3 3h8v13H3V7Z"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4m0 1h7l2 2h5v9h-7l-2-2H5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
   </defs></svg>
 
   <aside class="sidebar" id="sidebar" aria-label="Основная навигация">
@@ -86,5 +92,30 @@
       <footer class="workspace-footer"><span>NeuroScope <span class="footer-separator">/</span> <span id="analysis-version">Воспроизводимый анализ</span></span><span>Исследовательские показатели · не медицинское заключение</span></footer>
     </div>
   </main>
+
+  <div class="checkpoint-widget">
+    <section id="checkpoint-panel" class="checkpoint-panel" role="dialog" aria-modal="false" aria-labelledby="checkpoint-title" hidden>
+      <header class="checkpoint-header">
+        <h2 id="checkpoint-title" tabindex="-1">Чекпоинты</h2>
+        <button type="button" class="icon-button" data-checkpoint-close aria-label="Закрыть окно чекпоинтов"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </header>
+      <p id="checkpoint-detail" class="checkpoint-detail"></p>
+      <div id="checkpoint-list" hidden></div>
+      <form id="checkpoint-form" hidden>
+        <label class="screen-reader" for="checkpoint-name">Название чекпоинта</label>
+        <input id="checkpoint-name" type="text" maxlength="120" autocomplete="off" placeholder="Например: глаза закрыты">
+        <div class="checkpoint-form-actions">
+          <button type="button" class="button subtle" data-checkpoint-cancel>Позже</button>
+          <button type="submit" class="button primary" id="checkpoint-save">Сохранить</button>
+        </div>
+      </form>
+      <p id="checkpoint-error" class="checkpoint-error" role="alert" hidden></p>
+    </section>
+    <p id="checkpoint-toast" class="checkpoint-toast" role="status" hidden></p>
+    <div id="checkpoint-dock" class="checkpoint-dock" role="group" aria-label="Чекпоинты записи" hidden>
+      <button type="button" class="button primary" data-checkpoint-create aria-keyshortcuts="Alt+M" aria-controls="checkpoint-panel" title="Поставить чекпоинт (Alt+M)"><svg class="icon" aria-hidden="true"><use href="#i-flag"/></svg>Поставить чекпоинт<kbd aria-hidden="true">Alt+M</kbd></button>
+      <button type="button" class="button subtle" data-checkpoint-list aria-controls="checkpoint-panel">Список</button>
+    </div>
+  </div>
 </body>
 </html>

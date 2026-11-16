@@ -209,10 +209,10 @@
         label.textContent = t('staleLive');
       } else if (age < 10) {
         el.className = 'chip stale';
-        label.textContent = t('staleStale')(age.toFixed(0));
+        label.textContent = t('staleStale');
       } else {
         el.className = 'chip dead';
-        label.textContent = t('staleDead')(age.toFixed(0));
+        label.textContent = t('staleDead');
       }
     }
     setInterval(render, 1000);
@@ -235,7 +235,8 @@
       status_disconnected: 'disconnected', status_searching: 'searching', status_error: 'error',
       status_cached: 'cached', status_streaming: 'streaming', status_lost: 'lost',
       navDashboard: '◈ DASHBOARD', navCharts: '📈 FULL CHARTS →', navMore: ' MORE ', navSessions: '🗂 SESSIONS',
-      staleLive: 'LIVE', staleStale: function (s) { return 'STALE ' + s + 's'; }, staleDead: function (s) { return 'NO DATA ' + s + 's'; },
+      staleLive: 'LIVE', staleStale: 'DELAYED', staleDead: 'NO DATA',
+      confirmCalibrationEyes: 'Start calibration? Close your eyes and stay still.',
       lastKnown: 'last known data',
       sensNoData: 'no data', sensGood: function (v) { return 'good · ' + v + ' kΩ'; },
       sensContact: 'no contact', sensPts: function (n) { return n + ' pts'; }, sensAfterCal: 'after cal',
@@ -253,7 +254,8 @@
       status_disconnected: 'отключено', status_searching: 'поиск', status_error: 'ошибка',
       status_cached: 'кэш', status_streaming: 'поток', status_lost: 'потеряно',
       navDashboard: '◈ ДАШБОРД', navCharts: '📈 ГРАФИКИ →', navMore: ' ЕЩЁ ', navSessions: '🗂 СЕССИИ',
-      staleLive: 'LIVE', staleStale: function (s) { return 'STALE ' + s + ' c'; }, staleDead: function (s) { return 'НЕТ ДАННЫХ ' + s + ' c'; },
+      staleLive: 'ДАННЫЕ ИДУТ', staleStale: 'ДАННЫЕ ЗАДЕРЖАНЫ', staleDead: 'НЕТ ДАННЫХ',
+      confirmCalibrationEyes: 'Начать калибровку? Закройте глаза и оставайтесь неподвижны.',
       lastKnown: 'последние известные данные',
       sensNoData: 'нет данных', sensGood: function (v) { return 'норма · ' + v + ' кОм'; },
       sensContact: 'нет контакта', sensPts: function (n) { return 'точек: ' + n; }, sensAfterCal: 'после калиб.',

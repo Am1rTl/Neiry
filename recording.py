@@ -39,14 +39,18 @@ class SessionRecorder:
     # Промежуточный flush открытых JSONL-хэндлов: по счётчику строк или по времени.
     _JSONL_FLUSH_LINES = 50
     _JSONL_FLUSH_SEC = 1.0
+    _CSV_FLUSH_SEC = 1.0
 
     def __init__(self, base_dir: str | Path, *, device_name: str = "", device_serial: str = "",
-                 channel_names: Sequence[str] = (), sample_rates: Optional[Mapping[str, int]] = None):
+                 channel_names: Sequence[str] = (), sample_rates: Optional[Mapping[str, int]] = None,
+                 start_reason: str = "manual", source: Mapping[str, str | None] | None = None):
         self.base_dir = Path(base_dir)
         self.device_name = device_name or "unknown"
         self.device_serial = device_serial or "unknown"
         self.channel_names = list(channel_names)
         self.sample_rates = dict(sample_rates or {})
+        self.start_reason = start_reason
+        self.source = {k: v for k, v in (source or {}).items() if v}
         self.session_id = ""
         self.session_dir: Optional[Path] = None
         self._lock = threading.RLock()
@@ -54,9 +58,9 @@ class SessionRecorder:
         self._writers: dict[str, csv.writer] = {}
         self._closed = True
         self._started_ts = 0.0
-        self._sample_index = 0
-        self._ppg_index = 0
-        self._mems_index = 0
+        self._sample_indices = dict.fromkeys(("eeg", "ppg", "mems"), 0)
+        self._csv_dirty: set[str] = set()
+        self._csv_flushed_at = 0.0
         self.counts: dict[str, int] = {"eeg_samples": 0, "ppg_samples": 0, "mems_samples": 0,
                                        "resistance_rows": 0, "metric_rows": 0, "events": 0}
         self.write_errors = 0
@@ -91,9 +95,9 @@ class SessionRecorder:
             # Сброс состояния сессии (рекордер может переиспользоваться при ротации).
             self._started_ts = time.time()
             self._closed = False
-            self._sample_index = 0
-            self._ppg_index = 0
-            self._mems_index = 0
+            self._sample_indices = dict.fromkeys(("eeg", "ppg", "mems"), 0)
+            self._csv_dirty.clear()
+            self._csv_flushed_at = time.monotonic()
             self.counts = {"eeg_samples": 0, "ppg_samples": 0, "mems_samples": 0,
                            "resistance_rows": 0, "metric_rows": 0, "events": 0}
             self.write_errors = 0
@@ -112,7 +116,8 @@ class SessionRecorder:
             self._open_text("metrics", "metrics.jsonl")
             self._open_text("events", "events.jsonl")
             self._write_meta(ended=False)
-            self.event("session_started", device=self.device_name, serial=self.device_serial)
+            self.event("session_started", device=self.device_name, serial=self.device_serial,
+                       reason=self.start_reason)
             return self.session_dir
 
     def _open(self, key: str, name: str, header: list[str]) -> None:
@@ -123,6 +128,7 @@ class SessionRecorder:
             w.writerow(header)
             self._files[key] = f
             self._writers[key] = w
+            self._csv_dirty.add(key)
         except Exception:
             self.write_errors += 1
 
@@ -140,6 +146,8 @@ class SessionRecorder:
         meta = {"session_id": self.session_id, "device": self.device_name,
                 "serial": self.device_serial, "channels": self.channel_names,
                 "sample_rates": self.sample_rates,
+                "start_reason": self.start_reason,
+                "source": self.source,
                 "started_at": _iso(self._started_ts),
                 "recording_format_version": 2,
                 "units": {"eeg": "sdk_native_unverified", "ppg": "sdk_native_unverified",
@@ -167,10 +175,11 @@ class SessionRecorder:
             self._closed = True
             for f in self._files.values():
                 try:
-                    f.flush(); f.close()
+                    f.close()
                 except Exception:
                     self.write_errors += 1
             self._files.clear(); self._writers.clear()
+            self._csv_dirty.clear()
             summary = {
                 "session_id": self.session_id, "device": self.device_name,
                 "serial": self.device_serial,
@@ -198,11 +207,8 @@ class SessionRecorder:
     def stats(self) -> dict[str, Any]:
         """Живой снимок сессии: id, длительность, счётчики, ошибки, размеры файлов."""
         with self._lock:
-            for f in self._files.values():
-                try:
-                    f.flush()
-                except Exception:
-                    pass
+            self._flush_csv_locked(time.monotonic())
+            self._flush_jsonl()
             sizes: dict[str, int] = {}
             if self.session_dir is not None:
                 for name in ("eeg.csv", "ppg.csv", "mems.csv", "resistances.csv",
@@ -229,12 +235,7 @@ class SessionRecorder:
             if time.time() - self._started_ts >= max_hours * 3600:
                 return True
             try:
-                f = self._files.get("eeg")
-                if f is not None:
-                    try:
-                        f.flush()
-                    except Exception:
-                        pass
+                self._flush_csv_file_locked("eeg")
                 if (self.session_dir / "eeg.csv").stat().st_size >= max_mb * 1024 * 1024:
                     return True
             except OSError:
@@ -242,28 +243,51 @@ class SessionRecorder:
             return False
 
     # ── низкоуровневая запись ───────────────────────────────────────────────
-    def _row(self, key: str, row: Sequence[Any], counter: Optional[str] = None) -> None:
-        if self._closed:
-            return
-        with self._lock:
-            w = self._writers.get(key)
-            if w is None:
-                return
+    def _flush_csv_file_locked(self, key: str) -> None:
+        if key in self._csv_dirty:
             try:
-                w.writerow(row)
-                if counter:
-                    self.counts[counter] = self.counts.get(counter, 0) + 1
-                if sum(self.counts.values()) % 100 == 0:
-                    self._files[key].flush()
+                self._files[key].flush()
             except Exception:
                 self.write_errors += 1
+            else:
+                self._csv_dirty.discard(key)
 
-    def _jsonl(self, key: str, fname: str, rec: Mapping[str, Any], counter: str) -> None:
-        if self._closed or not self.session_dir:
+    def _flush_csv_locked(self, now: float) -> None:
+        for key in tuple(self._csv_dirty):
+            self._flush_csv_file_locked(key)
+        self._csv_flushed_at = now
+
+    def _write_rows_locked(self, key: str, rows: Iterable[Sequence[Any]], counter: str) -> None:
+        writer = self._writers.get(key)
+        if writer is None:
             return
+        write = writer.writerow
+        written = 0
+        try:
+            for row in rows:
+                try:
+                    write(row)
+                except Exception:
+                    self.write_errors += 1
+                else:
+                    written += 1
+        finally:
+            if written:
+                self.counts[counter] += written
+                self._csv_dirty.add(key)
+                now = time.monotonic()
+                if now - self._csv_flushed_at >= self._CSV_FLUSH_SEC:
+                    self._flush_csv_locked(now)
+
+    def _jsonl(self, key: str, fname: str, rec: Mapping[str, Any], counter: str,
+               *, flush: bool = False) -> bool:
+        if self._closed or not self.session_dir:
+            return False
         line = json.dumps(finite_json(rec), ensure_ascii=False, default=str, allow_nan=False) + "\n"
         try:
             with self._lock:
+                if self._closed:
+                    return False
                 f = self._files.get(key)
                 if f is None:
                     # Хэндл не открылся в start() — дописываем напрямую.
@@ -272,12 +296,16 @@ class SessionRecorder:
                 else:
                     f.write(line)
                     self._jsonl_pending += 1
-                    if (self._jsonl_pending >= self._JSONL_FLUSH_LINES
-                            or time.time() - self._jsonl_flushed_ts >= self._JSONL_FLUSH_SEC):
+                    if flush:
+                        f.flush()
+                    elif (self._jsonl_pending >= self._JSONL_FLUSH_LINES
+                          or time.time() - self._jsonl_flushed_ts >= self._JSONL_FLUSH_SEC):
                         self._flush_jsonl()
                 self.counts[counter] = self.counts.get(counter, 0) + 1
+                return True
         except Exception:
             self.write_errors += 1
+            return False
 
     def _flush_jsonl(self) -> None:
         # Вызывать под self._lock.
@@ -291,42 +319,64 @@ class SessionRecorder:
         self._jsonl_pending = 0
         self._jsonl_flushed_ts = time.time()
 
-    def event(self, type_: str, **fields: Any) -> None:
+    def event(self, type_: str, *, timestamp: float | None = None, flush: bool = False,
+              **fields: Any) -> bool:
         if self._closed or not self.session_dir:
-            return
-        rec = {"ts_unix": time.time(), "ts_iso": _iso(time.time()), "type": type_, **fields}
-        self._jsonl("events", "events.jsonl", rec, "events")
+            return False
+        stamp = time.time() if timestamp is None else timestamp
+        rec = {"ts_unix": stamp, "ts_iso": _iso(stamp), "type": type_, **fields}
+        return self._jsonl("events", "events.jsonl", rec, "events", flush=flush)
 
     # ── быстрые потоки (CSV) ────────────────────────────────────────────────
-    def record_eeg(self, samples: Iterable[Sequence[float]], timestamps: Iterable[float]) -> None:
-        if self._closed:
-            return
+    def _record_samples(self, key: str, samples: Iterable[tuple[float, Iterable[float]]],
+                        sdk_bounds: tuple[int, int] | None = None) -> None:
+        # Индексы, строки и метка пакета образуют одну операцию относительно close/start.
+        with self._lock:
+            if self._closed:
+                return
+            first_index = next_index = self._sample_indices[key]
+            last_ts = None
+
+            def rows():
+                nonlocal next_index, last_ts
+                for ts, values in samples:
+                    row = [f"{ts:.6f}", _iso(ts), next_index,
+                           *(format(float(value), ".17g") for value in values)]
+                    next_index += 1
+                    last_ts = ts
+                    yield row
+
+            try:
+                self._write_rows_locked(key, rows(), f"{key}_samples")
+            finally:
+                self._sample_indices[key] = next_index
+            if last_ts is not None and sdk_bounds is not None:
+                first_ms, last_ms = sdk_bounds
+                self.record_metric("eeg_batch_timing", {
+                    "first_sample_index": first_index, "sample_count": next_index - first_index,
+                    "sdk_first_ms": first_ms, "sdk_last_ms": last_ms,
+                }, ts=last_ts)
+
+    def record_eeg(self, samples: Iterable[Sequence[float]], timestamps: Iterable[float],
+                   *, sdk_bounds: tuple[int, int] | None = None) -> None:
         n_ch = len(self.channel_names) or 2
-        for sample, ts in zip(samples, timestamps):
-            vals = [float(v) for v in sample]
-            # An absent channel is missing data, never a physiological zero.
-            vals += [float("nan")] * (n_ch - len(vals))
-            self._row("eeg", [f"{ts:.6f}", _iso(ts), self._sample_index,
-                              *[format(v, ".17g") for v in vals[:n_ch]]], "eeg_samples")
-            self._sample_index += 1
+
+        def batches():
+            for sample, ts in zip(samples, timestamps):
+                values = list(sample)[:n_ch]
+                # An absent channel is missing data, never a physiological zero.
+                values.extend([math.nan] * (n_ch - len(values)))
+                yield ts, values
+
+        self._record_samples("eeg", batches(), sdk_bounds)
 
     def record_ppg(self, values: Iterable[float], timestamps: Iterable[float]) -> None:
-        if self._closed:
-            return
-        for v, ts in zip(values, timestamps):
-            self._row("ppg", [f"{ts:.6f}", _iso(ts), self._ppg_index, format(float(v), ".17g")], "ppg_samples")
-            self._ppg_index += 1
+        self._record_samples("ppg", ((ts, (value,)) for value, ts in zip(values, timestamps)))
 
     def record_mems(self, acc: Iterable[Sequence[float]], gyro: Iterable[Sequence[float]],
                     timestamps: Iterable[float]) -> None:
-        if self._closed:
-            return
-        for a, g, ts in zip(acc, gyro, timestamps):
-            row = [f"{ts:.6f}", _iso(ts), self._mems_index,
-                   *[format(float(x), ".17g") for x in list(a)[:3]],
-                   *[format(float(x), ".17g") for x in list(g)[:3]]]
-            self._row("mems", row, "mems_samples")
-            self._mems_index += 1
+        samples = ((ts, (*list(a)[:3], *list(g)[:3])) for a, g, ts in zip(acc, gyro, timestamps))
+        self._record_samples("mems", samples)
 
     def record_resistances(self, values_by_channel: Mapping[str, float], ts: Optional[float] = None) -> None:
         if self._closed:
@@ -348,7 +398,7 @@ class SessionRecorder:
                     fv = float("nan")
                 # Пропуски и INF (нет контакта) пишем как NaN.
                 vals.append("NaN" if not math.isfinite(fv) else round(fv, 3))
-            self._row("resistances", [f"{ts:.6f}", _iso(ts), *vals], "resistance_rows")
+            self._write_rows_locked("resistances", ([f"{ts:.6f}", _iso(ts), *vals],), "resistance_rows")
 
     def _rewrite_res_header(self) -> None:
         # Вызывать под self._lock. Строк данных ещё нет — заголовок перезаписываем.
@@ -357,6 +407,8 @@ class SessionRecorder:
             return
         try:
             old = self._files.pop("resistances", None)
+            self._writers.pop("resistances", None)
+            self._csv_dirty.discard("resistances")
             if old is not None:
                 try:
                     old.close()
@@ -367,6 +419,7 @@ class SessionRecorder:
             w.writerow(["ts_unix", "ts_iso", *self._res_channels])
             self._files["resistances"] = f
             self._writers["resistances"] = w
+            self._csv_dirty.add("resistances")
         except Exception:
             self.write_errors += 1
 

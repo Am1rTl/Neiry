@@ -15,7 +15,7 @@ BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "low_gamma": (30., 45.)}
 NOTICE = ("Два биполярных отведения: O1–T3 и O2–T4. Когерентность и wPLI — "
           "свойства записанных электрических сигналов, не доказательство "
-          "нейронной связи полушарий. Ассиметрия мощности не определяет "
+          "нейронной связи полушарий. Асимметрия мощности не определяет "
           "доминирование полушария или локализацию источника.")
 
 
@@ -36,7 +36,7 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
     An optional quality mask matches one *non-overlapping* epoch at a time.
     The mask is for offline pre-screened windows; raw live gets local QC.
     """
-    labels = names or ["O1–T3", "O2–T4"]
+    labels = names if names is not None else ["O1–T3", "O2–T4"]
     try:
         fs = float(sample_rate_hz)
         data = np.asarray(raw, dtype=float)
@@ -50,9 +50,9 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
     if standardized[0] == "O2-T4":
         data = data[:, [1, 0]]
     labels = ["O1–T3", "O2–T4"]
-    n = int(round(fs * epoch_s))
-    if n < 100 or not (1 <= min_epochs <= 10000) or not (1.5 <= epoch_s <= 15):
+    if not (1 <= min_epochs <= 10000 and 1.5 <= epoch_s <= 15):
         return _fail("invalid", "Недопустимые параметры спектральных окон.", names=labels)
+    n = int(round(fs * epoch_s))
     starts = range(0, len(data)-n+1, n)
     count = len(starts)
     if count < min_epochs:
@@ -62,7 +62,10 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
     sel_1_45 = (freq >= 1) & (freq < 45)
     broad = (freq >= 1) & (freq < min(100., fs/2))
     line = (freq >= 48) & (freq <= 52)
-    accepted = []
+    accepted = 0
+    total_psd = np.zeros((freq.size, 2))
+    total_cross = np.zeros(freq.size, dtype=complex)
+    total_imaginary_abs = np.zeros(freq.size)
     reason_counts: dict[str, int] = {}
     for j, start in enumerate(starts):
         a = data[start:start+n]
@@ -89,30 +92,28 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
         if fail:
             reason_counts[fail] = reason_counts.get(fail, 0)+1
         else:
-            accepted.append(z)
-    quality = {"total_epochs": count, "accepted_epochs": len(accepted),
-               "accepted_pct": round(100*len(accepted)/count,1), "rejected_by":reason_counts,
+            accepted += 1
+            cross = z[:, 0] * np.conj(z[:, 1])
+            total_psd += sp
+            total_cross += cross
+            total_imaginary_abs += np.abs(cross.imag)
+    quality = {"total_epochs": count, "accepted_epochs": accepted,
+               "accepted_pct": round(100 * accepted / count, 1), "rejected_by": reason_counts,
                "epoch_seconds": epoch_s, "overlap": 0}
-    if len(accepted) < min_epochs or len(accepted) / max(count, 1) < .50:
-        result = _fail("low_quality", f"Прошли проверку только {len(accepted)} из {count} окон; нужно ≥{min_epochs} и ≥50% времени по неперекрывающимся окнам.",
-                       count=count, accepted=len(accepted), names=labels)
+    if accepted < min_epochs or accepted / count < .50:
+        result = _fail("low_quality", f"Прошли проверку только {accepted} из {count} окон; нужно ≥{min_epochs} и ≥50% неперекрывающихся окон.",
+                       count=count, accepted=accepted, names=labels)
         result["quality"] = quality
         return result
-    coeff = np.stack(accepted, axis=0)    # epochs × freq × channels
-    norm = fs*np.sum(window*window)
-    P0 = np.mean(np.abs(coeff[:,:,0])**2,axis=0)/norm
-    P1 = np.mean(np.abs(coeff[:,:,1])**2,axis=0)/norm
-    cross_ep = coeff[:,:,0]*np.conj(coeff[:,:,1])/norm
-    C = np.mean(cross_ep,axis=0)
-    coh2 = np.abs(C)**2/np.maximum(P0*P1,1e-30)
-    imag_coh = np.imag(C)/np.sqrt(np.maximum(P0*P1,1e-30))
-    imag_ep = np.imag(cross_ep)
-    wpli = np.abs(np.mean(imag_ep,axis=0))/np.maximum(np.mean(np.abs(imag_ep),axis=0),1e-30)
+    # Accumulate frequency-bin sums in constant memory even for long recordings.
+    norm = fs * np.sum(window ** 2) * accepted
+    P0, P1 = (total_psd / norm).T
+    C = total_cross / norm
     total0 = np.trapezoid(P0[sel_1_45], freq[sel_1_45])
     total1 = np.trapezoid(P1[sel_1_45], freq[sel_1_45])
     if total0 <= 1e-18 or total1 <= 1e-18:
         result = _fail("low_power", "Невозможно надёжно нормировать очень слабые сигналы.",
-                       count=count, accepted=len(accepted), names=labels)
+                       count=count, accepted=accepted, names=labels)
         result["quality"] = quality
         return result
     bands = {}
@@ -128,8 +129,9 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
         # averaging of coherence gives tiny noise-only bins undue influence.
         cross_band = np.trapezoid(C[select], freq[select])
         power_norm = max(left*right, 1e-30)
-        imags = imag_ep[:,select]
-        band_wpli = abs(float(np.sum(imags))) / max(float(np.sum(np.abs(imags))),1e-30)
+        imaginary = abs(float(total_cross[select].imag.sum()))
+        imaginary_abs = float(total_imaginary_abs[select].sum())
+        band_wpli = imaginary / max(imaginary_abs, 1e-30)
         # Right/left signed log difference: positive = more relative energy in 2nd bipolar lead.
         asymmetry = float(np.log((right/total1)/(left/total0)))
         bands[band] = {

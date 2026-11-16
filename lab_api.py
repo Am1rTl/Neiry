@@ -1,15 +1,17 @@
 """Local, cached research analysis. No cloud requests and no raw-file mutation."""
 from __future__ import annotations
 
+import asyncio
 import csv
-import hashlib
 import html
 import io
 import json
 import os
 import re
-import threading
 import shutil
+import stat
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -21,8 +23,8 @@ from starlette.concurrency import run_in_threadpool
 
 from json_utils import finite_json
 
-INPUT_FILES = ("meta.json", "eeg.csv", "ppg.csv", "mems.csv", "resistances.csv",
-               "metrics.jsonl", "events.jsonl", "calibration.json", "summary.json")
+_ARCHIVE_WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="archive-analysis")
+_INPUT_CHANGED = "Файлы изменились во время анализа. Повторите после завершения записи."
 
 
 def _read_json(path: Path, default: Any = None) -> Any:
@@ -40,19 +42,26 @@ def _atomic_json(path: Path, value: Any) -> None:
     os.replace(temp, path)
 
 
-def _signature(path: Path) -> dict[str, Any]:
-    result = {}
-    for name in INPUT_FILES:
-        f = path / name
-        if not f.is_file() or f.is_symlink():
-            continue
-        stat = f.stat()
-        h = hashlib.sha256()
-        with f.open("rb") as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b""):
-                h.update(block)
-        result[name] = {"bytes": stat.st_size, "sha256": h.hexdigest()}
-    return result
+def _source_state(path: Path) -> tuple:
+    from analysis_engine import recording_source_paths
+
+    def fingerprint(name, info):
+        return (name, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    try:
+        directory = path.lstat()
+        if not stat.S_ISDIR(directory.st_mode):
+            raise HTTPException(409, _INPUT_CHANGED)
+        state = [fingerprint("", directory)]
+        for file in recording_source_paths(path):
+            info = file.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise HTTPException(409, _INPUT_CHANGED)
+            if stat.S_ISREG(info.st_mode):
+                state.append(fingerprint(file.name, info))
+        return tuple(state)
+    except FileNotFoundError as exc:
+        raise HTTPException(409, _INPUT_CHANGED) from exc
 
 
 class SessionContext(BaseModel):
@@ -98,35 +107,77 @@ class AnalysisStore:
             "notice": "Описание добавлено после записи; оно не заменяет временные метки событий."
         })
 
-    def get(self, ident: str, force: bool = False) -> dict:
-        path = self.session(ident)
+    def _require_inactive(self, ident: str) -> None:
         if self.active() == ident:
             raise HTTPException(409, "Завершите запись: анализ должен использовать неизменный файл")
-        from analysis_engine import analyze_session, ANALYSIS_VERSION
+
+    def _require_unchanged(self, ident: str, path: Path, before: tuple) -> None:
+        self._require_inactive(ident)
+        if _source_state(path) != before:
+            raise HTTPException(409, _INPUT_CHANGED)
+
+    def _verified_report(self, ident: str) -> dict | None:
+        """Serve a warm report without queuing behind an unrelated calculation."""
+        from analysis_engine import ANALYSIS_VERSION
+
+        self._require_inactive(ident)
+        lock = self._lock(ident)
+        if not lock.acquire(blocking=False):
+            return None
+        try:
+            path = self.session(ident)
+            before = _source_state(path)
+            if self._verified.get(ident) != before:
+                return None
+            cached = _read_json(self.reports / f"{ident}.json")
+            if not cached or cached.get("analysis_version") != ANALYSIS_VERSION:
+                return None
+            self._require_unchanged(ident, path, before)
+            return {**cached, "context": self.context(ident)}
+        finally:
+            lock.release()
+
+    async def request(self, ident: str, force: bool = False) -> dict:
+        if not force:
+            cached = await run_in_threadpool(self._verified_report, ident)
+            if cached is not None:
+                return cached
+        return await asyncio.get_running_loop().run_in_executor(_ARCHIVE_WORKER, self.get, ident, force)
+
+    def get(self, ident: str, force: bool = False) -> dict:
+        from analysis_engine import analyze_session, ANALYSIS_VERSION, recording_source_signatures
+
         with self._lock(ident):
+            path = self.session(ident)
+            self._require_inactive(ident)
             report_path = self.reports / f"{ident}.json"
             cache_path = self.reports / "cache" / f"{ident}.json"
-            stats = tuple((name, (path / name).stat().st_size,
-                           (path / name).stat().st_mtime_ns)
-                          for name in INPUT_FILES if (path / name).is_file())
-            cached = _read_json(report_path)
-            stamp = _read_json(cache_path, {})
+            before = _source_state(path)
+            cached = None if force else _read_json(report_path)
             valid_version = bool(cached and cached.get("analysis_version") == ANALYSIS_VERSION)
-            current_signature = None
-            if not force and valid_version and self._verified.get(ident) == stats:
+            if valid_version and self._verified.get(ident) == before:
                 result = cached
             else:
-                current_signature = _signature(path)
-                if not force and valid_version and stamp.get("inputs") == current_signature:
+                try:
+                    source = recording_source_signatures(path)
+                except FileNotFoundError as exc:
+                    raise HTTPException(409, _INPUT_CHANGED) from exc
+                self._require_unchanged(ident, path, before)
+                stamp = _read_json(cache_path, {}) if valid_version else {}
+                if stamp.get("inputs") == source:
                     result = cached
                 else:
-                    result = finite_json(analyze_session(path))
-                    if _signature(path) != current_signature:
-                        raise HTTPException(409, "Файлы изменились во время анализа. Повторите после завершения записи.")
+                    result = analyze_session(path, source_signatures=source)
+                    # Windows stat reports creation time as ctime. Verify the bytes
+                    # after analysis there to catch writes with a restored mtime.
+                    if os.name == "nt" and recording_source_signatures(path) != source:
+                        raise HTTPException(409, _INPUT_CHANGED)
+                    self._require_unchanged(ident, path, before)
                     _atomic_json(report_path, result)
                     _atomic_json(cache_path, {"analysis_version": ANALYSIS_VERSION,
-                                              "inputs": current_signature})
-                self._verified[ident] = stats
+                                              "inputs": source})
+                self._verified[ident] = before
+            self._require_unchanged(ident, path, before)
             # Context is explicitly separate from computed observations.
             return {**result, "context": self.context(ident)}
 
@@ -197,9 +248,11 @@ class AnalysisStore:
             except Exception:
                 import logging
                 logging.getLogger("capsule").exception("Automatic analysis failed for %s", ident)
-        threading.Thread(target=work, name="analysis-" + ident, daemon=True).start()
+        _ARCHIVE_WORKER.submit(work)
 
     def summaries(self) -> dict:
+        from analysis_engine import ANALYSIS_VERSION
+        active_id = self.active()
         out = []
         if self.records.is_dir():
             for d in sorted(self.records.iterdir(), reverse=True):
@@ -210,15 +263,20 @@ class AnalysisStore:
                 meta = _read_json(d / "meta.json", {})
                 cached = _read_json(self.reports / f"{d.name}.json", {})
                 s, q = cached.get("session", {}), cached.get("quality", {})
+                final = _read_json(d / "summary.json", {}) or {}
+                counts = final.get("counts") or {}
                 eeg = d / "eeg.csv"
+                eeg_recorded = bool(counts["eeg_samples"]) if "eeg_samples" in counts else (
+                    eeg.is_file() and eeg.stat().st_size > 100)
                 out.append({"id": d.name, "started_at": meta.get("started_at"),
                             "duration_s": s.get("duration_s"),
-                            "wall_duration_s": s.get("wall_duration_s"),
-                            "eeg_available": cached.get("eeg", {}).get("available", bool(eeg.is_file() and eeg.stat().st_size > 100)),
+                            "wall_duration_s": s.get("wall_duration_s", final.get("duration_s")),
+                            "eeg_available": cached.get("eeg", {}).get("available", eeg_recorded),
                             "channels": meta.get("channels", []),
                             "quality_status": q.get("status", "pending"),
                             "usable_eeg_pct": q.get("usable_eeg_pct"),
-                            "analysis_ready": bool(cached), "active": self.active() == d.name,
+                            "analysis_ready": cached.get("analysis_version") == ANALYSIS_VERSION,
+                            "active": active_id == d.name,
                             "summary": q.get("summary", "")})
         return {"sessions": out, "mode": "local", "analysis_is_medical": False}
 
@@ -292,15 +350,15 @@ def create_lab_router(records: Path, reports: Path, static: Path, active: Callab
 
     @router.get("/analysis/{ident}")
     async def analysis(ident: str):
-        return await run_in_threadpool(store.get, ident)
+        return await store.request(ident)
 
     @router.post("/analysis/{ident}/refresh")
     async def refresh(ident: str):
-        return await run_in_threadpool(store.get, ident, True)
+        return await store.request(ident, force=True)
 
     @router.get("/analysis/{ident}/export")
     async def export(ident: str, format: Literal["json", "csv", "html"] = "json"):
-        data = await run_in_threadpool(store.get, ident)
+        data = await store.request(ident)
         header = {"Content-Disposition": f'attachment; filename="{ident}.{format}"'}
         if format == "csv":
             return Response(_csv_report(data), media_type="text/csv; charset=utf-8", headers=header)
@@ -401,7 +459,7 @@ def create_lab_router(records: Path, reports: Path, static: Path, active: Callab
                 except Exception: continue  # Broken files must not block all exports.
             return generate_research_pdf(analyses,_read_json(static/'knowledge.json',{}))
         try:
-            content=await run_in_threadpool(build)
+            content=await asyncio.get_running_loop().run_in_executor(_ARCHIVE_WORKER, build)
         except (ImportError,RuntimeError) as exc:
             raise HTTPException(503,f"PDF-генератор недоступен: {exc}")
         return Response(content,media_type="application/pdf",

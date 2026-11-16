@@ -21,7 +21,11 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
-ANALYSIS_VERSION = "2.2.0"
+from cardio_quality import sdk_cardio_issues
+from checkpoints import LABEL_EVENT, checkpoint_index
+from paired_eeg import analyze_pair
+
+ANALYSIS_VERSION = "2.4.0"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -236,11 +240,9 @@ def _motion_at(times: np.ndarray, motion: dict, offset: float = 0.) -> np.ndarra
 def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisConfig, unit_label: str | None = None) -> dict:
     fs=s["rate"]; data=s["values"]
     units=unit_label or "SDK (физические единицы не указаны)"
-    if not len(data) or fs<=0:
+    if not data.size or fs<=0 or round(config.epoch_s * fs)<8 or round(config.hop_s * fs)<1:
         return {"available":False,"sample_rate_hz":fs or None,"units":units,"channels":[]}
     nper=int(round(config.epoch_s*fs)); hop=int(round(config.hop_s*fs))
-    if nper<8 or hop<1:
-        raise ValueError("Invalid sampling rate / epoch configuration")
     starts=np.arange(0,max(0,len(data)-nper+1),hop,dtype=int)
     times=(starts+nper/2)/fs
     mscore=_motion_at(times,motion,motion_offset)
@@ -386,7 +388,7 @@ def analyze_ppg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
     empty={"available":False,"pulse_rate_bpm":None,"prv":null_prv,
            "quality":{"status":"unavailable","accepted_windows":0,"total_windows":0,"usable_pct":0},
            "timeline":[],"excerpt":{"time_s":[],"values":[]}}
-    if not len(s["values"]) or s["rate"]<=0:
+    if not s["values"].size or s["rate"]<=0:
         return empty
     x=s["values"][:,0]; fs=s["rate"]
     if fs<15:
@@ -509,17 +511,66 @@ def analyze_impedance(s: dict, origin: float, config: AnalysisConfig) -> dict:
         "threshold_note":"500 кОм / 1 МОм взяты из исходной конфигурации приложения. Это проектные пороги для контакта, а не универсальные нормы EEG; проценты по конечным строкам измерений, не по длительности."})
 
 
-def analyze_vendor(path: Path, events: list, origin: float) -> dict:
+def _packet_timing(row: dict) -> tuple[int, int, int, int] | None:
+    fields = ("first_sample_index", "sample_count", "sdk_first_ms", "sdk_last_ms")
+    index, count, first, last = packet = tuple(row.get(key) for key in fields)
+    if all(type(value) is int for value in packet) and index >= 0 and count > 0 and 0 < first <= last:
+        return packet
+    return None
+
+
+def analyze_vendor(path: Path, events: list, origin: float, eeg_rate: float = 0.) -> dict:
     streams=defaultdict(lambda:{"count":0,"keys":set(),"prev":None,"consecutive_duplicates":0,
         "fields":defaultdict(list),"flags":defaultdict(list),"timeline":[],"valid_heart_rates":[]})
     malformed=0
+    packet_counts = Counter()
+    previous_packet = None
+    longest_step_ms = None
+    dt_ms = 1000 / eeg_rate if eeg_rate > 0 else None
+    artifact_observations = Counter()
+    artifact_flags = Counter()
     try:
         with path.open(encoding="utf-8") as h:
             for line in h:
                 try:r=json.loads(line)
                 except (ValueError,TypeError):malformed+=1;continue
                 if not isinstance(r,dict):malformed+=1;continue
-                name=str(r.get("stream","unknown")); item=streams[name];item["count"]+=1
+                name = str(r.get("stream", "unknown"))
+                if name == "eeg_batch_timing":
+                    packet = _packet_timing(r)
+                    if packet is None:
+                        packet_counts["invalid_packets"] += 1
+                    else:
+                        index, _, first, _ = packet
+                        packet_counts["valid_packets"] += 1
+                        if previous_packet is not None:
+                            prev_index, prev_count, _, prev_last = previous_packet
+                            if index == prev_index + prev_count:
+                                step = first - prev_last
+                                packet_counts["compared_steps"] += 1
+                                if step <= 0:
+                                    packet_counts["nonincreasing_steps"] += 1
+                                else:
+                                    longest_step_ms = step if longest_step_ms is None else max(longest_step_ms, step)
+                                    if dt_ms is not None and step > dt_ms + max(2, dt_ms * .5):
+                                        packet_counts["long_steps"] += 1
+                            else:
+                                packet_counts["noncontiguous_indices"] += 1
+                    previous_packet = packet
+                    continue
+                if name == "eeg_artifacts":
+                    channels = r.get("channels")
+                    for channel in channels if isinstance(channels, list) else []:
+                        if not isinstance(channel, dict):
+                            continue
+                        index, flags = channel.get("index"), channel.get("flags")
+                        if type(index) is int and index >= 0 and type(flags) is int and 0 <= flags <= 255:
+                            artifact_observations[index] += 1
+                            artifact_flags[index] += int(flags != 0)
+                    continue
+
+                item = streams[name]
+                item["count"] += 1
                 payload={k:v for k,v in r.items() if k not in ENVELOPE}
                 key=json.dumps(payload,sort_keys=True,allow_nan=True)
                 item["keys"].add(key);item["consecutive_duplicates"]+=int(key==item["prev"]);item["prev"]=key
@@ -528,7 +579,7 @@ def analyze_vendor(path: Path, events: list, origin: float) -> dict:
                     if isinstance(v,bool):item["flags"][k].append(v)
                     elif isinstance(v,(int,float)):
                         item["fields"][k].append(v);numeric[k]=v
-                if name=="cardio" and r.get("metricsAvailable") is True and not r.get("hasArtifacts") and not r.get("motionArtifacts") and r.get("skinContact") is True and _number(r.get("heartRate"))>0:
+                if name=="cardio" and not sdk_cardio_issues(r):
                     item["valid_heart_rates"].append(r["heartRate"])
                 item["timeline"].append({"time_s":_number(r.get("ts_unix"))-origin,"values":numeric})
     except OSError:pass
@@ -544,7 +595,17 @@ def analyze_vendor(path: Path, events: list, origin: float) -> dict:
             "heart_rate_sdk_valid":stats(item["valid_heart_rates"]) if name=="cardio" else None,
             "timeline":[line[i] for i in inds]})
     calibration=[e for e in events if e.get("type")=="calibration"]
+    timing = dict.fromkeys(("valid_packets", "invalid_packets", "compared_steps", "long_steps",
+                            "nonincreasing_steps", "noncontiguous_indices"), 0)
+    timing.update(packet_counts, longest_step_ms=longest_step_ms,
+                  long_step_threshold_ms=dt_ms + max(2, dt_ms * .5) if dt_ms is not None else None)
+    acquisition = {
+        "eeg_timing": timing,
+        "eeg_artifact_channels": [{"index": index, "observations": count, "nonzero_flags": artifact_flags[index]}
+                                  for index, count in sorted(artifact_observations.items())],
+    }
     return sanitize({"streams":result,"calibration":calibration,"malformed_rows":malformed,
+         "acquisition": acquisition,
          "note":"Показатели SDK — непрозрачные оценки алгоритмов, не измеренные эмоции или свойства личности. Повторения могут быть штатным переизданием состояний. Проценты и статистика по строкам, не независимым наблюдениям; экстремальные значения не переводятся в проценты."})
 
 
@@ -559,20 +620,123 @@ def _read_events(path: Path) -> list:
     return out
 
 
-def _provenance(path: Path) -> dict:
-    files=[]
-    for p in sorted(path.iterdir()):
-        if not p.is_file() or p.suffix.lower() not in {".csv",".json",".jsonl"}:continue
+def recording_source_paths(path: Path) -> list[Path]:
+    return sorted(p for p in path.iterdir() if p.suffix.lower() in {".csv", ".json", ".jsonl"})
+
+
+def recording_source_signatures(path: Path) -> dict:
+    signatures = {}
+    for p in recording_source_paths(path):
+        if p.is_symlink() or not p.is_file():
+            continue
         digest=hashlib.sha256()
         with p.open("rb") as h:
             for block in iter(lambda:h.read(1024*1024),b""):digest.update(block)
-        files.append({"name":p.name,"size_bytes":p.stat().st_size,"sha256":digest.hexdigest()})
+        signatures[p.name] = {"bytes": p.stat().st_size, "sha256": digest.hexdigest()}
+    return signatures
+
+
+def _provenance(path: Path, source_signatures: dict | None = None) -> dict:
+    signatures = recording_source_signatures(path) if source_signatures is None else source_signatures
+    files = [{"name": name, "size_bytes": sig["bytes"], "sha256": sig["sha256"]}
+             for name, sig in sorted(signatures.items())]
     return {"files":files,"source_unchanged":True,
             "time_axis":"sample_index / nominal_sample_rate; no sorting, interpolation or timestamp-based resampling",
             "unit_policy":"Unknown units are never silently converted to volts or microvolts."}
 
 
-def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> dict:
+
+def _review_eeg(eeg: dict, audit: dict, config: AnalysisConfig) -> dict:
+    counts = [channel["quality"] for channel in eeg["channels"]]
+    usable = sum(count["usable_windows"] for count in counts)
+    total = sum(count["total_windows"] for count in counts)
+    spectral_channels = sum(count["usable_windows"] >= config.minimum_spectral_windows for count in counts)
+    interpretability = eeg.get("spectral_interpretability", "unavailable")
+    coarse_channels = [channel["name"] for channel in eeg["channels"]
+                       if channel["stats"]["quantization_concern"]]
+    reasons = Counter()
+    for count in counts:
+        reasons.update(count["rejected_reasons"])
+    if not audit["sample_count"]:
+        status = "missing"
+    elif not counts:
+        status = "unavailable"
+    elif not total:
+        status = "too_short"
+    elif not usable:
+        status = "rejected"
+    elif interpretability == "severely_limited":
+        status = "limited"
+    elif spectral_channels < len(counts):
+        status = "partial"
+    else:
+        status = "ready"
+    return {"status": status, "accepted_windows": usable, "total_windows": total,
+            "spectral_channels": spectral_channels, "channel_count": len(counts),
+            "spectral_interpretability": interpretability, "coarse_channels": coarse_channels,
+            "top_reasons": [reason for reason, _ in reasons.most_common(2)],
+            "window_seconds": config.epoch_s}
+
+
+def _review_ppg(ppg: dict, audit: dict, config: AnalysisConfig) -> dict:
+    quality = ppg["quality"]
+    if not audit["sample_count"]:
+        status = "missing"
+    elif not ppg["available"] or quality["status"] == "sampling_rate_too_low":
+        status = "unavailable"
+    elif not quality["total_windows"]:
+        status = "too_short"
+    elif ppg["pulse_rate_bpm"] is None:
+        status = "rejected"
+    elif quality["accepted_windows"] == 1:
+        status = "limited"
+    else:
+        status = "ready"
+    reasons = Counter(reason for window in ppg["timeline"] for reason in window["reasons"])
+    return {"status": status, "accepted_windows": quality["accepted_windows"],
+            "total_windows": quality["total_windows"], "window_seconds": config.ppg_window_s,
+            "top_reasons": [reason for reason, _ in reasons.most_common(2)],
+            "pulse_rate_bpm": ppg["pulse_rate_bpm"]}
+
+
+def _quick_review(audit: dict, eeg: dict, ppg: dict, motion: dict, impedance: dict,
+                  acquisition: dict, config: AnalysisConfig) -> dict:
+    valid_motion_samples = motion["summary"].get("gyro_magnitude", {}).get("finite_count", 0)
+    motion_total = len(motion["timeline"])
+    contacts_with_values = sum(ch["median_ohm"] is not None for ch in impedance["channels"])
+    resistances = audit["resistances"]
+    if not audit["mems"]["sample_count"]:
+        motion_status = "missing"
+    elif not valid_motion_samples:
+        motion_status = "unavailable"
+    elif not motion_total:
+        motion_status = "too_short"
+    else:
+        motion_status = "ready"
+    if not resistances["sample_count"]:
+        contact_status = "missing"
+    elif not contacts_with_values:
+        contact_status = "unavailable"
+    elif contacts_with_values < len(impedance["channels"]):
+        contact_status = "partial"
+    else:
+        contact_status = "ready"
+    streams = {
+        "eeg": _review_eeg(eeg, audit["eeg"], config),
+        "ppg": _review_ppg(ppg, audit["ppg"], config),
+        "mems": {"status": motion_status, "window_seconds": config.epoch_s},
+        "resistances": {"status": contact_status, "channels_with_values": contacts_with_values,
+                        "channel_count": len(impedance["channels"])},
+    }
+    for name, review in streams.items():
+        review.update(sample_count=audit[name]["sample_count"],
+                      recorded=audit[name]["sample_count"] > 0,
+                      sample_rate_hz=audit[name]["sample_rate_hz"],
+                      index_discontinuities=audit[name]["index_discontinuities"])
+    return {"streams": streams, "sdk": acquisition}
+
+def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
+                    source_signatures: dict | None = None) -> dict:
     """Read one local session, return strict-JSON-compatible evidence and caveats."""
     cfg=config or AnalysisConfig();p=Path(path)
     if not p.is_dir():raise FileNotFoundError(str(p))
@@ -594,33 +758,42 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
     known_units={"V":"V","mV":"mV","uV":"µV","µV":"µV","μV":"µV"}
     unit_label=known_units.get(declared) if isinstance(declared,str) else None
     eeg=analyze_eeg(loaded["eeg"],motion,eeg_start-mems_start,cfg,unit_label)
-    # Paired channels from the same ordered CSV, with no timestamp sorting.
-    # Quality windows in analyze_eeg overlap (hop 2 s). Select indices 0,2,4,...
-    # for independent 4-second paired windows and intersect both channel screens.
-    from paired_eeg import analyze_pair
-    pair_data = loaded["eeg"]["values"]
-    pair_channels = eeg.get("channels", [])
+    eeg_stream = loaded["eeg"]
+    pair_channels = eeg["channels"]
     paired_mask = None
-    if len(pair_channels) == 2:
-        e0 = pair_channels[0].get("timeline", [])
-        e1 = pair_channels[1].get("timeline", [])
-        paired_mask = [bool(e0[j]["usable"] and e1[j]["usable"])
-                       for j in range(0, min(len(e0), len(e1)), 2)]
-    paired = analyze_pair(pair_data, loaded["eeg"]["rate"], epoch_s=cfg.epoch_s,
-                          min_epochs=8, names=loaded["eeg"]["columns"],
-                          usable_window=paired_mask)
+    if len(pair_channels) == 2 and eeg_stream["rate"] > 0:
+        epoch = int(round(cfg.epoch_s * eeg_stream["rate"]))
+        hop = int(round(cfg.hop_s * eeg_stream["rate"]))
+        if epoch >= 8 and hop > 0:
+            left, right = (ch["timeline"] for ch in pair_channels)
+            # Match each independent epoch to the offline quality window at
+            # the same sample. The check includes sample-index continuity.
+            paired_mask = [
+                start % hop == 0 and start // hop < min(len(left), len(right))
+                and left[start // hop]["usable"] and right[start // hop]["usable"]
+                for start in range(0, len(eeg_stream["values"]) - epoch + 1, epoch)
+            ]
+    paired = analyze_pair(eeg_stream["values"], eeg_stream["rate"], epoch_s=cfg.epoch_s,
+                          names=eeg_stream["columns"], usable_window=paired_mask)
     ppg=analyze_ppg(loaded["ppg"],motion,ppg_start-mems_start,cfg)
     impedance=analyze_impedance(loaded["resistances"],origin,cfg)
     events=_read_events(p/"events.jsonl")
-    vendor=analyze_vendor(p/"metrics.jsonl",events,origin)
+    checkpoints=checkpoint_index(events)
+    events=[checkpoints.get(e.get("checkpoint_id"), e)
+            if e.get("type") == "marker" and isinstance(e.get("checkpoint_id"), str) else e
+            for e in events if e.get("type") != LABEL_EVENT]
+    vendor=analyze_vendor(p/"metrics.jsonl",events,origin,loaded["eeg"]["rate"])
     flags=[];observations=[]
     def flag(code,severity,title,detail):flags.append({"code":code,"severity":severity,"title":title,"detail":detail})
     def obs(title,detail,confidence="descriptive",category="data"):observations.append({"title":title,"detail":detail,"confidence":confidence,"category":category})
-    if not paired["available"] and eeg["available"]:
-        flag("paired_unavailable", "info", "Сравнение каналов ограничено", paired["reason"] or "Проверка качества не пройдена.")
     if not eeg["available"]:
-        flag("no_eeg","critical","ЭЭГ отсутствует","eeg.csv пуст или не содержит доступного сигнала; выводы о ритмах мозга для этой сессии недоступны.")
-        obs("В этой сессии нет записи ЭЭГ","Доступны только присутствующие периферические потоки; пульс и движение не заменяют измерение ЭЭГ.","high")
+        if audit["eeg"]["sample_count"]:
+            flag("eeg_unavailable", "warning", "Не удалось разобрать ЭЭГ",
+                 "В файле есть строки ЭЭГ, но отсутствуют значения каналов или корректная частота дискретизации.")
+        else:
+            flag("no_eeg", "critical", "ЭЭГ отсутствует",
+                 "В eeg.csv нет строк данных.")
+            obs("В этой сессии нет записи ЭЭГ", "В анализ включены доступные периферические потоки.", "high")
     else:
         if not unit_label:
             flag("unknown_eeg_units","warning","Физические единицы ЭЭГ не подтверждены","В meta.json отсутствуют распознаваемые физические единицы EEG. Интегральная мощность в исходных единицах²; плотность PSD в исходных единицах²/Гц. Перевода в мкВ нет.")
@@ -648,8 +821,10 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
     for name in ("eeg","ppg","mems"):
         if audit[name]["index_discontinuities"]:
             flag("index_"+name,"warning",f"Разрыв индекса {name}",f"Непоследовательных переходов индекса: {audit[name]['index_discontinuities']}; предположение равномерной сетки требует проверки.")
+    if eeg["available"] and len(pair_channels) == 2 and not paired["available"]:
+        flag("paired_unavailable", "info", "Парный анализ ЭЭГ ограничен", paired["reason"])
     markers=[e for e in events if e.get("type") in {"marker","task","condition"}]
-    if not markers:
+    if not any(not e.get("checkpoint_id") or e.get("label") for e in markers):
         flag("no_condition_markers","info","Нет разметки условий","Нет отметок глаза открыты/закрыты, заданий или событий поведения; связь ритмов с состояниями и причинные эффекты не оцениваются.")
     if not (p/"summary.json").exists():
         flag("missing_session_summary","info","Нет итогового файла закрытия","summary.json отсутствует: окончание сессии определяется по доступным строкам, корректное закрытие записи не подтверждено.")
@@ -673,7 +848,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
        "alpha":"Локальный максимум строго внутри 8–13 Гц, log-PSD prominence≥3 dB и ≥15 прошедших окон. Если >50% соседних отсчётов одинаковы или медиана уровней в окне <20, alpha_peak_hz скрыт, численный кандидат только в alpha_peak. Это эвристика ограничения квантования. Отдельное моделирование апериодического фона и реактивность не выполнены.",
        "entropy":"Shannon entropy распределения мощности 1–45 Гц, нормированная на log(число частотных отсчётов); зависит от параметров PSD, шума и фильтрации, не мера интеллекта.",
        "advanced":"Исследовательские Hjorth и линейный log-PSD наклон по отобранным окнам без сильного квантования; это НЕ параметрическая модель specparam и не оценка возбуждения/торможения мозга.",
-       "paired_eeg":"Коэффициент когерентности MSC, |imaginary coherency| и wPLI между двумя биполярными каналами по независимым 4-секундным синхронным окнам, минимум 8 прошедших качество окон. Сдвигов и доминирующего полушария не оценивает.",
+       "paired_eeg":"MSC, |ImCoh| и wPLI двух биполярных отведений по неперекрывающимся окнам. Требуются не менее 8 и не менее 50% прошедших парных окон.",
        "ppg":ppg.get("method","Недоступно"),
        "timestamps":"Сигналы анализируются по порядку строк и номинальной частоте. Legacy callback ts_unix имеет обратные скачки. Начальные метки только грубо совмещают MEMS и EEG/PPG; аппаратная синхронизация неизвестна.",
        "comparisons":"Описательное сравнение записей; перекрывающиеся окна и строки SDK зависимы. P-values, популяционные нормы, диагнозы и причинные выводы не вычисляются.",
@@ -688,6 +863,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
                   "usable_eeg_denominator":"Среднее по каналам процентов перекрывающихся 4-секундных окон с шагом 2 с. Это не процент чистого времени, не независимые наблюдения и не оценка здоровья."},
        "eeg":eeg,"paired_eeg":paired,"ppg":ppg,"motion":motion,"impedance":impedance,"vendor":vendor,
        "observations":observations,
+       "quick_review":_quick_review(audit,eeg,ppg,motion,impedance,vendor["acquisition"],cfg),
        "limitations":[
           ("Два биполярных отведения O1–T3 и O2–T4 смешивают вклад нескольких источников. Отдельно локализовать затылочную или височную кору, глубокие структуры и работу всех отделов мозга нельзя." if set(loaded["eeg"]["columns"])=={"O1-T3","O2-T4"} else "Пространственная локализация по этому анализу не выполняется: нужны проверенный монтаж, референсы, достаточное число каналов и модель проводимости."),
           ("Нет подтверждённых физических единиц EEG; " if not unit_label else "Физические единицы объявлены в metadata, независимо не калиброваны; ")+"внутренняя фильтрация, аппаратная синхронизация и непрерывные счётчики устройства требуют отдельной проверки.",
@@ -703,7 +879,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None) -> d
           "Добавить спокойный 5-минутный PPG-блок при стабильном контакте; для клинической HRV использовать валидированную ЭКГ и корректный протокол.",
           "Для связи EEG с задачей сохранять события, ответы, точность/время реакции и дневник сна/кофеина; сравнивать одинаковые условия.",
           "Для пространственных/клинических вопросов нужны многоканальная ЭЭГ, проверенный монтаж и специалист; нынешние два отведения не заменяют обследование."],
-       "methods":methods,"configuration":asdict(cfg),"provenance":_provenance(p)}
+       "methods":methods,"configuration":asdict(cfg),"provenance":_provenance(p, source_signatures)}
     return sanitize(result)
 
 

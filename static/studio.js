@@ -7,39 +7,134 @@
   const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const fmt=(v,d=1)=>Number.isFinite(Number(v))&&v!==null?Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d}):'—';
   const btn=(label,act,style='subtle',disabled=false)=>`<button class="button ${style}" data-studio="${esc(act)}" ${disabled?'disabled':''}>${esc(label)}</button>`;
-  let ctx={},view=null,poller=null,chart=null,sessions=[],templates={},history=null;
+  let ctx={},view=null,poller=null,chart=null,sessions=[],history=null;
+  let viewEvents, doorRun, presentedPhase, experimentBusy=false;
+  const doorProtocol='door_imagery';
+  const doorStopReasons={
+    signal_lost:'Свежая ЭЭГ или контакт электродов пропали.',
+    stimulus_hidden:'Вкладка с экспериментом стала недоступна.',
+    stimulus_missing:'Браузер не подтвердил показ этапа вовремя.',
+    recording_stopped:'Запись завершилась до конца эксперимента.',
+    recording_rotated:'Во время эксперимента начался новый файл записи.',
+  };
   const content=()=>$('#content');
   function message(s,error=false){ctx.notify?.(s,error?'error':'success');}
   async function api(url,options){return ctx.api(url,options);}
-  function shutdown(){clearInterval(poller);poller=null;if(chart){chart.destroy();chart=null;}view=null;}
+  function leaveDoor(){
+    if(!doorRun)return;
+    const run=doorRun;
+    doorRun=null;
+    api(`/api/experiments/stop?run_id=${encodeURIComponent(run)}`,{method:'POST',keepalive:true}).catch(()=>{});
+  }
+  function shutdown(){
+    leaveDoor();
+    viewEvents?.abort();
+    clearTimeout(poller);
+    poller=null;
+    if(chart){chart.destroy();chart=null;}
+    view=null;
+  }
   function card(title,body,subtitle=''){return `<section class="card"><div class="card-header"><div><h2>${esc(title)}</h2>${subtitle?`<p class="card-subtitle">${esc(subtitle)}</p>`:''}</div></div>${body}</section>`;}
   async function showExperiments(){
+    const signal=viewEvents.signal;
     content().innerHTML=card('Эксперименты с временными метками',
-      '<p>Запись запускается отдельно, затем можно выбрать протокол. Переходы между этапами отмечает сервер по своим часам — это не аппаратные триггеры.</p><div id="studio-exp-state"></div><div class="studio-controls">'+btn('Начать запись','record','primary')+btn('Остановить протокол','abort')+'</div>',
-      'Открытые/закрытые глаза · покой · задача/восстановление');
+      '<div id="studio-exp-state">Проверяем устройство и запись…</div><div class="studio-controls">'+
+      btn('Начать запись','record','primary',true)+btn('Завершить запись','record-stop','subtle',true)+
+      btn('Остановить протокол','abort','subtle',true)+'</div>');
     try {
-      const payload=await api('/api/experiments/templates');templates=payload.templates||{};
-      const list=Object.entries(templates).map(([key,value])=>card(value.title,
-        `<p>${esc(value.description)}</p><ol class="studio-list">${value.phases.map(p=>`<li>${esc(p.label)} · ${fmt(p.duration_s,0)} с</li>`).join('')}</ol>${btn('Запустить протокол',`start:${key}`,'primary')}`));
-      content().insertAdjacentHTML('beforeend',`<div class="studio-grid">${list.join('')}</div>`);
-      bindActions();await pollExperiment();poller=setInterval(pollExperiment,950);
-    } catch(e){message(e.message,true);}
+      const payload=await api('/api/experiments/templates',{signal});
+      const list=Object.entries(payload.templates).map(([key,value])=>card(value.title,
+        `<p>${esc(value.description)}</p><ol class="studio-list">${value.phases.map(p=>`<li>${esc(p.label)} · ${fmt(p.duration_s,0)} с</li>`).join('')}</ol>${btn('Запустить протокол',`start:${key}`,'primary',true)}`));
+      content().insertAdjacentHTML('beforeend',doorCard(payload.door_trials)+`<div class="studio-grid">${list.join('')}</div>`);
+      bindActions();
+      document.addEventListener('visibilitychange',()=>{if(document.hidden)leaveDoor();},{signal});
+      window.addEventListener('pagehide',leaveDoor,{signal});
+      await pollExperiment(signal);
+    } catch(e){if(!signal.aborted)message(e.message,true);}
   }
-  async function pollExperiment(){
-    if(view!=='experiments')return;
+  function doorCard(trials){
+    return card('Виртуальная дверь',`
+      <p class="chart-caption">Держите глаза открытыми и смотрите в центр. После исчезновения подсказки выполните указанную задачу и продолжайте до открытия двери.</p>
+      <ul class="studio-list">
+        <li><strong>Представьте движение</strong> — мысленно почувствуйте, как правая рука поворачивает ручку двери. Оставьте руку неподвижной.</li>
+        <li><strong>Покой</strong> — спокойно смотрите на крест, без воображаемого движения.</li>
+      </ul>
+      <div class="door-stage" id="door-stage">
+        <div class="door-frame" aria-hidden="true"><div class="door-leaf"></div></div>
+        <span class="door-cue" id="door-cue">+</span>
+      </div>
+      <p id="door-status" class="chart-caption" role="status">Начните запись, затем запустите эксперимент.</p>
+      <div class="studio-controls">
+        ${btn('Запустить эксперимент',`start:${doorProtocol}`,'primary',true)}
+        <a id="door-download" class="button subtle" hidden>Скачать ZIP</a>
+      </div>
+      <p class="chart-caption">Дверь открывается по таймеру после обоих заданий. Оставайтесь на этой вкладке до завершения эксперимента.</p>`,
+      `${trials} испытаний · поровну покоя и воображаемого движения · около 4 минут`);
+  }
+  function renderDoor(s,d,signal){
+    const isDoor=s.protocol_id===doorProtocol;
+    const phase=isDoor&&s.state==='running'&&s.phase;
+    const own=phase&&s.run_id===doorRun&&!document.hidden;
+    const stage=$('#door-stage'), status=$('#door-status'), download=$('#door-download');
+    stage.dataset.open=String(Boolean(own&&phase.label==='feedback'));
+    const cue=own&&phase.label==='cue'?(phase.condition==='imagery'?'Представьте движение':'Покой'):'+';
+    const cueElement=$('#door-cue');
+    if(cueElement.textContent!==cue)cueElement.textContent=cue;
+    let label=d.recording?'Запись активна. Можно запустить эксперимент.':'Начните запись, затем запустите эксперимент.';
+    if(isDoor){
+      if(phase)label=own?`Испытание ${phase.trial} из ${s.total_trials}`:'Эксперимент запущен в другой вкладке или завершается.';
+      else if(s.state==='completed')label=`Готово · ${s.total_trials} испытаний · ${s.session_id}`;
+      else if(s.state==='aborted')label=`Остановлено. ${doorStopReasons[s.reason]||'Сохранены уже записанные данные.'}`;
+    }
+    if(status.textContent!==label)status.textContent=label;
+    download.hidden=!isDoor||s.state==='running'||!s.session_id||d.recording===s.session_id;
+    if(!download.hidden){
+      download.href=`/api/records/${encodeURIComponent(s.session_id)}/download`;
+    }
+    if(!phase&&s.run_id===doorRun)doorRun=null;
+    if(!own||presentedPhase===s.phase_index)return;
+    presentedPhase=s.phase_index;
+    requestAnimationFrame(()=>requestAnimationFrame(frameTime=>{
+      if(signal.aborted||document.hidden||doorRun!==s.run_id||presentedPhase!==s.phase_index)return;
+      api('/api/experiments/door/presented',{method:'POST',signal,body:JSON.stringify({
+        run_id:s.run_id,phase_index:s.phase_index,client_unix_ms:performance.timeOrigin+frameTime,
+      })}).catch(()=>{if(presentedPhase===s.phase_index&&doorRun===s.run_id)presentedPhase=null;});
+    }));
+  }
+  async function pollExperiment(signal){
+    let delay=950;
+    const requestSignal=AbortSignal.any([signal,AbortSignal.timeout(1500)]);
     try {
-      const [s,d]=await Promise.all([api('/api/experiments/status'),api('/api/device/status')]);
-      const area=$('#studio-exp-state');if(!area)return;
+      const [s,d]=await Promise.all([api('/api/experiments/status',{signal:requestSignal}),
+        api('/api/device/status',{signal:requestSignal})]);
+      if(signal.aborted)return;
+      const area=$('#studio-exp-state');
       const active=s.state==='running';
       const phase=s.phase;
+      const doorActive=active&&s.protocol_id===doorProtocol;
+      if(doorActive||experimentBusy)delay=180;
       area.innerHTML=`<div class="studio-state"><strong>${active?'Идёт протокол':s.state==='completed'?'Протокол завершён':s.state==='aborted'?'Протокол остановлен':'Нет активного протокола'}</strong>
-       <span>${active?`Этап ${s.phase_index+1}/${s.total_phases}: ${esc(phase?.label)} · осталось ${fmt(s.remaining_s,0)} с`:
-                 `Устройство: ${d.connected?'подключено':'не подключено'} · Запись: ${d.recording?'активна':'не запущена'}`}</span>
-       ${active?`<progress value="${Math.max(0,(phase.duration_s-s.remaining_s))}" max="${phase.duration_s}" style="width:100%"></progress>`:''}</div>`;
-      $$('[data-studio^="start:"]').forEach(b=>b.disabled=active||!d.connected||!d.recording);
-      const rec=$('[data-studio="record"]');if(rec)rec.disabled=!!d.recording||!d.connected||!d.validity?.eeg||d.stream_stale;
-      const abort=$('[data-studio="abort"]');if(abort)abort.disabled=!active;
-    }catch(e){const area=$('#studio-exp-state');if(area)area.textContent=e.message;}
+       <span>${active&&!doorActive?`Этап ${s.phase_index+1}/${s.total_phases}: ${esc(phase?.label)} · осталось ${fmt(s.remaining_s,0)} с`:
+                 `Устройство ${d.connected?'подключено':'не подключено'} · Запись ${d.recording?'активна':'не запущена'}`}</span>
+       ${active&&!doorActive?`<progress value="${Math.max(0,(phase.duration_s-s.remaining_s))}" max="${phase.duration_s}" style="width:100%"></progress>`:''}</div>`;
+      const eegReady=d.connected&&d.validity?.eeg&&!d.stream_stale;
+      $$('[data-studio^="start:"]').forEach(b=>{
+        const door=b.dataset.studio===`start:${doorProtocol}`;
+        b.disabled=experimentBusy||active||!d.connected||!d.recording||
+          d.calibration_phase==='running'||(door&&!eegReady);
+      });
+      $('[data-studio="record"]').disabled=experimentBusy||!!d.recording||!eegReady;
+      $('[data-studio="record-stop"]').disabled=experimentBusy||!d.recording;
+      $('[data-studio="abort"]').disabled=experimentBusy||!active;
+      renderDoor(s,d,signal);
+    }catch(e){
+      if(!signal.aborted){
+        $('#studio-exp-state').textContent=e.message;
+        delay=doorRun?180:950;
+      }
+    }finally{
+      if(!signal.aborted)poller=setTimeout(()=>pollExperiment(signal),delay);
+    }
   }
   const $$=(s,r=document)=>[...r.querySelectorAll(s)];
   async function showHistory(){
@@ -92,23 +187,44 @@
   }
   function bindActions(){
     const root=content();if(!root)return;
+    const signal=viewEvents.signal;
     root.addEventListener('click',async e=>{const button=e.target.closest('[data-studio]');if(!button||button.disabled)return;e.preventDefault();const action=button.dataset.studio;
+      const experiment=view==='experiments';
+      if(experiment&&experimentBusy)return;
+      if(experiment)experimentBusy=true;
       button.disabled=true;
       try{
         if(action==='record'){await api('/api/recording/start',{method:'POST'});message('Запись начата. Выберите протокол.');}
+        else if(action==='record-stop'){await api('/api/recording/stop',{method:'POST'});message('Запись сохранена.');}
         else if(action==='abort'){await api('/api/experiments/stop',{method:'POST'});message('Протокол остановлен.');}
-        else if(action.startsWith('start:')){await api('/api/experiments/start',{method:'POST',body:JSON.stringify({protocol_id:action.split(':')[1]})});message('Протокол запущен. Маркеры будут сохранены с записью.');}
+        else if(action.startsWith('start:')){
+          const protocol=action.split(':')[1];
+          if(protocol===doorProtocol)$('#door-stage').scrollIntoView({block:'center',behavior:'instant'});
+          const result=await api('/api/experiments/start',{method:'POST',body:JSON.stringify({protocol_id:protocol})});
+          if(protocol===doorProtocol){
+            if(signal.aborted||document.hidden){
+              await api(`/api/experiments/stop?run_id=${encodeURIComponent(result.run_id)}`,{method:'POST',keepalive:true});
+            }else{
+              doorRun=result.run_id;
+              presentedPhase=null;
+              renderDoor(result,{recording:result.session_id},signal);
+            }
+          }else if(!signal.aborted)message('Протокол запущен. Маркеры будут сохранены с записью.');
+        }
         else if(action==='segment'){await fetchSegment();}
         else if(action==='annotation'){
           const label=$('#studio-annotation-label').value.trim();if(!label)throw Error('Введите описание');
           await api(`/api/lab/annotations/${encodeURIComponent($('#studio-session').value)}`,{method:'POST',body:JSON.stringify({label,category:$('#studio-annotation-kind').value,start_s:Number($('#studio-start').value),duration_s:Number($('#studio-duration').value)})});
           $('#studio-annotation-label').value='';await fetchAnnotations();message('Аннотация сохранена.');
         } else if(action==='bids'){await exportBids();}
-      }catch(err){message(err.message||'Ошибка',true);}finally{button.disabled=false; if(view==='experiments')await pollExperiment();}
-    });
+      }catch(err){if(!signal.aborted)message(err.message||'Ошибка',true);}finally{
+        if(experiment)experimentBusy=false;
+        if(!experiment)button.disabled=false;
+      }
+    },{signal});
     const select=$('#studio-session');if(select)select.addEventListener('change',()=>{fetchSegment();fetchAnnotations();});
   }
-  async function renderView(next,options){shutdown();view=next;ctx=options;
+  async function renderView(next,options){shutdown();view=next;ctx=options;viewEvents=new AbortController();
     if(options.preview){content().innerHTML=card('Доступно в локальном приложении','Эксперименты, BIDS-экспорт и выделение произвольных участков требуют запущенного сервера. Автономный HTML хранит только рассчитанные ранее результаты.');return;}
     if(view==='experiments')await showExperiments();
     else if(view==='history')await showHistory();

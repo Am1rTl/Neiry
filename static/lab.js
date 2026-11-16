@@ -21,7 +21,8 @@
     device: ['Подключение устройства', 'Поиск, состояние Bluetooth и калибровка без навязанных экранов.', 'Устройство'],
     live: ['Живой монитор', 'ЭЭГ, ФПГ, движение и показатели SDK в реальном времени.', 'Живой монитор'],
     sessions: ['Записи и воспроизведение', 'Управляйте сессиями, анализом, загрузкой и replay в одном окне.', 'Записи'],
-    experiments: ['Эксперименты', 'Выполнение протоколов с временными маркерами без отдельного интерфейса.', 'Эксперименты'],
+    experiments: ['Лаборатория экспериментов', 'Альфа-ритм, зрительное обучение и нейрообратная связь с Neiry Headband.', 'Эксперименты'],
+    'timed-protocol': ['Протоколы с таймером', 'Настраиваемые этапы для записи покоя, задачи и восстановления.', 'Протоколы с таймером'],
     segment: ['Исследование фрагмента', 'Выделяйте участки сигнала, сохраняйте аннотации и экспортируйте данные.', 'Исследователь'],
     history: ['История исследований', 'Сопоставляйте только явно отмеченные измерения одного участника.', 'История'],
     overview: ['Лаборатория сигналов', 'Отдельные измерения. Общая картина. Проверяемые выводы.', 'Обзор записей'],
@@ -30,7 +31,7 @@
     knowledge: ['Как это работает', 'Нейрофизиология, возможности измерений и научные источники.', 'Как это работает'],
     protocol: ['Следующая запись', 'Больше контекста и меньше артефактов для более полезного анализа.', 'Протокол записи']
   };
-  const state = {sessions:[], current:null, analysis:null, cache:new Map(), knowledge:null, view:'overview', charts:[], channel:0, raw:false, log:true, renderId:0, context:null};
+  const state = {sessions:[], current:null, analysis:null, analysisPending:new Map(), knowledge:null, view:'overview', charts:[], channel:0, raw:false, log:true, renderId:0, context:null};
 
   function duration(v) {
     if (num(v) === null) return '—';
@@ -78,17 +79,32 @@
     }
     return response.json();
   }
-  async function analysisFor(id) {
-    if (state.cache.has(id)) return state.cache.get(id);
-    const result = await api(`/api/lab/analysis/${encodeURIComponent(id)}`);
-    const data = result.analysis || result;
-    state.cache.set(id, data); return data;
+  function analysisFor(id) {
+    if (state.analysisPending.has(id)) return state.analysisPending.get(id);
+    const pending = api(`/api/lab/analysis/${encodeURIComponent(id)}`)
+      .then(result => result.analysis || result)
+      .finally(() => state.analysisPending.delete(id));
+    state.analysisPending.set(id, pending);
+    return pending;
+  }
+  async function reloadSessions(renderId = state.renderId) {
+    const result = await api('/api/lab/sessions');
+    if (renderId !== state.renderId) return;
+    state.sessions = arr(result.sessions || result).filter(session => session?.id);
+    if (!state.sessions.some(session => session.id === state.current)) {
+      state.current = (state.sessions.find(session => !session.active) || state.sessions[0])?.id || null;
+    }
+    renderSessions();
   }
   async function knowledgeData() {
     if (state.knowledge) return state.knowledge;
     state.knowledge = await api('/api/lab/knowledge'); return state.knowledge;
   }
-  function destroyCharts() { state.charts.forEach(c => c.destroy()); state.charts = []; }
+  function destroyCharts() {
+    window.NeuroBrainMap.unmount($('#content [data-pair-map]'));
+    state.charts.forEach(c => c.destroy());
+    state.charts = [];
+  }
   function chart(id, datasets, opts = {}) {
     const canvas = $(`#${id}`);
     if (!canvas || !window.Chart) return;
@@ -110,15 +126,15 @@
   function legend(channels) { return `<div class="legend">${channels.map((c,i)=>`<span><i style="background:${colors[i%colors.length]}"></i>${esc(c.name)}</span>`).join('')}</div>`; }
 
   function renderSessions() {
-    $('#session-selector').innerHTML = state.sessions.map(s => `<button class="session-option ${s.id===state.current?'selected':''}" data-session="${esc(s.id)}" aria-pressed="${s.id===state.current}" title="${esc(s.id)}"><span class="session-symbol">${icon(s.eeg_available?'wave':'heart')}</span><span class="session-info"><strong>${esc(dateLabel(s.started_at))}</strong><small>${esc(duration(s.wall_duration_s??s.duration_s))} · ${s.eeg_available?'ЭЭГ + пульс + движение':'Без потока ЭЭГ'}</small></span><span class="session-state" aria-hidden="true"></span></button>`).join('');
+    $('#session-selector').innerHTML = state.sessions.map(s => `<button class="session-option ${s.id===state.current?'selected':''}" data-session="${esc(s.id)}" aria-pressed="${s.id===state.current}" title="${esc(s.id)}"><span class="session-symbol">${icon(s.eeg_available?'wave':'heart')}</span><span class="session-info"><strong>${esc(dateLabel(s.started_at))}</strong><small>${esc(duration(s.wall_duration_s??s.duration_s))} · ${s.active?'Идёт запись':s.analysis_ready?'Анализ готов':'Сохранённая запись'}</small></span><span class="session-state" aria-hidden="true"></span></button>`).join('');
     $$('#session-selector [data-session]').forEach(b => b.addEventListener('click',()=>selectSession(b.dataset.session)));
-    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','segment','history'].includes(state.view);
+    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(state.view);
   }
   function updateExports() {
     ['html','json','csv'].forEach(format => { $(`#export-${format}`).href = `/api/lab/analysis/${encodeURIComponent(state.current || '')}/export?format=${format}`; });
     if (preview && state.analysis) previewExports(state.analysis);
     $('#analysis-version').textContent = state.analysis?.analysis_version ? `Анализ ${state.analysis.analysis_version}` : 'Воспроизводимый анализ';
-    $('#analysis-actions').hidden = ['knowledge','protocol','compare','device','live','sessions','experiments','segment','history'].includes(state.view)||!state.current;
+    $('#analysis-actions').hidden = ['knowledge','protocol','compare','device','live','sessions','experiments','timed-protocol','segment','history'].includes(state.view)||!state.current||!state.analysis;
   }
   function previewExports(a) {
     exportUrls.splice(0).forEach(url=>URL.revokeObjectURL(url));
@@ -133,7 +149,7 @@
     const html=`<!doctype html><html lang="ru"><meta charset="utf-8"><title>NeuroScope · ${esc(a.session?.id)}</title><style>body{max-width:980px;margin:40px auto;padding:0 24px;font:15px/1.8 system-ui,sans-serif;color:#182438}h1,h2{line-height:1.3}h2{margin-top:35px}table{border-collapse:collapse;width:100%;font-size:13px}td,th{padding:10px;text-align:left;border-bottom:1px solid #ddd}small{color:#627089}.tag{font-size:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}.observation-number{color:#62877e}.observation h3{margin-bottom:0}.observation p{margin-top:6px}</style><h1>NeuroScope · анализ записи</h1><p>${esc(dateLabel(a.session?.started_at,true))} · ${esc(a.session?.id)}</p><p>Исследовательский отчёт. Не медицинское заключение. Версия: ${esc(a.analysis_version)}</p><h2>Наблюдения</h2>${observations(a,99)}<h2>Каналы ЭЭГ</h2>${arr(a.eeg?.channels).map(c=>`<h3>${esc(c.name)}</h3>${channelStats(c)}`).join('')||'<p>ЭЭГ отсутствует.</p>'}<h2>Качество</h2><ul>${arr(a.quality?.flags).map(f=>`<li><strong>${esc(f.title)}</strong>: ${esc(f.detail)}</li>`).join('')}</ul><h2>Пульс</h2><p>${fmt(a.ppg?.pulse_rate_bpm,1)} уд/мин. ${esc(a.ppg?.prv?.description||'')}</p><h2>Ограничения</h2><ul>${arr(a.limitations).map(x=>`<li>${esc(textOf(x))}</li>`).join('')}</ul><h2>Метод</h2>${methodSummary(a)}</html>`;
     bind('html',html,'text/html;charset=utf-8');
   }
-  function nav(view) {
+  function nav(view, refreshList = true) {
     if (!titles[view]) view = 'overview';
     state.view = view;
     const [title, subtitle, short] = titles[view];
@@ -141,24 +157,61 @@
     $('#page-subtitle').textContent = subtitle;
     $('#breadcrumb-current').textContent = short;
     $$('.nav-item[data-view]').forEach(a=>{const active=a.dataset.view===view;a.classList.toggle('active',active);if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
-    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions'].includes(view);
-    updateExports(); closeMenu(); render();
+    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(view);
+    updateExports(); closeMenu(); render({refreshList});
   }
   async function selectSession(id) {
     state.current = id; state.context = null; renderSessions();
     try { localStorage.setItem('neuroscope.session',id); } catch (_) {}
-    await render();
+    if (['overview','signals','compare'].includes(state.view)) await render();
   }
-  async function render() {
+  async function loadComparison(renderId) {
+    const sessions = state.sessions.slice();
+    const total = sessions.filter(session => !session.active).length;
+    if (!total) {
+      $('#content').innerHTML = empty('Нет завершённых записей', 'Завершённые сессии появятся здесь после сохранения.', 'folder');
+      return;
+    }
+    $('#content').innerHTML = `<div class="loading-panel"><span class="loader" aria-hidden="true"></span>
+      <h2>Готовим сравнение</h2><p id="compare-progress" role="status"></p></div>`;
+    const progress = $('#compare-progress');
+    const results = [];
+    let completed = 0;
+    for (const session of sessions) {
+      if (renderId !== state.renderId) return;
+      if (session.active) {
+        results.push(null);
+        continue;
+      }
+      progress.textContent = `Запись ${completed + 1} из ${total} · ${dateLabel(session.started_at)}`;
+      try {
+        results.push(await analysisFor(session.id));
+      } catch (_) {
+        results.push(null);
+      }
+      completed++;
+    }
+    if (renderId === state.renderId) renderComparison(results);
+  }
+  async function render({refreshList = false} = {}) {
     const renderId = ++state.renderId; destroyCharts(); notify('');
+    state.analysis = null;
+    updateExports();
+    if (state.view === 'experiments') {
+      window.NeuroLive?.leave();
+      window.NeuroStudio?.leave();
+      window.NeuroExperimentLab?.open({api,notify,preview:Boolean(preview)});
+      return;
+    }
+    window.NeuroExperimentLab?.leave();
     if (['device','live','sessions'].includes(state.view)) {
       window.NeuroStudio?.leave();
       await window.NeuroLive.renderView(state.view);
       return;
     }
     window.NeuroLive?.leave();
-    if (['experiments','segment','history'].includes(state.view)) {
-      await window.NeuroStudio?.renderView(state.view,{api,notify,preview:Boolean(preview)});
+    if (['timed-protocol','segment','history'].includes(state.view)) {
+      await window.NeuroStudio?.renderView(state.view==='timed-protocol'?'experiments':state.view,{api,notify,preview:Boolean(preview)});
       return;
     }
     window.NeuroStudio?.leave();
@@ -169,18 +222,37 @@
         state.view==='knowledge' ? renderKnowledge(knowledge) : renderProtocol(knowledge);
         return;
       }
+      if (refreshList) {
+        await reloadSessions(renderId);
+        if (renderId !== state.renderId) return;
+      }
       if (state.view==='compare') {
-        const results = await Promise.allSettled(state.sessions.map(s=>analysisFor(s.id))); if(renderId!==state.renderId)return;
-        renderComparison(results.map(r=>r.status==='fulfilled'?r.value:null)); return;
+        await loadComparison(renderId);
+        return;
       }
       if (!state.current) { $('#content').innerHTML=empty('Записей пока нет','Подключите устройство в живом мониторе и начните запись. Сессии появятся здесь после сохранения.','folder'); return; }
+      const session = state.sessions.find(item => item.id === state.current);
+      if (session?.active) {
+        $('#content').innerHTML = empty('Сессия ещё записывается','После остановки записи NeuroScope автоматически откроет результаты при следующем просмотре.','clock')
+          + '<a class="button subtle section-spaced" href="#live">Открыть живой монитор</a>';
+        return;
+      }
+      $('#content').innerHTML = `<div class="loading-panel" role="status"><span class="loader" aria-hidden="true"></span>
+        <h2>${session?.analysis_ready?'Открываем результаты':'Анализируем запись'}</h2>
+        <p>${session?.analysis_ready?'Проверяем исходные файлы записи.':'Считаем отсчёты, проверяем качество ЭЭГ и ФПГ.'}</p></div>`;
       const data = await analysisFor(state.current); if(renderId!==state.renderId)return;
+      if (session && !session.analysis_ready) {
+        session.analysis_ready = true;
+        session.duration_s = data.session?.duration_s;
+        session.wall_duration_s = data.session?.wall_duration_s;
+        renderSessions();
+      }
       state.analysis = data; state.channel = Math.min(state.channel,Math.max(0,arr(data.eeg?.channels).length-1)); updateExports();
       state.view==='signals' ? renderSignals(data) : renderOverview(data);
     } catch (error) {
       if(renderId!==state.renderId)return;
       $('#content').innerHTML=`<div class="error-panel">${icon('info')}<h2>Не удалось открыть результаты</h2><p>${esc(error.message)} Проверьте, что сервер запущен и файлы записи доступны.</p><button class="button primary" id="retry-button">Повторить</button></div>`;
-      $('#retry-button')?.addEventListener('click',render);
+      $('#retry-button')?.addEventListener('click',()=>render({refreshList:true}));
     }
   }
 
@@ -230,14 +302,105 @@
       const s=Array.isArray(streams)?streams.find(x=>x.name===k)||{}:streams[k]||{};
       const known={eeg:a.eeg?.available,ppg:a.ppg?.available,mems:a.motion?.available,resistances:a.impedance?.available}[k];
       const count=s.sample_count??s.samples??s.rows??s.row_count??(k==='eeg'?a.eeg?.channels?.[0]?.sample_count:null);
+      const recorded=num(count)===null?known:num(count)>0;
       const names={eeg:'ЭЭГ',ppg:'Оптический пульс',mems:'Движение',resistances:'Сопротивление'};
-      const rate=s.sample_rate_hz??s.nominal_rate_hz??{eeg:a.eeg?.sample_rate_hz,ppg:100,mems:250}[k];
-      return `<tr><td><span class="stream-symbol">${icon({eeg:'wave',ppg:'heart',mems:'signal',resistances:'shield'}[k])}${names[k]}</span></td><td>${tag(known?'Есть данные':'Нет данных',known?'good':'')}</td><td>${integer(count)}</td><td>${known&&rate?`${integer(rate)} Гц`:'—'}</td><td>${esc(duration(s.nominal_duration_s??s.signal_duration_s??s.duration_s))}</td></tr>`;
+      const rate=s.sample_rate_hz??s.nominal_rate_hz??a.session?.sample_rates?.[k];
+      return `<tr><td><span class="stream-symbol">${icon({eeg:'wave',ppg:'heart',mems:'signal',resistances:'shield'}[k])}${names[k]}</span></td><td>${tag(recorded?'Записано':'Нет данных',recorded?'blue':'')}</td><td>${integer(count)}</td><td>${recorded&&rate?`${integer(rate)} Гц`:'—'}</td><td>${esc(duration(s.nominal_duration_s??s.signal_duration_s??s.duration_s))}</td></tr>`;
     }).join('');
   }
+  function quickReview(a) {
+    const review = a.quick_review;
+    if (!review) return '';
+    const labels = {
+      unavailable:['Оценка недоступна','warning'],
+      too_short:['Короткий фрагмент','warning'], rejected:['Окна отклонены','bad'],
+      partial:['Частично пригоден','warning']
+    };
+    const readyLabels = {eeg:'Спектр рассчитан',ppg:'Пульс оценён',mems:'Движение рассчитано',resistances:'Измерения разобраны'};
+    const limitedLabels = {eeg:'Спектр сильно ограничен',ppg:'Оценка по одному окну'};
+    const streamNames = {eeg:'ЭЭГ',ppg:'ФПГ',mems:'Движение',resistances:'Сопротивление'};
+    const reasonNames = {
+      flatline:'постоянный сигнал', nonfinite:'некорректные значения', movement:'сильное движение',
+      sample_index_discontinuity:'разрыв индекса', repeated_rail_0p8:'повторяющиеся крайние значения',
+      line_component_dominant:'компонента 50 Гц', amplitude_outlier:'выброс амплитуды',
+      derivative_outlier:'резкие скачки', too_few_pulses:'мало пульсовых пиков',
+      implausible_intervals:'нетипичные интервалы между пиками',
+      irregular_or_noisy_intervals:'нестабильные интервалы между пиками',
+      low_periodicity:'слабая периодичность', large_transient:'выброс сигнала'
+    };
+    const rows = Object.entries(streamNames).map(([key,name])=>{
+      const stream = review.streams?.[key];
+      if (!stream) return '';
+      const recorded = stream.recorded ?? (num(stream.sample_count) > 0);
+      const [label, tone] = stream.status==='ready' ? [readyLabels[key],'good']
+        : stream.status==='limited' ? [limitedLabels[key]||'Ограниченная оценка','warning']
+        : labels[stream.status] || labels.unavailable;
+      const samples = stream.sample_count ? `${integer(stream.sample_count)} ${key==='resistances'?'измерений':'отсчётов'}` : '';
+      let detail = '';
+      if (key==='eeg' || key==='ppg') {
+        if (stream.total_windows) {
+          detail = `Скрининг: ${integer(stream.accepted_windows)} из ${integer(stream.total_windows)} окон${key==='eeg'&&stream.channel_count>1?' по всем каналам':''}`;
+          if (key==='eeg' && stream.status==='partial') detail += ` · спектр доступен для ${integer(stream.spectral_channels)} из ${integer(stream.channel_count)} каналов`;
+          if (key==='eeg' && arr(stream.coarse_channels).length) detail += ` · мало амплитудных уровней: ${stream.coarse_channels.join(', ')}`;
+        } else if (stream.status==='too_short') {
+          detail = `Для одного окна требуется ${integer(stream.window_seconds)} с`;
+        }
+      }
+      if (key==='resistances' && stream.channels_with_values) detail = `Доступны значения по ${integer(stream.channels_with_values)} из ${integer(stream.channel_count)} каналов`;
+      const pulse = num(stream.pulse_rate_bpm);
+      if (pulse !== null) detail += ` · оценка пульса ${fmt(pulse,1)} уд/мин`;
+      const reasons = arr(stream.top_reasons).map(code=>reasonNames[code]).filter(Boolean);
+      if (reasons.length && ['rejected','partial','limited'].includes(stream.status)) {
+        detail += ` · чаще всего: ${reasons.join(', ')}`;
+      }
+      return `<article class="review-stream"><div class="review-stream-title"><strong>${name}</strong>${tag(recorded?'Записано':'Нет данных',recorded?'blue':'')}</div>
+        ${samples? `<div class="review-samples">${samples}${stream.sample_rate_hz? ` · ${integer(stream.sample_rate_hz)} Гц` : ''}</div>` : ''}
+        ${recorded? `<p>${tag(label,tone)}</p>` : ''}
+        ${detail? `<p>${esc(detail)}</p>` : ''}</article>`;
+    }).join('');
+    const sdk = review.sdk || {};
+    const timing = sdk.eeg_timing || {};
+    const artifacts = arr(sdk.eeg_artifact_channels);
+    const indexBreaks = Object.entries(review.streams || {}).filter(([,stream])=>stream.index_discontinuities>0);
+    const evidence = [];
+    if (timing.valid_packets || timing.invalid_packets) {
+      evidence.push(`<li>Метки SDK · ${integer(timing.valid_packets)} валидных пакетов${timing.invalid_packets?`, ${integer(timing.invalid_packets)} не разобраны`:''}.
+        ${timing.compared_steps ? `Сравнено ${integer(timing.compared_steps)} соседних границ. Самый длинный положительный шаг ${num(timing.longest_step_ms)===null?'—':`${integer(timing.longest_step_ms)} мс`}.` : 'Соседних границ для сравнения нет.'}
+        ${timing.compared_steps && timing.long_step_threshold_ms? `Свыше ${fmt(timing.long_step_threshold_ms,1)} мс: ${integer(timing.long_steps)}.` : ''}
+        ${timing.nonincreasing_steps? `Нулевых и обратных шагов: ${integer(timing.nonincreasing_steps)}.`:''}
+        ${timing.noncontiguous_indices? `Несмежных пар по индексу: ${integer(timing.noncontiguous_indices)}.`:''}
+        Эти шаги описывают время SDK. Для подтверждения потерь нужен счётчик устройства.</li>`);
+    }
+    for (const channel of artifacts) {
+      const name = a.session?.streams?.eeg?.columns?.[channel.index] || `Канал ${channel.index+1}`;
+      evidence.push(`<li>${esc(name)} · ненулевой флаг SDK в ${integer(channel.nonzero_flags)} из ${integer(channel.observations)} обновлений.</li>`);
+    }
+    for (const [key,stream] of indexBreaks) {
+      evidence.push(`<li>${streamNames[key]} · ${integer(stream.index_discontinuities)} непоследовательных переходов индекса сохранённых строк.</li>`);
+    }
+    return `<section class="card quick-review" aria-label="Автоматический разбор сессии">
+      ${cardHeader('Автоматический разбор','Наличие сигналов и пригодность оценок')}
+      <div class="review-grid">${rows}</div>
+      ${evidence.length ? `<details class="details-block"><summary>Метки времени и артефакты</summary><ul>${evidence.join('')}</ul></details>` : ''}
+    </section>`;
+  }
+  function montageCard(a) {
+    const names = arr(a.eeg?.channels).map(c=>c.name).filter(Boolean);
+    if (!names.length) return '';
+    const normalized = names.map(name=>String(name).replace(/[–—]/g,'-').toUpperCase()).sort();
+    const pairedHeadband = normalized.join(',')==='O1-T3,O2-T4';
+    const rates = `<dl class="compact-kv"><dt>Частота ЭЭГ</dt><dd>${fmt(a.eeg?.sample_rate_hz,1)} Гц</dd><dt>Единицы</dt><dd>${esc(cleanUnits(a.eeg?.units))}</dd></dl>`;
+    return `<section class="card">${cardHeader('Монтаж ЭЭГ',names.join(' · '))}
+      <div class="${pairedHeadband?'brain-card':''}">${pairedHeadband?montage():''}
+      <div class="brain-copy">${pairedHeadband?'<p>Каждое отведение измеряет разность потенциалов двух точек. Сигнал объединяет вклад нескольких источников.</p>':''}
+      ${rates}</div></div></section>`;
+  }
+  function pairedCard() {
+    return `<section class="card full">${cardHeader('Сравнение двух ЭЭГ-отведений','Относительная мощность, когерентность и схема электродов')}${window.NeuroPairedPanel.markup()}</section>`;
+  }
   function renderOverview(a) {
-    $('#content').innerHTML=`${a.eeg?.spectral_interpretability==='severely_limited'?notice('<strong>Интерпретация спектра сильно ограничена.</strong> Спектры описывают сохранённый сигнал; достоверный индивидуальный альфа-пик не установлен. Причины указаны в проверке качества.','warning'):''}${headlineMetrics(a)}<p class="chart-caption" style="margin:-10px 0 18px">Доля окон, прошедших фильтр, не равна доле чистого времени и не оценивает здоровье мозга.</p><div class="content-grid">${spectrumCard(a)}<section class="card full">${cardHeader('Связность двух отведений и 3D-схема','Исследовательская согласованность электрических сигналов, не локализация мозга')}${window.NeuroPairedPanel?.markup()||''}</section><section class="card">${cardHeader('Что видно в этой записи','Автоматические наблюдения, связанные с данными',tag('Автоанализ','good'))}${observations(a,3)}</section>${timelineCard(a)}${qualityCard(a)}<section class="card">${cardHeader('Что измеряет эта повязка','Два биполярных отведения вместо карты всего мозга')}<div class="brain-card">${montage()}<div class="brain-copy"><h3>O1–T3 и O2–T4</h3><p>Каждый канал — разность электрических потенциалов двух точек. Это смесь источников, а не отдельный участок мозга.</p><dl class="compact-kv"><dt>Схема</dt><dd>Затылочно-височная</dd><dt>Частота ЭЭГ</dt><dd>${integer(a.eeg?.sample_rate_hz||250)} Гц</dd><dt>Единицы</dt><dd>${esc(cleanUnits(a.eeg?.units))}</dd></dl><a class="button text" href="#knowledge" data-view="knowledge">Возможности и ограничения ${icon('arrow')}</a></div></div></section><section class="card">${cardHeader('Контекст записи','Добавленный вами контекст хранится отдельно от исходных данных')}${contextForm()}</section><section class="card full">${cardHeader('Состав записи','Номинальная длительность и реальные временные метки рассматриваются отдельно')}<div class="table-wrap"><table class="data-table"><thead><tr><th>ПОТОК</th><th>ДОСТУПНОСТЬ</th><th>ОТСЧЁТЫ</th><th>ЧАСТОТА</th><th>ДЛИТЕЛЬНОСТЬ</th></tr></thead><tbody>${streamRows(a)}</tbody></table></div><p class="table-caption">Время в интерфейсе: Москва (UTC+3). Параметры частот взяты из метаданных записи; временные метки проверяются отдельно в автоанализе.</p></section></div>`;
-    window.NeuroPairedPanel?.attach($('#content [data-pair-panel]'),a.paired_eeg);
+    $('#content').innerHTML=`${quickReview(a)}${a.eeg?.spectral_interpretability==='severely_limited'?notice('<strong>Интерпретация спектра сильно ограничена.</strong> Спектры описывают сохранённый сигнал; достоверный индивидуальный альфа-пик не установлен. Причины указаны в проверке качества.','warning'):''}${headlineMetrics(a)}<p class="chart-caption" style="margin:-10px 0 18px">Доля окон, прошедших фильтр, не равна доле чистого времени и не оценивает здоровье мозга.</p><div class="content-grid">${spectrumCard(a)}<section class="card">${cardHeader('Что видно в этой записи','Автоматические наблюдения, связанные с данными',tag('Автоанализ','good'))}${observations(a,3)}</section>${timelineCard(a)}${qualityCard(a)}${montageCard(a)}${pairedCard()}<section class="card">${cardHeader('Контекст записи','Добавленный вами контекст хранится отдельно от исходных данных')}${contextForm()}</section><section class="card full">${cardHeader('Состав записи','Номинальная длительность и реальные временные метки рассматриваются отдельно')}<div class="table-wrap"><table class="data-table"><thead><tr><th>ПОТОК</th><th>ДОСТУПНОСТЬ</th><th>ОТСЧЁТЫ</th><th>ЧАСТОТА</th><th>ДЛИТЕЛЬНОСТЬ</th></tr></thead><tbody>${streamRows(a)}</tbody></table></div><p class="table-caption">Время в интерфейсе: Москва (UTC+3). Параметры частот взяты из метаданных записи; временные метки проверяются отдельно в автоанализе.</p></section></div>`;
+    window.NeuroPairedPanel.attach($('#content [data-pair-panel]'),a.paired_eeg);
     drawSpectrum(a); drawTimeline(a); bindContent(); bindChannel(); loadContext();
   }
   function bindChannel() { $('#band-channel')?.addEventListener('change',e=>{state.channel=Number(e.target.value);destroyCharts();state.view==='overview'?renderOverview(state.analysis):renderSignals(state.analysis);}); }
@@ -272,8 +435,8 @@
   function renderSignals(a) {
     const cs=arr(a.eeg?.channels), c=cs[state.channel]||{}, p=a.ppg||{}, prv=p.prv||{}, motion=a.motion||{}, impedance=a.impedance||{};
     const controls=`<div class="control-row"><label for="band-channel">Канал ЭЭГ <select class="select" id="band-channel">${channelOptions(cs)}</select></label><span class="spacer"></span><label class="toggle"><input type="checkbox" id="raw-toggle" ${state.raw?'checked':''}>Исходный спектр</label><label class="toggle"><input type="checkbox" id="log-toggle" ${state.log?'checked':''}>Логарифмическая шкала</label></div>`;
-    $('#content').innerHTML=`${notice('<strong>Единицы ЭЭГ:</strong> значения сохранены в формате SDK. Без подтверждённого масштаба их нельзя подписывать как микровольты. Фильтр отмечает подозрительные окна; он не гарантирует устранение всех артефактов.')} ${a.eeg?.available?controls:''}<div class="content-grid even"><section class="card">${cardHeader('Спектр мощности','Метод Welch; отобранные и, по желанию, исходные окна')}${a.eeg?.available?`${legend(cs)}<div class="chart-shell"><canvas id="signal-spectrum" aria-label="Спектр мощности каналов ЭЭГ" role="img"></canvas></div><p class="chart-caption">Сплошная линия — отобранные окна. Пунктир — исходные окна при включённом переключателе. Отсутствие сплошной линии означает отсутствие пригодной оценки.</p>`:empty('ЭЭГ не записана','Для этой сессии анализ электрической активности недоступен.')}</section><section class="card">${cardHeader(`Метрики канала ${c.name||''}`,'Описательные показатели сигнала')}${a.eeg?.available?channelStats(c):empty('Нет показателей канала','Пульс и движение не заменяют электрическую запись.')}</section><section class="card full">${cardHeader('Фрагмент исходной ЭЭГ',c.excerpt?.selection||'Сохранённые значения без изменения масштаба',tag(c.name||'Нет ЭЭГ','blue'))}${a.eeg?.available&&arr(c.excerpt?.values).length?`<div class="chart-shell small"><canvas id="raw-eeg" aria-label="Фрагмент исходной ЭЭГ" role="img"></canvas></div><p class="chart-caption">Фрагмент служит визуальной проверке формы сигнала. Он не является всей записью; скачайте исходные файлы через управление записями.</p>`:empty('Нет фрагмента ЭЭГ','Исходные отсчёты отсутствуют или недоступны.')}</section><section class="card full">${cardHeader('Динамика ритмов','Доли спектральной мощности в отобранных окнах',`<label for="timeline-band" class="screen-reader">Диапазон частот</label><select id="timeline-band" class="select">${bandDefs.map(b=>`<option value="${b.id}" ${b.id==='alpha'?'selected':''}>${b.name} · ${b.range}</option>`).join('')}</select>`)}${a.eeg?.available?`${legend(cs)}<div class="chart-shell small"><canvas id="signals-timeline" aria-label="Изменение доли мощности выбранного диапазона" role="img"></canvas></div>`:empty('Нет временного ряда ЭЭГ','Ритмы требуют сохранённой ЭЭГ.')}</section><section class="card">${cardHeader('Оптический пульс','PPG: пульсовая волна и качество её регистрации',tag('PPG','blue'))}${p.available?`<div class="chart-shell small"><canvas id="ppg-excerpt" aria-label="Фрагмент оптического пульсового сигнала" role="img"></canvas></div><dl class="signal-stat-row"><div><dt>ПУЛЬС</dt><dd>${fmt(p.pulse_rate_bpm,1)} <small>уд/мин</small></dd></div><div><dt>ПРОШЛО ФИЛЬТР</dt><dd>${percent(p.quality?.usable_pct)}</dd></div><div><dt>ПРИНЯТО ОКОН</dt><dd>${integer(p.quality?.accepted_windows)} <small>/ ${integer(p.quality?.total_windows)}</small></dd></div></dl><details class="details-block"><summary>Пульсовая вариабельность · PRV</summary><dl class="signal-stat-row"><div><dt>RMSSD</dt><dd>${fmt(prv.rmssd_ms,1)} <small>мс</small></dd></div><div><dt>SDNN</dt><dd>${fmt(prv.sdnn_ms,1)} <small>мс</small></dd></div><div><dt>ИНТЕРВАЛЫ</dt><dd>${integer(prv.n_intervals)}</dd></div></dl><p class="chart-caption">Блок PRV: ${esc(duration(prv.duration_s))}; начало ${fmt(prv.block_start_s,1)} с, конец ${fmt(prv.block_end_s,1)} с. Пригодные интервалы: ${esc(duration(prv.valid_interval_duration_s))}.</p><p class="chart-caption">${esc(prv.description||'Метрики по пульсовым интервалам. PPG не эквивалентна ЭКГ; движение и ошибки обнаружения пиков искажают вариабельность.')}</p></details>`:empty('Нет PPG','В этой записи отсутствует оптический сигнал.','heart')}</section><section class="card">${cardHeader('Пульс во времени','Только окна, принятые проверкой качества')}${p.available?`<div class="chart-shell small"><canvas id="ppg-timeline" aria-label="Частота пульса во времени" role="img"></canvas></div><p class="chart-caption">Разрывы — невалидные или недостаточные фрагменты. Изменения пульса неспецифичны: на них влияют движение, дыхание и множество других факторов.</p>`:empty('Нет динамики PPG','Частота пульса недоступна.','heart')}</section><section class="card">${cardHeader('Движение','Датчики MEMS помогают заметить возможные артефакты')}${motion.available?`<div class="chart-shell small"><canvas id="motion-chart" aria-label="Динамика величины вращения по гироскопу" role="img"></canvas></div><p class="chart-caption">${esc(motion.summary?.units_note||'Единицы сохранены из SDK. Величина движения — контекст для качества сигнала, не показатель работы мозга.')}</p><dl class="signal-stat-row"><div><dt>ОКНА С ДВИЖЕНИЕМ</dt><dd>${percent(motion.summary?.movement_windows_pct)}</dd></div><div><dt>ПОРОГ ЭВРИСТИКИ</dt><dd>${fmt(motion.summary?.movement_threshold,2)}</dd></div></dl>`:empty('Нет движения','Данные MEMS отсутствуют.')}</section><section class="card">${cardHeader('Контакт электродов','Распределение сопротивления по каналам')}${impedance.available?`<div class="table-wrap"><table class="data-table"><thead><tr><th>КАНАЛ</th><th>МЕДИАНА</th><th>P95</th><th>&gt; 1 МОм</th></tr></thead><tbody>${arr(impedance.channels).map(ch=>`<tr><td>${esc(ch.name)}</td><td>${fmt(num(ch.median_ohm)===null?null:ch.median_ohm/1000,0)} кОм</td><td>${fmt(num(ch.p95_ohm)===null?null:ch.p95_ohm/1000,0)} кОм</td><td>${percent(ch.above_1m_pct)}</td></tr>`).join('')}</tbody></table></div><div class="chart-shell small"><canvas id="impedance-chart" aria-label="Сопротивление электродов во времени" role="img"></canvas></div><p class="chart-caption">${esc(impedance.threshold_note||'Пороги проекта не являются клинической нормой. Связь сопротивления с качеством зависит от схемы усилителя и электродов.')}</p>`:empty('Нет сопротивлений','Контакт электродов в этой сессии не измерен.')}</section><section class="card full">${cardHeader('Сравнение двух ЭЭГ-каналов · связность','Визуализация 3D-монтажа и проверка парных спектров')}${window.NeuroPairedPanel?.markup()||''}</section>${advancedCard(c)}${qualityCard(a,true)}<section class="card">${cardHeader('Ограничения интерпретации','Что следует учитывать перед любым выводом')}<div class="text-content"><ul>${arr(a.limitations).map(x=>`<li>${esc(textOf(x))}</li>`).join('')||'<li>Смотрите научную базу и протокол записи для требований к интерпретации.</li>'}</ul></div></section><section class="card full">${cardHeader('Оценки SDK','Отдельный источник: показатели производителя не равны доказанным состояниям мозга')}${vendorSummary(a.vendor||{})}</section><section class="card full">${cardHeader('Воспроизводимость и метод','Параметры анализа и происхождение данных')}${methodSummary(a)}</section></div>`;
-    window.NeuroPairedPanel?.attach($('#content [data-pair-panel]'),a.paired_eeg);
+    $('#content').innerHTML=`${quickReview(a)}${notice('<strong>Единицы ЭЭГ:</strong> значения сохранены в формате SDK. Без подтверждённого масштаба их нельзя подписывать как микровольты. Фильтр отмечает подозрительные окна; он не гарантирует устранение всех артефактов.')} ${a.eeg?.available?controls:''}<div class="content-grid even"><section class="card">${cardHeader('Спектр мощности','Метод Welch; отобранные и, по желанию, исходные окна')}${a.eeg?.available?`${legend(cs)}<div class="chart-shell"><canvas id="signal-spectrum" aria-label="Спектр мощности каналов ЭЭГ" role="img"></canvas></div><p class="chart-caption">Сплошная линия — отобранные окна. Пунктир — исходные окна при включённом переключателе. Отсутствие сплошной линии означает отсутствие пригодной оценки.</p>`:empty('ЭЭГ не записана','Для этой сессии анализ электрической активности недоступен.')}</section><section class="card">${cardHeader(`Метрики канала ${c.name||''}`,'Описательные показатели сигнала')}${a.eeg?.available?channelStats(c):empty('Нет показателей канала','Пульс и движение не заменяют электрическую запись.')}</section><section class="card full">${cardHeader('Фрагмент исходной ЭЭГ',c.excerpt?.selection||'Сохранённые значения без изменения масштаба',tag(c.name||'Нет ЭЭГ','blue'))}${a.eeg?.available&&arr(c.excerpt?.values).length?`<div class="chart-shell small"><canvas id="raw-eeg" aria-label="Фрагмент исходной ЭЭГ" role="img"></canvas></div><p class="chart-caption">Фрагмент служит визуальной проверке формы сигнала. Он не является всей записью; скачайте исходные файлы через управление записями.</p>`:empty('Нет фрагмента ЭЭГ','Исходные отсчёты отсутствуют или недоступны.')}</section><section class="card full">${cardHeader('Динамика ритмов','Доли спектральной мощности в отобранных окнах',`<label for="timeline-band" class="screen-reader">Диапазон частот</label><select id="timeline-band" class="select">${bandDefs.map(b=>`<option value="${b.id}" ${b.id==='alpha'?'selected':''}>${b.name} · ${b.range}</option>`).join('')}</select>`)}${a.eeg?.available?`${legend(cs)}<div class="chart-shell small"><canvas id="signals-timeline" aria-label="Изменение доли мощности выбранного диапазона" role="img"></canvas></div>`:empty('Нет временного ряда ЭЭГ','Ритмы требуют сохранённой ЭЭГ.')}</section><section class="card">${cardHeader('Оптический пульс','PPG: пульсовая волна и качество её регистрации',tag('PPG','blue'))}${p.available?`<div class="chart-shell small"><canvas id="ppg-excerpt" aria-label="Фрагмент оптического пульсового сигнала" role="img"></canvas></div><dl class="signal-stat-row"><div><dt>ПУЛЬС</dt><dd>${fmt(p.pulse_rate_bpm,1)} <small>уд/мин</small></dd></div><div><dt>ПРОШЛО ФИЛЬТР</dt><dd>${percent(p.quality?.usable_pct)}</dd></div><div><dt>ПРИНЯТО ОКОН</dt><dd>${integer(p.quality?.accepted_windows)} <small>/ ${integer(p.quality?.total_windows)}</small></dd></div></dl><details class="details-block"><summary>Пульсовая вариабельность · PRV</summary><dl class="signal-stat-row"><div><dt>RMSSD</dt><dd>${fmt(prv.rmssd_ms,1)} <small>мс</small></dd></div><div><dt>SDNN</dt><dd>${fmt(prv.sdnn_ms,1)} <small>мс</small></dd></div><div><dt>ИНТЕРВАЛЫ</dt><dd>${integer(prv.n_intervals)}</dd></div></dl><p class="chart-caption">Блок PRV: ${esc(duration(prv.duration_s))}; начало ${fmt(prv.block_start_s,1)} с, конец ${fmt(prv.block_end_s,1)} с. Пригодные интервалы: ${esc(duration(prv.valid_interval_duration_s))}.</p><p class="chart-caption">${esc(prv.description||'Метрики по пульсовым интервалам. PPG не эквивалентна ЭКГ; движение и ошибки обнаружения пиков искажают вариабельность.')}</p></details>`:empty('Нет PPG','В этой записи отсутствует оптический сигнал.','heart')}</section><section class="card">${cardHeader('Пульс во времени','Только окна, принятые проверкой качества')}${p.available?`<div class="chart-shell small"><canvas id="ppg-timeline" aria-label="Частота пульса во времени" role="img"></canvas></div><p class="chart-caption">Разрывы — невалидные или недостаточные фрагменты. Изменения пульса неспецифичны: на них влияют движение, дыхание и множество других факторов.</p>`:empty('Нет динамики PPG','Частота пульса недоступна.','heart')}</section><section class="card">${cardHeader('Движение','Датчики MEMS помогают заметить возможные артефакты')}${motion.available?`<div class="chart-shell small"><canvas id="motion-chart" aria-label="Динамика величины вращения по гироскопу" role="img"></canvas></div><p class="chart-caption">${esc(motion.summary?.units_note||'Единицы сохранены из SDK. Величина движения — контекст для качества сигнала, не показатель работы мозга.')}</p><dl class="signal-stat-row"><div><dt>ОКНА С ДВИЖЕНИЕМ</dt><dd>${percent(motion.summary?.movement_windows_pct)}</dd></div><div><dt>ПОРОГ ЭВРИСТИКИ</dt><dd>${fmt(motion.summary?.movement_threshold,2)}</dd></div></dl>`:empty('Нет движения','Данные MEMS отсутствуют.')}</section><section class="card">${cardHeader('Контакт электродов','Распределение сопротивления по каналам')}${impedance.available?`<div class="table-wrap"><table class="data-table"><thead><tr><th>КАНАЛ</th><th>МЕДИАНА</th><th>P95</th><th>&gt; 1 МОм</th></tr></thead><tbody>${arr(impedance.channels).map(ch=>`<tr><td>${esc(ch.name)}</td><td>${fmt(num(ch.median_ohm)===null?null:ch.median_ohm/1000,0)} кОм</td><td>${fmt(num(ch.p95_ohm)===null?null:ch.p95_ohm/1000,0)} кОм</td><td>${percent(ch.above_1m_pct)}</td></tr>`).join('')}</tbody></table></div><div class="chart-shell small"><canvas id="impedance-chart" aria-label="Сопротивление электродов во времени" role="img"></canvas></div><p class="chart-caption">${esc(impedance.threshold_note||'Пороги проекта не являются клинической нормой. Связь сопротивления с качеством зависит от схемы усилителя и электродов.')}</p>`:empty('Нет сопротивлений','Контакт электродов в этой сессии не измерен.')}</section>${pairedCard()}${advancedCard(c)}${qualityCard(a,true)}<section class="card">${cardHeader('Ограничения интерпретации','Что следует учитывать перед любым выводом')}<div class="text-content"><ul>${arr(a.limitations).map(x=>`<li>${esc(textOf(x))}</li>`).join('')||'<li>Смотрите научную базу и протокол записи для требований к интерпретации.</li>'}</ul></div></section><section class="card full">${cardHeader('Оценки SDK','Отдельный источник: показатели производителя не равны доказанным состояниям мозга')}${vendorSummary(a.vendor||{})}</section><section class="card full">${cardHeader('Воспроизводимость и метод','Параметры анализа и происхождение данных')}${methodSummary(a)}</section></div>`;
+    window.NeuroPairedPanel.attach($('#content [data-pair-panel]'),a.paired_eeg);
     drawSpectrum(a,'signal-spectrum',state.raw);drawTimeline(a,'signals-timeline');
     chart('raw-eeg',[dataset(c.name||'ЭЭГ',points(c.excerpt?.time_s,c.excerpt?.values),colors[state.channel])],{ytitle:cleanUnits(a.eeg?.units),digits:4});
     chart('ppg-excerpt',[dataset('PPG',points(p.excerpt?.time_s,p.excerpt?.values),colors[2])],{ytitle:'Единицы SDK',digits:0});
@@ -299,11 +462,29 @@
   }
 
   function renderComparison(list) {
-    const analyses=list.filter(Boolean);
+    const spectra = list.filter(Boolean).map(a=>({
+      session: a.session,
+      channels: arr(a.eeg?.channels).filter(c=>arr(c.psd?.freq_hz).length && arr(c.psd?.power).length),
+    }));
+    const channelKey = name => String(name||'').replace(/[–—]/g,'-').toUpperCase();
+    const available = new Map();
+    for (const spectrum of spectra) {
+      for (const name of new Set(spectrum.channels.map(c=>channelKey(c.name)).filter(Boolean))) {
+        available.set(name,(available.get(name)||0)+1);
+      }
+    }
+    const compareKey = [...available].sort((a,b)=>b[1]-a[1]).find(([,count])=>count>=2)?.[0];
+    const series = compareKey ? spectra.flatMap(({session,channels})=>{
+      const selected = channels.find(channel=>channelKey(channel.name)===compareKey);
+      return selected ? [{session,channel:selected}] : [];
+    }) : [];
     const row=(title,fn,note='')=>`<tr><td>${esc(title)}${note?`<span class="subcell">${esc(note)}</span>`:''}</td>${list.map(a=>`<td>${a?fn(a):'Недоступно'}</td>`).join('')}</tr>`;
     const channelLines=(a, fn)=>arr(a.eeg?.channels).map(c=>`<span class="subcell">${esc(c.name)}: <span style="color:var(--text)">${fn(c)}</span></span>`).join('')||'Нет ЭЭГ';
-    $('#content').innerHTML=`${notice('<strong>Сравнение описательное.</strong> Разные даты, продолжительность, контакт электродов и неразмеченные состояния глаз не позволяют приписать различия обучению, восстановлению или изменениям здоровья.','warning')}<section class="card">${cardHeader('Сессии рядом','Сравнивайте наличие и качество данных до сравнения ритмов')}<div class="table-wrap"><table class="data-table comparison-table"><thead><tr><th>ПОКАЗАТЕЛЬ</th>${state.sessions.map(s=>`<th>${esc(dateLabel(s.started_at,true))}<span class="subcell" style="display:block;margin-top:5px;color:var(--soft)">Москва · UTC+3</span></th>`).join('')}</tr></thead><tbody>${row('Наличие ЭЭГ',a=>tag(a.eeg?.available?'Два канала':'Нет ЭЭГ',a.eeg?.available?'good':''))}${row('Номинальная длительность',a=>`<span class="value-emphasis">${esc(duration(a.session?.duration_s))}</span>`,'По метаданным анализа')}${row('Временной охват',a=>esc(duration(a.session?.wall_duration_s)),'По временным меткам')}${row('Окна ЭЭГ без флагов',a=>percent(a.quality?.usable_eeg_pct),'Эвристический отбор')}${row('Альфа-пик · кандидат',a=>channelLines(a,c=>`${fmt(c.alpha_peak_hz,2)} Гц`))}${row('Доля альфа 8–13 Гц',a=>channelLines(a,c=>num(c.relative_power?.alpha)===null?'—':percent(c.relative_power.alpha*100)),'Отобранные окна, от 1–45 Гц')}${row('Спектральная энтропия',a=>channelLines(a,c=>fmt(c.entropy,3)),'Без психологической трактовки')}${row('Частота пульса',a=>`${fmt(a.ppg?.pulse_rate_bpm,1)} уд/мин`,'PPG; при пройденной проверке')}${row('Окна PPG без флагов',a=>percent(a.ppg?.quality?.usable_pct))}${row('Движение',a=>percent(a.motion?.summary?.movement_windows_pct),'Доля окон по эвристике')}${row('Сопротивление · медиана',a=>arr(a.impedance?.channels).map(c=>`<span class="subcell">${esc(c.name)}: ${fmt(num(c.median_ohm)===null?null:c.median_ohm/1000,0)} кОм</span>`).join('')||'Нет измерений')}${row('Статус качества',a=>{const q=statusInfo(a.quality?.status);return tag(q.label,q.cls);})}</tbody></table></div><p class="table-caption">Порог движения определяется отдельно для каждой сессии. Доли отмеченных окон не являются общей шкалой двигательной активности.</p></section><div class="content-grid wide-gap"><section class="card">${cardHeader('Спектры O1–T3','Отобранные окна; амплитуды в исходном масштабе SDK')}<div class="legend">${analyses.filter(a=>a.eeg?.available).map((a,i)=>`<span><i style="background:${colors[i]}"></i>${esc(dateLabel(a.session?.started_at))}</span>`).join('')}</div><div class="chart-shell"><canvas id="comparison-spectrum" aria-label="Сравнение спектров канала O1–T3 между сессиями" role="img"></canvas></div><p class="chart-caption">Мощность может меняться из-за контакта и артефактов. Совпадение аппаратуры не делает условия записи одинаковыми.</p></section><section class="card">${cardHeader('Что улучшит сравнимость','Рекомендации для следующих сессий')}<div class="text-content"><ol><li>Повторяйте короткий протокол в одинаковой позе и в сходное время суток.</li><li>Отдельно размечайте открытые и закрытые глаза; записывайте движения и задачу.</li><li>Сохраняйте качество контакта и фиксируйте сон, кофеин и самочувствие.</li><li>Сравнивайте сопоставимые по длительности чистые участки, а не только средние всей сессии.</li></ol></div><a class="button text" href="#protocol" data-view="protocol">Открыть протокол ${icon('arrow')}</a></section></div>`;
-    chart('comparison-spectrum',analyses.filter(a=>a.eeg?.available).map((a,i)=>{const c=a.eeg.channels?.[0]||{};return dataset(dateLabel(a.session?.started_at),points(c.psd?.freq_hz,c.psd?.power,true),colors[i]);}),{frequency:true,xmin:1,xmax:45,log:true,ytitle:'ед. SDK²/Гц',digits:5});bindContent();
+    $('#content').innerHTML=`${notice('<strong>Сравнение описательное.</strong> Разные даты, продолжительность, контакт электродов и неразмеченные состояния глаз не позволяют приписать различия обучению, восстановлению или изменениям здоровья.','warning')}<section class="card">${cardHeader('Сессии рядом','Сравнивайте наличие и качество данных до сравнения ритмов')}<div class="table-wrap"><table class="data-table comparison-table"><thead><tr><th>ПОКАЗАТЕЛЬ</th>${state.sessions.map(s=>`<th>${esc(dateLabel(s.started_at,true))}<span class="subcell" style="display:block;margin-top:5px;color:var(--soft)">Москва · UTC+3</span></th>`).join('')}</tr></thead><tbody>${row('Наличие ЭЭГ',a=>tag(a.eeg?.available?`Каналов: ${arr(a.eeg.channels).length}`:'Нет ЭЭГ',a.eeg?.available?'good':''))}${row('Номинальная длительность',a=>`<span class="value-emphasis">${esc(duration(a.session?.duration_s))}</span>`,'По метаданным анализа')}${row('Временной охват',a=>esc(duration(a.session?.wall_duration_s)),'По временным меткам')}${row('Окна ЭЭГ без флагов',a=>percent(a.quality?.usable_eeg_pct),'Эвристический отбор')}${row('Альфа-пик · кандидат',a=>channelLines(a,c=>`${fmt(c.alpha_peak_hz,2)} Гц`))}${row('Доля альфа 8–13 Гц',a=>channelLines(a,c=>num(c.relative_power?.alpha)===null?'—':percent(c.relative_power.alpha*100)),'Отобранные окна, от 1–45 Гц')}${row('Спектральная энтропия',a=>channelLines(a,c=>fmt(c.entropy,3)),'Без психологической трактовки')}${row('Частота пульса',a=>`${fmt(a.ppg?.pulse_rate_bpm,1)} уд/мин`,'PPG; при пройденной проверке')}${row('Окна PPG без флагов',a=>percent(a.ppg?.quality?.usable_pct))}${row('Движение',a=>percent(a.motion?.summary?.movement_windows_pct),'Доля окон по эвристике')}${row('Сопротивление · медиана',a=>arr(a.impedance?.channels).map(c=>`<span class="subcell">${esc(c.name)}: ${fmt(num(c.median_ohm)===null?null:c.median_ohm/1000,0)} кОм</span>`).join('')||'Нет измерений')}${row('Статус качества',a=>{const q=statusInfo(a.quality?.status);return tag(q.label,q.cls);})}</tbody></table></div><p class="table-caption">Порог движения определяется отдельно для каждой сессии. Доли отмеченных окон не являются общей шкалой двигательной активности.</p></section><div class="content-grid wide-gap"><section class="card">${cardHeader('Сравнение спектров',series.length?`Общий канал ${series[0].channel.name} · отобранные окна`:'График появляется при наличии спектров общего канала')}${series.length?`<div class="legend">${series.map(({session},i)=>`<span><i style="background:${colors[i%colors.length]}"></i>${esc(dateLabel(session?.started_at))}</span>`).join('')}</div><div class="chart-shell"><canvas id="comparison-spectrum" aria-label="Сравнение спектров ${esc(series[0].channel.name)}" role="img"></canvas></div>`:empty('Нет общего спектра','Для сравнения нужны записи с одним и тем же каналом и пригодными окнами.') }<p class="chart-caption">Мощность может меняться из-за контакта и артефактов. Совпадение аппаратуры не делает условия записи одинаковыми.</p></section><section class="card">${cardHeader('Что улучшит сравнимость','Рекомендации для следующих сессий')}<div class="text-content"><ol><li>Повторяйте короткий протокол в одинаковой позе и в сходное время суток.</li><li>Отдельно размечайте открытые и закрытые глаза; записывайте движения и задачу.</li><li>Сохраняйте качество контакта и фиксируйте сон, кофеин и самочувствие.</li><li>Сравнивайте сопоставимые по длительности чистые участки, а не только средние всей сессии.</li></ol></div><a class="button text" href="#protocol" data-view="protocol">Открыть протокол ${icon('arrow')}</a></section></div>`;
+    if(series.length)chart('comparison-spectrum',series.map(({session,channel},i)=>
+      dataset(dateLabel(session?.started_at),points(channel.psd.freq_hz,channel.psd.power,true),colors[i%colors.length])),
+      {frequency:true,log:true,ytitle:'ед. SDK²/Гц',digits:5});
+    bindContent();
   }
 
   function sourceLinks(ids, sources) {
@@ -338,7 +519,8 @@
       $('.export-dropdown a[href="/api/lab/report"]').href='docs/NeuroScope_Research_Report.pdf';
       $('.brand').href='#overview';
     }
-    window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions: async ()=>{const r=await api('/api/lab/sessions');state.sessions=arr(r.sessions||r);renderSessions();}});
+    window.NeuroCheckpoints?.init({api, preview:!!preview});
+    window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions});
     $$('.nav-item[data-view], .top-help[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();if(location.hash.slice(1)===a.dataset.view)nav(a.dataset.view);else location.hash=a.dataset.view;}));
     window.addEventListener('hashchange',()=>{if(titles[location.hash.slice(1)])nav(location.hash.slice(1));});
     $('#menu-button').addEventListener('click',()=>{const open=$('#sidebar').classList.toggle('open');$('#menu-button').setAttribute('aria-expanded',String(open));});
@@ -347,15 +529,15 @@
     document.addEventListener('click',e=>{if(!$('#export-menu').contains(e.target))$('#export-menu').open=false;});
     $('#refresh-button').addEventListener('click',async()=>{
       if(!state.current)return;const analysisId=state.current;const button=$('#refresh-button');button.disabled=true;button.innerHTML=`${icon('refresh')}<span>Анализируем…</span>`;notify('Пересчитываем показатели из исходных файлов. Это может занять некоторое время.');
-      try {const result=await api(`/api/lab/analysis/${encodeURIComponent(analysisId)}/refresh`,{method:'POST'});state.cache.delete(analysisId);if(result.eeg||result.analysis)state.cache.set(analysisId,result.analysis||result);if(state.current===analysisId){await render();notify('Анализ пересчитан из исходных данных.','success');}else notify('Пересчёт предыдущей сессии завершён.','success');}
+      try {await api(`/api/lab/analysis/${encodeURIComponent(analysisId)}/refresh`,{method:'POST'});if(state.current===analysisId){await render();notify('Анализ пересчитан из исходных данных.','success');}else notify('Пересчёт предыдущей сессии завершён.','success');}
       catch(error){notify(error.message,'error');}finally{button.disabled=false;button.innerHTML=`${icon('refresh')}<span>Пересчитать</span>`;}
     });
     try {
       const result=await api('/api/lab/sessions');state.sessions=arr(result.sessions||result).filter(s=>s&&s.id);
       let saved=null;try{saved=localStorage.getItem('neuroscope.session');}catch(_){}
       const query=new URLSearchParams(location.search).get('session');
-      state.current=state.sessions.find(s=>s.id===(query||saved))?.id||state.sessions[0]?.id||null;
-      state.view=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';renderSessions();nav(state.view);
+      state.current=(state.sessions.find(s=>s.id===(query||saved))||state.sessions.find(s=>!s.active)||state.sessions[0])?.id||null;
+      state.view=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';renderSessions();nav(state.view,false);
     } catch(error) {
       $('#content').innerHTML=`<div class="error-panel"><h2>Список записей недоступен</h2><p>${esc(error.message)}</p><button class="button primary" id="initial-retry">Повторить загрузку</button></div>`;
       $('#initial-retry')?.addEventListener('click',()=>location.reload());

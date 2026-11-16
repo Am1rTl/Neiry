@@ -1,12 +1,17 @@
 """Numerical guards for two-lead sensor coupling and honest unavailable states."""
 from __future__ import annotations
+import time
 import unittest
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
 from fastapi.testclient import TestClient
 from _sdk_stubs import install
 install()
+from analysis_engine import analyze_session
 from paired_eeg import analyze_pair
+from recording import SessionRecorder
 import server
 
 FS = 250
@@ -61,6 +66,23 @@ class TestPairedScientificMetrics(unittest.TestCase):
                                baseline['bands']['alpha']['relative_log_right_left'], places=5)
         self.assertFalse(analyze_pair(a,FS,names=['Fp1-Fp2','C3-C4'])['available'])
 
+    def test_archive_report_screens_pair_windows_and_preserves_events(self):
+        with TemporaryDirectory() as directory:
+            recorder = SessionRecorder(directory, channel_names=["O1-T3", "O2-T4"],
+                                       sample_rates={"eeg": FS})
+            session = recorder.start()
+            values = pair(44, phase=np.pi/3)
+            recorder.record_eeg(values, time.time() + np.arange(len(values)) / FS)
+            recorder.event("marker", checkpoint_id="screened_pair", label=None)
+            recorder.event("checkpoint_label", checkpoint_id="screened_pair", label="Глаза закрыты")
+            recorder.close()
+            report = analyze_session(session)
+        paired = report["paired_eeg"]
+        self.assertTrue(paired["available"], paired.get("reason"))
+        self.assertEqual(paired["quality"]["accepted_epochs"], 11)
+        self.assertEqual(report["session"]["markers_count"], 1)
+        self.assertIn("Глаза закрыты", [event.get("label") for event in report["session"]["events"]])
+
     def test_large_phase_lag_is_not_anatomical_direction(self):
         r=analyze_pair(pair(50,phase=np.pi/2),FS)
         self.assertTrue(r['available'])
@@ -95,5 +117,36 @@ class TestLivePairedAPI(unittest.TestCase):
         self.assertEqual(response.status_code,200)
         self.assertFalse(response.json()['available'])
         self.assertEqual(response.json()['status'],'contact_required')
+
+    def test_live_pair_uses_only_continuous_stable_contact_data(self):
+        with server.STATE_LOCK:
+            state = server.S
+            state._device_ready = True
+            state.status = 'connected'
+            state.eeg_sample_rate = FS
+            state.channel_names = ['O1-T3', 'O2-T4']
+            state.eeg.extend(pair(40).tolist())
+            state.eeg_t.extend(np.arange(40 * FS) / FS)
+            state.metrics_updated_at['eeg'] = time.monotonic()
+        contact = {'ready': True, 'stable_seconds': 40.0}
+        client = TestClient(server.app)
+        self.addCleanup(client.close)
+        with (patch.object(server, 'REPLAY', None),
+              patch.object(server, '_contact_locked', return_value=contact)):
+            live = client.get('/api/live/paired').json()
+            self.assertTrue(live['available'], live.get('reason'))
+            self.assertEqual(live['source_mode'], 'live')
+            self.assertEqual(live['quality']['accepted_epochs'], 10)
+            contact['stable_seconds'] = 8.0
+            settling = client.get('/api/live/paired').json()
+            self.assertFalse(settling['available'])
+            self.assertEqual(settling['status'], 'insufficient')
+
+    def test_capsule_partial_state_packet_uses_available_aliases(self):
+        server.on_emotions_states(None, SimpleNamespace(focus=float('nan'), attention=0.55, chill=0.42))
+        self.assertEqual(server.S.latest_emotions['attention'], 0.55)
+        self.assertEqual(server.S.latest_emotions['relaxation'], 0.42)
+        self.assertNotIn('cognitiveLoad', server.S.latest_emotions)
+
 
 if __name__=='__main__':unittest.main()
