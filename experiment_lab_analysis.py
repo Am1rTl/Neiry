@@ -15,6 +15,7 @@ import numpy as np
 from scipy.signal import welch
 
 from analysis_engine import BANDS, _robust_upper, integrate_band
+from experiment_timing import MAX_HOST_SPREAD_S, PacketCoverage, read_packet_coverage, window_timing_reasons
 from experiment_lab import measured_feedback
 from json_utils import finite_json
 
@@ -59,7 +60,7 @@ def _read_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _phase_intervals(events: list[dict]) -> list[dict]:
+def _phase_intervals(events: list[dict], *, interrupted: bool = False) -> list[dict]:
     starts = {}
     output = []
     for event in events:
@@ -76,12 +77,13 @@ def _phase_intervals(events: list[dict]) -> list[dict]:
             starts[key] = at_ms
             continue
         start = starts.pop(key, None)
-        if start is None or at_ms <= start or event.get("reason"):
+        if start is None or at_ms <= start or bool(event.get("reason")) != interrupted:
             continue
         output.append({
             "index": key[0] if key[0] is not None else len(output),
             "label": label, "start_s": start / 1000, "end_s": at_ms / 1000,
             "duration_s": (at_ms - start) / 1000,
+            **({"interruption_reason": event["reason"]} if interrupted else {}),
         })
     return sorted(output, key=lambda phase: phase["start_s"])
 
@@ -169,6 +171,18 @@ def _motion_checks(recording_dir: Path, start_s: float, end_s: float) -> tuple:
     return np.asarray(stamps), np.asarray(norms)
 
 
+def _high_frequency_summary(entries) -> dict:
+    checks = [window for window, _ in entries if "high_frequency_fraction" in window]
+    flagged = [window for window in checks if "dominant_high_frequency_line" in window["reasons"]]
+    strongest = max(flagged, key=lambda row: row["high_frequency_fraction"], default=None)
+    return {
+        "tested_windows": len(checks),
+        "flagged_windows": len(flagged),
+        "strongest_flagged_peak_hz": strongest["high_frequency_peak_hz"] if strongest else None,
+        "strongest_flagged_fraction": strongest["high_frequency_fraction"] if strongest else None,
+    }
+
+
 def _window_power(values: np.ndarray, rate: float) -> dict:
     output: dict[str, Any] = {"reasons": []}
     if not np.all(np.isfinite(values)):
@@ -189,6 +203,13 @@ def _window_power(values: np.ndarray, rate: float) -> dict:
         line_power = max(integrate_band(freq, power, 48, 52), integrate_band(freq, power, 58, 62))
         if wide_power > 0 and line_power / wide_power > .30:
             output["reasons"].append("line_noise")
+        if np.isfinite(wide_power) and wide_power > 0:
+            candidate_bins = np.flatnonzero((freq >= 65) & (freq <= 95))
+            center = float(freq[candidate_bins[np.argmax(power[candidate_bins])]])
+            fraction = integrate_band(freq, power, center - 1, center + 1) / wide_power
+            output.update(high_frequency_peak_hz=center, high_frequency_fraction=fraction)
+            if fraction > .5:
+                output["reasons"].append("dominant_high_frequency_line")
     output.update({
         "rms": float(np.std(values)), "diff_rms": float(np.std(np.diff(values))),
         "alpha": alpha_power, "relative_pct": 100 * alpha_power / total_power if total_power > 0 else None,
@@ -217,7 +238,8 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
     summary = _read_json(recording_dir / "summary.json")
     if quality["write_errors"] is None:
         quality["write_errors"] = _zero_or_more(summary, "write_errors")
-    rate = _number((_read_json(recording_dir / "meta.json").get("sample_rates") or {}).get("eeg"))
+    meta = _read_json(recording_dir / "meta.json")
+    rate = _number((meta.get("sample_rates") or {}).get("eeg"))
     quality["sample_rate_hz"] = rate
     if rate is None or not 90 <= rate <= 4096:
         quality["warnings"].append("Частота ЭЭГ отсутствует или недостаточна для заданного анализа.")
@@ -239,6 +261,17 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
     if len(times) < round(WINDOW_S * rate) or not names:
         quality["warnings"].append("Не хватает отсчётов или в файле нет размеченных отведений O1/O2.")
         return quality, sections
+    packets = PacketCoverage()
+    if meta.get("timestamp_source") == "host_callback_arrival_backfilled_per_packet":
+        packets = read_packet_coverage(recording_dir / "metrics.jsonl", rate)
+    quality["packet_timing_available"] = packets.present
+    if packets.present:
+        quality["timestamp_note"] = (
+            "Скачки времени доставки подсчитаны отдельно. Внутри 4-с окна проверяются "
+            f"непрерывные индексы, границы пакетов SDK и разброс времени доставки "
+            f"до {MAX_HOST_SPREAD_S * 1000:.0f} мс относительно номинальной сетки. "
+            "Окно должно целиком попасть в этап с отступами. Задержка стимула не измерена."
+        )
     contact_ts, contact_ok = _resistance_checks(recording_dir, begin, end)
     quality["contact_checks"] = len(contact_ok)
     quality["bad_contact_checks"] = contact_ok.count(False) if contact_ok else None
@@ -262,22 +295,20 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
         for i in range(inside[0], inside[-1] - n + 2, n):
             last = i + n
             ts = times[i:last]
-            reasons = []
-            dt = np.diff(ts)
-            if np.any(~np.isfinite(ts)) or np.any(dt <= 0) or np.any(dt > gap_limit):
-                reasons.append("host_timestamp_gap")
-            row_steps = np.diff(indices[i:last])
-            if np.any(~np.isfinite(row_steps)) or np.any(row_steps != 1):
-                reasons.append("sample_index_gap")
+            reasons = window_timing_reasons(
+                ts, indices[i:last], phase["start_s"] + PHASE_ONSET_MARGIN_S,
+                phase["end_s"] - PHASE_END_MARGIN_S, rate, gap_limit, packets,
+            )
             # Use the last recent check before the window and any checks in it.
-            if np.isfinite(ts[0]) and np.isfinite(ts[-1]):
-                c0 = bisect_left(contact_ts, ts[0] - 4.5)
-                c1 = bisect_right(contact_ts, ts[-1])
-                latest_prior = bisect_right(contact_ts, ts[0]) - 1
+            if np.all(np.isfinite(ts)):
+                earliest, latest = np.min(ts), np.max(ts)
+                c0 = bisect_left(contact_ts, earliest - 4.5)
+                c1 = bisect_right(contact_ts, latest)
+                latest_prior = bisect_right(contact_ts, earliest) - 1
                 c0 = max(c0, latest_prior)
                 if False in contact_ok[c0:c1]:
                     reasons.append("poor_contact")
-                g0, g1 = np.searchsorted(motion_ts, [ts[0], ts[-1]])
+                g0, g1 = np.searchsorted(motion_ts, [earliest, latest])
                 current_motion = motion_g[g0:g1]
                 current_motion = current_motion[np.isfinite(current_motion)]
                 motion_score = float(np.sqrt(np.mean(current_motion ** 2))) if len(current_motion) else None
@@ -316,6 +347,7 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
                 "alpha_power": _median([w["alpha"] for w in ok]) if len(ok) >= MIN_USABLE_WINDOWS else None,
                 "relative_alpha_pct": _median([w["relative_pct"] for w in ok if w["relative_pct"] is not None])
                 if len(ok) >= MIN_USABLE_WINDOWS else None,
+                "high_frequency_line": _high_frequency_summary(entries),
                 "usable_windows": len(ok),
                 "total_windows": len(entries),
                 "rejected": dict(Counter(reason for _, reasons in entries for reason in reasons)),
@@ -327,8 +359,13 @@ def _alpha_summary(phases: list[dict], names: list[str]) -> dict:
     pairs = []
     per_channel = defaultdict(list)
     ordered = [p for p in phases if p["label"] in {"eyes_open", "eyes_closed"}]
-    for start in range(0, len(ordered) - 1, 2):
-        first, second = ordered[start:start + 2]
+    by_pair = defaultdict(list)
+    for phase in ordered:
+        by_pair[phase["index"] // 2].append(phase)
+    for blocks in by_pair.values():
+        if len(blocks) != 2:
+            continue
+        first, second = blocks
         if first["label"] == second["label"] or second["index"] != first["index"] + 1:
             continue
         open_, closed = (first, second) if first["label"] == "eyes_open" else (second, first)
@@ -476,7 +513,23 @@ def summarize_run(run: dict, recording_dir: Path | None) -> dict:
         "quality": quality,
     }
     if kind == "alpha":
-        output["alpha"] = _alpha_summary(sections, quality["channels"])
+        interrupted = _phase_intervals(events, interrupted=True)
+        partial_sections = []
+        if interrupted:
+            partial_quality, partial_sections = _raw_eeg(interrupted, recording_dir, run)
+            if not sections:
+                output["quality"] = partial_quality
+        output["alpha"] = _alpha_summary(sections, output["quality"]["channels"])
+        # Partial attempts have diagnostic counts only. Their values never
+        # influence thresholds, block pairs, or estimates from completed phases.
+        output["alpha"]["interrupted_phases"] = [
+            {**section, "channels": [
+                {key: channel[key] for key in ("name", "usable_windows", "total_windows",
+                                               "rejected", "high_frequency_line")}
+                for channel in section["channels"]
+            ]}
+            for section in partial_sections
+        ]
     elif kind == "visual":
         output["visual"] = _visual_summary(events, sections, run.get("stage", ""))
     elif kind == "feedback":
