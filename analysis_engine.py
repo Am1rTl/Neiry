@@ -25,7 +25,7 @@ from cardio_quality import sdk_cardio_issues
 from checkpoints import LABEL_EVENT, checkpoint_index
 from paired_eeg import analyze_pair
 
-ANALYSIS_VERSION = "2.4.0"
+ANALYSIS_VERSION = "2.4.1"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
