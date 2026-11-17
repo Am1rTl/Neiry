@@ -415,8 +415,8 @@
     const r = a.research_readiness;
     if (!r) return '';
     const alphaStatus = {
-      no_eeg:'ЭЭГ отсутствует', no_protocol:'Нет меток протокола', incomplete:'Протокол не завершён',
-      insufficient_signal:'Недостаточно пригодного сигнала', reviewable:'Доступен разбор блоков'
+      no_eeg:'ЭЭГ отсутствует', no_protocol:'Нет меток протокола', incomplete:'Нет полной пары фаз',
+      insufficient_signal:'Покрытие фаз не подтверждено', reviewable:'Доступен разбор блоков'
     };
     const alpha = r.alpha || {};
     return `<section class="card research-readiness">${cardHeader('Для каких исследований подходит запись')}

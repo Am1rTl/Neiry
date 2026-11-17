@@ -21,12 +21,13 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
+from block_timing import read_packet_clock
 from cardio_quality import sdk_cardio_issues
 from checkpoints import LABEL_EVENT, checkpoint_index
 from paired_eeg import analyze_pair
 from research_readiness import assess_research_readiness
 
-ANALYSIS_VERSION = "2.6.0"
+ANALYSIS_VERSION = "2.6.1"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -924,7 +925,11 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
           "Для связи EEG с задачей сохранять события, ответы, точность/время реакции и дневник сна/кофеина; сравнивать одинаковые условия.",
           "Для пространственных/клинических вопросов нужны многоканальная ЭЭГ, проверенный монтаж и специалист; нынешние два отведения не заменяют обследование."],
        "methods":methods,"configuration":asdict(cfg),"provenance":_provenance(p, source_signatures)}
-    result["research_readiness"] = assess_research_readiness(result, eeg_timestamps=eeg_stream["ts"])
+    result["research_readiness"] = assess_research_readiness(
+        result, eeg_timestamps=eeg_stream["ts"],
+        eeg_indices=eeg_stream["index"] if eeg_stream.get("index_source") == "sample_index" else None,
+        packet_clock=lambda: read_packet_clock(p / "metrics.jsonl", eeg_stream["rate"]),
+    )
     return sanitize(result)
 
 

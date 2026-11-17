@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import random
 import re
 import sqlite3
 import threading
@@ -81,6 +82,39 @@ def _object(value: Any, title: str, size_limit: int) -> dict:
     if len(data) > size_limit:
         raise HTTPException(400, f"{title} слишком большой")
     return value
+
+
+def _alpha_settings(settings: dict, mode: str) -> dict:
+    order = settings.get("alpha_order", "fixed")
+    if order not in ("fixed", "counterbalanced"):
+        raise HTTPException(400, "Неизвестный порядок фаз альфа-протокола")
+    default_repeats = 2 if mode == "demo" else 3
+    repeats = settings.get("repeats", default_repeats)
+    if "alpha_order" not in settings:
+        # Older runners defaulted out-of-range values and rounded valid fractions.
+        repeats = math.floor(repeats + .5) if _valid_number(repeats) and 1 <= repeats <= 8 else default_repeats
+    if type(repeats) is not int or not 1 <= repeats <= 8:
+        raise HTTPException(400, "Выберите целое число пар блоков от 1 до 8")
+    pair_first = ["eyes_open"] * repeats
+    if order == "counterbalanced":
+        pair_first = ["eyes_open", "eyes_closed"] * (repeats // 2)
+        if repeats % 2:
+            pair_first.append(random.choice(("eyes_open", "eyes_closed")))
+        random.shuffle(pair_first)
+    return {**settings, "alpha_order": order, "repeats": repeats, "alpha_pair_first": pair_first}
+
+
+def _check_alpha_phase(event: dict, first_labels: list[str]) -> None:
+    if event["type"] not in ("phase_start", "phase_end"):
+        return
+    index = event.get("index")
+    if type(index) is not int or not 0 <= index < 2 * len(first_labels):
+        raise HTTPException(400, "Индекс фазы вне сохранённого плана альфа-протокола")
+    expected = first_labels[index // 2]
+    if index % 2:
+        expected = "eyes_closed" if expected == "eyes_open" else "eyes_open"
+    if event["label"] != expected:
+        raise HTTPException(400, "Метка фазы расходится с сохранённым порядком блоков")
 
 
 def _power(frequencies: np.ndarray, psd: np.ndarray, band: tuple[float, float]) -> float:
@@ -323,6 +357,8 @@ class ExperimentLab:
             raise HTTPException(400, "Неизвестный эксперимент, источник или этап")
         context = _object(payload.get("context", {}), "Контекст", 6000)
         settings = _object(payload.get("settings", {}), "Протокол", 12000)
+        if kind == "alpha":
+            settings = _alpha_settings(settings, mode)
         participant = context.get("participant_code", "")
         if not isinstance(participant, str) or len(participant.strip()) > 64:
             raise HTTPException(400, "Укажите код участника длиной до 64 символов")
@@ -419,6 +455,9 @@ class ExperimentLab:
         with self.lock, closing(self._open()) as db:
             self._reconcile()
             run = self._load(db, ident)
+            if run["kind"] == "alpha" and run["settings"].get("alpha_order") == "counterbalanced":
+                for event in events:
+                    _check_alpha_phase(event, run["settings"]["alpha_pair_first"])
             if self.active is None or ident != self.active.id:
                 if any(not event.get("event_id") or db.execute(
                     "SELECT 1 FROM events WHERE run_id = ? AND event_id = ?",

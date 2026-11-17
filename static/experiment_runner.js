@@ -322,11 +322,10 @@
       }
     }
 
-    cue(type) {
-      const audio = this.audio;
+    static playCue(audio, type, delay = 0) {
       if (!audio || audio.state !== 'running') return;
       const notes = type === 'open' ? [660, 850] : type === 'closed' ? [510] : [510, 660, 850];
-      const start = audio.currentTime + .02;
+      const start = audio.currentTime + .02 + delay;
       notes.forEach((frequency, index) => {
         const at = start + index * .18;
         const osc = audio.createOscillator();
@@ -341,6 +340,10 @@
       });
     }
 
+    cue(type) {
+      ExperimentRunner.playCue(this.audio, type);
+    }
+
     async execute() {
       if (this.run.kind === 'alpha') await this.alphaTask();
       if (this.run.kind === 'visual') await this.visualTask();
@@ -353,11 +356,24 @@
       const repeats = Math.round(this.number('repeats', demo ? 2 : 3, 1, 8));
       this.audio = this.sound && typeof this.sound.createOscillator === 'function' ? this.sound
         : this.sound ? ExperimentRunner.primeSound() : null;
-      this.status(this.audio ? 'Два тона — открыть глаза. Один тон — закрыть.' : 'Переходы между этапами показаны на экране.');
-      await this.step(() => this.prep('Устройтесь удобно и смотрите перед собой'));
-      if (this.audio && this.audio.state !== 'running') {
-        this.status('Браузер заблокировал звук. Переходы между этапами показаны на экране.', 'warn');
+      const settings = this.run.settings || {};
+      const plan = settings.alpha_pair_first ?? ((settings.alpha_order ?? 'fixed') === 'fixed'
+        ? Array(repeats).fill('eyes_open') : null);
+      if (!Array.isArray(plan) || plan.length !== repeats || plan.some(label=>!['eyes_open','eyes_closed'].includes(label))) {
+        throw Error('Сохранённый порядок пар повреждён или отсутствует. Запустите новый протокол.');
       }
+      const soundRequested = settings.sound ?? Boolean(this.sound);
+      const audioRunning = () => this.audio?.state === 'running';
+      const checkAudio = () => {
+        if (!demo && soundRequested && !audioRunning()) {
+          throw Error('Звуковые команды недоступны. Повторите с включённым звуком или с ведущим.');
+        }
+      };
+      checkAudio();
+      this.status(audioRunning() ? 'Два тона — открыть глаза, один — закрыть, три — конец.'
+        : demo ? 'Демо без звука. Оставьте глаза открытыми и следите за экраном.'
+        : 'Ведущий вслух читает каждую команду, в том числе при закрытых глазах участника и при завершении.');
+      await this.step(() => this.prep('Устройтесь удобно и смотрите перед собой'));
       this.body.innerHTML = `<div class="exp-run-center exp-alpha">
         <div class="exp-alpha-icon" aria-hidden="true">
           <svg viewBox="0 0 56 44"><path class="exp-eye-open" d="M5 22s8-12 23-12 23 12 23 12-8 12-23 12S5 22 5 22Z M35 22a7 7 0 1 1-14 0 7 7 0 1 1 14 0"/><path class="exp-eye-closed" d="M5 21s9 8 23 8 23-8 23-8M16 28l-3 5m15-4v6m12-7 3 5"/></svg>
@@ -370,18 +386,24 @@
       const total = 2 * repeats;
       for (let index = 0; index < total; index++) {
         await this.step(async () => {
-          const closed = index % 2 === 1;
-          this.openPhase(closed ? 'eyes_closed' : 'eyes_open', index, seconds);
+          checkAudio();
+          const pair = Math.floor(index / 2);
+          const closedFirst = plan[pair] === 'eyes_closed';
+          const closed = index % 2 === 0 ? closedFirst : !closedFirst;
+          this.openPhase(closed ? 'eyes_closed' : 'eyes_open', index, seconds, {pair_index:pair});
           panel.dataset.closed = String(closed);
-          heading.textContent = closed ? 'Закройте глаза' : 'Откройте глаза';
+          heading.textContent = demo && !audioRunning() ? (closed ? 'Демо · закрытые глаза' : 'Демо · открытые глаза')
+            : closed ? 'Закройте глаза' : 'Откройте глаза';
           this.cue(closed ? 'closed' : 'open');
           await this.countdown(seconds, (remaining, progress) => {
+            checkAudio();
             if (timer.textContent !== String(remaining)) timer.textContent = remaining;
             this.setProgress((index + progress) / total, `Блок ${index + 1} из ${total}`);
           });
           this.closePhase();
         });
       }
+      heading.textContent = 'Протокол завершён. Откройте глаза.';
       this.cue('complete');
     }
 

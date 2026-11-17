@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 
 import numpy as np
 
-from research_readiness import assess_research_readiness
+from research_readiness import assess_research_readiness, sdk_supports_alpha_block
 
 
 RATE = 100
@@ -112,6 +112,54 @@ class TestResearchReadiness(unittest.TestCase):
         for i, w in enumerate(timeline):
             w["usable"] = i in {2, 3, 4, 14, 15, 16}
         self.assertEqual(assess_research_readiness(report, eeg_timestamps=TIMES)["alpha"]["pairs_with_coverage"], 0)
+
+    def test_sdk_fallback_only_for_long_aligned_blocks_with_explicit_index(self):
+        class CoveredClock:
+            def supports_window(self, start, end):
+                return 0 <= start < end <= 7100
+
+        report = make_report(make_events(bounds=(1, 34, 36, 69)))
+        report["session"]["streams"]["eeg"]["last_timestamp"] = 71
+        indices = np.arange(7101)
+        times = indices / RATE
+        times[5::10] -= .04
+        nwin = (len(times) - 4*RATE) // (2*RATE) + 1
+        report["eeg"]["channels"][0]["timeline"] = [{"usable": True} for _ in range(nwin)]
+        result = assess_research_readiness(report, eeg_timestamps=times, eeg_indices=indices,
+                                           packet_clock=CoveredClock)["alpha"]
+        self.assertEqual(result["pairs_with_coverage"], 1)
+        self.assertGreater(result["window_counts"]["sdk_supported_channel_windows"], 0)
+        for mode in result["pair_coverage"][0]["timing_by_channel"]["O1-T3"].values():
+            self.assertEqual(mode["strict_host"], 0)
+            self.assertGreaterEqual(mode["sdk_continuity_host_block"], 3)
+        class InterruptedClock:
+            def supports_window(self, start, end):
+                # Continuous SDK packets cover the open phase only.
+                return end <= 3400
+        lost_clock = assess_research_readiness(report, eeg_timestamps=times, eeg_indices=indices,
+                                              packet_clock=InterruptedClock())["alpha"]
+        self.assertEqual(lost_clock["pairs_with_coverage"], 0)
+        self.assertEqual(lost_clock["pair_coverage"][0]["channel_windows"]["O1-T3"]["eyes_closed"], 0)
+        self.assertGreater(lost_clock["window_counts"]["sdk_supported_channel_windows"], 0)
+        no_index = assess_research_readiness(report, eeg_timestamps=times, packet_clock=CoveredClock)["alpha"]
+        self.assertEqual(no_index["pairs_with_coverage"], 0)
+        for key, val in (("sdk", None), ("index", indices + .5),
+                         ("index", indices + indices // 80)):
+            kwargs = {"eeg_indices": indices, "packet_clock": CoveredClock()}
+            kwargs["eeg_indices" if key == "index" else "packet_clock"] = val
+            out = assess_research_readiness(report, eeg_timestamps=times, **kwargs)
+            self.assertEqual(out["alpha"]["pairs_with_coverage"], 0)
+        report["session"]["events"] = make_events(bounds=(1, 27, 36, 64))
+        short = assess_research_readiness(report, eeg_timestamps=times, eeg_indices=indices,
+                                          packet_clock=CoveredClock())["alpha"]
+        self.assertEqual(short["pairs_with_coverage"], 0)
+        # Endpoints can lie inside the trimmed phase while an interior sample exits it.
+        window = np.arange(400) / 100 + 3.02
+        window[1] -= .05
+        self.assertFalse(sdk_supports_alpha_block(window, indices[:400], RATE, 0, 60, CoveredClock()))
+        # A broad drift rejects even in-bound windows with an intact SDK interval.
+        self.assertFalse(sdk_supports_alpha_block(4 + indices[:400]/100*1.2, indices[:400],
+                                                  RATE, 0, 60, CoveredClock()))
 
     def test_both_phases_need_the_same_eligible_lead(self):
         report = make_report(make_events())
