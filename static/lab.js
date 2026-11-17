@@ -31,7 +31,7 @@
     knowledge: ['Как это работает', 'Нейрофизиология, возможности измерений и научные источники.', 'Как это работает'],
     protocol: ['Следующая запись', 'Больше контекста и меньше артефактов для более полезного анализа.', 'Протокол записи']
   };
-  const state = {sessions:[], current:null, analysis:null, analysisPending:new Map(), knowledge:null, view:'overview', charts:[], channel:0, raw:false, log:true, renderId:0, context:null};
+  const state = {sessions:[], current:null, analysis:null, knowledge:null, view:'overview', charts:[], channel:0, raw:false, log:true, renderId:0, context:null};
 
   function duration(v) {
     if (num(v) === null) return '—';
@@ -79,13 +79,25 @@
     }
     return response.json();
   }
-  function analysisFor(id) {
-    if (state.analysisPending.has(id)) return state.analysisPending.get(id);
-    const pending = api(`/api/lab/analysis/${encodeURIComponent(id)}`)
-      .then(result => result.analysis || result)
-      .finally(() => state.analysisPending.delete(id));
-    state.analysisPending.set(id, pending);
-    return pending;
+  function archiveStatus(session) {
+    if (preview) return {label:'Сохранённый снимок', action:'Открыть снимок', loading:'Открываем снимок', detail:'В этом HTML сохранён результат предыдущего расчёта.'};
+    const analysisState = session?.active ? 'active' : session?.analysis_state;
+    switch (analysisState) {
+      case 'ready':
+        return {label:'Отчёт проверен', action:'Открыть отчёт', loading:'Открываем отчёт', detail:'Проверяем, изменились ли файлы после расчёта.'};
+      case 'active':
+        return {label:'Идёт запись', action:null};
+      case 'stale':
+        return {label:'Требуется пересчёт', action:'Пересчитать', loading:'Пересчитываем отчёт', detail:'Сохранённый результат устарел. Читаем текущие файлы записи.'};
+      case 'pending':
+        return {label:'Первый расчёт ожидается', action:'Рассчитать', loading:'Анализируем запись', detail:'Считаем отсчёты и проверяем качество сигнала.'};
+      default:
+        return {label:'Требуется проверка', action:'Проверить отчёт', loading:'Проверяем отчёт', detail:'Сверяем контрольные суммы файлов. При изменениях отчёт будет пересчитан.'};
+    }
+  }
+  async function analysisFor(id) {
+    const result = await api(`/api/lab/analysis/${encodeURIComponent(id)}`);
+    return result.analysis || result;
   }
   async function reloadSessions(renderId = state.renderId) {
     const result = await api('/api/lab/sessions');
@@ -126,7 +138,7 @@
   function legend(channels) { return `<div class="legend">${channels.map((c,i)=>`<span><i style="background:${colors[i%colors.length]}"></i>${esc(c.name)}</span>`).join('')}</div>`; }
 
   function renderSessions() {
-    $('#session-selector').innerHTML = state.sessions.map(s => `<button class="session-option ${s.id===state.current?'selected':''}" data-session="${esc(s.id)}" aria-pressed="${s.id===state.current}" title="${esc(s.id)}"><span class="session-symbol">${icon(s.eeg_available?'wave':'heart')}</span><span class="session-info"><strong>${esc(dateLabel(s.started_at))}</strong><small>${esc(duration(s.wall_duration_s??s.duration_s))} · ${s.active?'Идёт запись':s.analysis_ready?'Анализ готов':'Сохранённая запись'}</small></span><span class="session-state" aria-hidden="true"></span></button>`).join('');
+    $('#session-selector').innerHTML = state.sessions.map(s => `<button class="session-option ${s.id===state.current?'selected':''}" data-session="${esc(s.id)}" aria-pressed="${s.id===state.current}" title="${esc(s.id)}"><span class="session-symbol">${icon(s.eeg_available?'wave':'heart')}</span><span class="session-info"><strong>${esc(dateLabel(s.started_at))}</strong><small>${esc(duration(s.wall_duration_s??s.duration_s))} · ${archiveStatus(s).label}</small></span><span class="session-state" aria-hidden="true"></span></button>`).join('');
     $$('#session-selector [data-session]').forEach(b => b.addEventListener('click',()=>selectSession(b.dataset.session)));
     $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(state.view);
   }
@@ -163,7 +175,7 @@
   async function selectSession(id) {
     state.current = id; state.context = null; renderSessions();
     try { localStorage.setItem('neuroscope.session',id); } catch (_) {}
-    if (['overview','signals','compare'].includes(state.view)) await render();
+    if (['overview','signals','compare'].includes(state.view)) await render({refreshList:true});
   }
   async function loadComparison(renderId) {
     const sessions = state.sessions.slice();
@@ -211,7 +223,7 @@
     }
     window.NeuroLive?.leave();
     if (['timed-protocol','segment','history'].includes(state.view)) {
-      await window.NeuroStudio?.renderView(state.view==='timed-protocol'?'experiments':state.view,{api,notify,preview:Boolean(preview)});
+      await window.NeuroStudio?.renderView(state.view==='timed-protocol'?'experiments':state.view,{api,notify,preview:Boolean(preview),archiveStatus,statusInfo});
       return;
     }
     window.NeuroStudio?.leave();
@@ -237,12 +249,13 @@
           + '<a class="button subtle section-spaced" href="#live">Открыть живой монитор</a>';
         return;
       }
+      const status = archiveStatus(session);
       $('#content').innerHTML = `<div class="loading-panel" role="status"><span class="loader" aria-hidden="true"></span>
-        <h2>${session?.analysis_ready?'Открываем результаты':'Анализируем запись'}</h2>
-        <p>${session?.analysis_ready?'Проверяем исходные файлы записи.':'Считаем отсчёты, проверяем качество ЭЭГ и ФПГ.'}</p></div>`;
+        <h2>${status.loading}</h2>
+        <p>${status.detail}</p></div>`;
       const data = await analysisFor(state.current); if(renderId!==state.renderId)return;
-      if (session && !session.analysis_ready) {
-        session.analysis_ready = true;
+      if (session && !preview && data.analysis_revision) {
+        session.analysis_state = 'ready';
         session.duration_s = data.session?.duration_s;
         session.wall_duration_s = data.session?.wall_duration_s;
         renderSessions();
@@ -398,14 +411,30 @@
   function pairedCard() {
     return `<section class="card full">${cardHeader('Спектр ЭЭГ на 3D-схеме','Доли мощности обоих отведений по частотным полосам')}${window.NeuroPairedPanel.markup()}</section>`;
   }
+  function researchReadiness(a) {
+    const r = a.research_readiness;
+    if (!r) return '';
+    const alphaStatus = {
+      no_eeg:'ЭЭГ отсутствует', no_protocol:'Нет меток протокола', incomplete:'Протокол не завершён',
+      insufficient_signal:'Недостаточно пригодного сигнала', reviewable:'Доступен разбор блоков'
+    };
+    const alpha = r.alpha || {};
+    return `<section class="card research-readiness">${cardHeader('Для каких исследований подходит запись')}
+      <dl class="readiness-results">
+        <div><dt>Открытые и закрытые глаза</dt><dd><strong>${esc(alphaStatus[alpha.status] || 'Статус неизвестен')}</strong> · завершённых пар блоков: ${integer(alpha.paired_blocks)}<p>${esc(alpha.detail)}</p></dd></div>
+        <div><dt>Декодирование команд</dt><dd>${esc(r.decoder?.detail)}</dd></div>
+      </dl><p class="readiness-next"><strong>Следующий шаг</strong> ${esc(r.next_action)}</p>
+      ${!preview && alpha.status !== 'reviewable' ? '<a class="button text" href="#experiments" data-view="experiments">Открыть лабораторию экспериментов</a>' : ''}
+      ${alpha.method ? `<details class="details-block"><summary>Как проверялись блоки</summary><p>${esc(alpha.method)}</p><p>${esc(r.clock)}</p></details>` : ''}</section>`;
+  }
   function renderOverview(a) {
-    $('#content').innerHTML=`${quickReview(a)}${a.eeg?.spectral_interpretability==='severely_limited'?notice('<strong>Интерпретация спектра сильно ограничена.</strong> Спектры описывают сохранённый сигнал; достоверный индивидуальный альфа-пик не установлен. Причины указаны в проверке качества.','warning'):''}${headlineMetrics(a)}<p class="chart-caption" style="margin:-10px 0 18px">Доля окон, прошедших фильтр, не равна доле чистого времени и не оценивает здоровье мозга.</p><div class="content-grid">${spectrumCard(a)}<section class="card">${cardHeader('Что видно в этой записи','Автоматические наблюдения, связанные с данными',tag('Автоанализ','good'))}${observations(a,3)}</section>${timelineCard(a)}${qualityCard(a)}${montageCard(a)}${pairedCard()}<section class="card">${cardHeader('Контекст записи','Добавленный вами контекст хранится отдельно от исходных данных')}${contextForm()}</section><section class="card full">${cardHeader('Состав записи','Номинальная длительность и реальные временные метки рассматриваются отдельно')}<div class="table-wrap"><table class="data-table"><thead><tr><th>ПОТОК</th><th>ДОСТУПНОСТЬ</th><th>ОТСЧЁТЫ</th><th>ЧАСТОТА</th><th>ДЛИТЕЛЬНОСТЬ</th></tr></thead><tbody>${streamRows(a)}</tbody></table></div><p class="table-caption">Время в интерфейсе: Москва (UTC+3). Параметры частот взяты из метаданных записи; временные метки проверяются отдельно в автоанализе.</p></section></div>`;
+    $('#content').innerHTML=`${researchReadiness(a)}${quickReview(a)}${a.eeg?.spectral_interpretability==='severely_limited'?notice('<strong>Интерпретация спектра сильно ограничена.</strong> Спектры описывают сохранённый сигнал; достоверный индивидуальный альфа-пик не установлен. Причины указаны в проверке качества.','warning'):''}${headlineMetrics(a)}<p class="chart-caption" style="margin:-10px 0 18px">Доля окон, прошедших фильтр, не равна доле чистого времени и не оценивает здоровье мозга.</p><div class="content-grid">${spectrumCard(a)}<section class="card">${cardHeader('Что видно в этой записи','Автоматические наблюдения, связанные с данными',tag('Автоанализ','good'))}${observations(a,3)}</section>${timelineCard(a)}${qualityCard(a)}${montageCard(a)}${pairedCard()}<section class="card">${cardHeader('Контекст записи','Добавленный вами контекст хранится отдельно от исходных данных')}${contextForm()}</section><section class="card full">${cardHeader('Состав записи','Номинальная длительность и реальные временные метки рассматриваются отдельно')}<div class="table-wrap"><table class="data-table"><thead><tr><th>ПОТОК</th><th>ДОСТУПНОСТЬ</th><th>ОТСЧЁТЫ</th><th>ЧАСТОТА</th><th>ДЛИТЕЛЬНОСТЬ</th></tr></thead><tbody>${streamRows(a)}</tbody></table></div><p class="table-caption">Время в интерфейсе: Москва (UTC+3). Параметры частот взяты из метаданных записи; временные метки проверяются отдельно в автоанализе.</p></section></div>`;
     window.NeuroPairedPanel.attach($('#content [data-pair-panel]'),a.paired_eeg);
     drawSpectrum(a); drawTimeline(a); bindContent(); bindChannel(); loadContext();
   }
   function bindChannel() { $('#band-channel')?.addEventListener('change',e=>{state.channel=Number(e.target.value);destroyCharts();state.view==='overview'?renderOverview(state.analysis):renderSignals(state.analysis);}); }
   function contextForm() {
-    if (preview) return `<div class="text-content"><p>В исходных записях нет синхронных меток состояния глаз и выполняемой задачи.</p><p>В режиме просмотра контекст недоступен для изменения. Добавить свои заметки и новые записи можно в локально запущенном приложении.</p></div>${tag('Сохранённый анализ','blue')}`;
+    if (preview) return `<div class="text-content"><p>В режиме просмотра контекст недоступен для изменения. Добавить свои заметки и новые записи можно в локально запущенном приложении.</p></div>${tag('Сохранённый анализ','blue')}`;
     return `<form id="context-form"><div class="control-row"><label for="eye-state">Глаза</label><select id="eye-state" class="select"><option value="unknown">Неизвестно</option><option value="open">Открыты</option><option value="closed">Закрыты</option><option value="mixed">Чередовались</option></select></div><label class="card-subtitle" for="context-task">Задача или состояние во время записи</label><input class="source-filter" style="margin-top:5px" id="context-task" maxlength="240" placeholder="Например: спокойное сидение, чтение"><label class="card-subtitle" for="participant-code">Псевдоним участника (не ФИО)</label><input class="source-filter" id="participant-code" maxlength="64" placeholder="Например: user01"><label class="card-subtitle" for="protocol-id">ID протокола (если известен)</label><input class="source-filter" id="protocol-id" maxlength="80" placeholder="eyes, rest, task"><label class="card-subtitle" for="context-notes">Заметки</label><textarea id="context-notes" maxlength="3000" rows="2" style="width:100%;resize:vertical;background:#0c1623;border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--text);font:inherit;font-size:11px;margin:5px 0 9px" placeholder="Сон, кофеин, движения, особенности контакта…"></textarea><div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><button class="button subtle" type="submit">Сохранить контекст</button><span id="context-state" class="card-subtitle" role="status">Загрузка…</span></div><p class="chart-caption">Это заметки после записи. Они не заменяют синхронные метки событий и не доказывают причин изменений.</p></form>`;
   }
   async function loadContext() {
@@ -520,7 +549,7 @@
       $('.brand').href='#overview';
     }
     window.NeuroCheckpoints?.init({api, preview:!!preview});
-    window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions});
+    window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions, archiveStatus});
     $$('.nav-item[data-view], .top-help[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();if(location.hash.slice(1)===a.dataset.view)nav(a.dataset.view);else location.hash=a.dataset.view;}));
     window.addEventListener('hashchange',()=>{if(titles[location.hash.slice(1)])nav(location.hash.slice(1));});
     $('#menu-button').addEventListener('click',()=>{const open=$('#sidebar').classList.toggle('open');$('#menu-button').setAttribute('aria-expanded',String(open));});

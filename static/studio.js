@@ -7,7 +7,7 @@
   const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const fmt=(v,d=1)=>Number.isFinite(Number(v))&&v!==null?Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d}):'—';
   const btn=(label,act,style='subtle',disabled=false)=>`<button class="button ${style}" data-studio="${esc(act)}" ${disabled?'disabled':''}>${esc(label)}</button>`;
-  let ctx={},view=null,poller=null,chart=null,sessions=[],history=null;
+  let ctx={},view=null,poller=null,chart=null,sessions=[];
   let viewEvents, doorRun, presentedPhase, doorAway, experimentBusy=false;
   let visibilityRequest=Promise.resolve();
   const doorProtocol='door_imagery';
@@ -157,16 +157,62 @@
     }
   }
   const $$=(s,r=document)=>[...r.querySelectorAll(s)];
-  async function showHistory(){
-    content().innerHTML=card('История и персональные сравнения',
-      '<p>Для сопоставления нескольких измерений укажите один и тот же псевдоним участника и одинаковые условия в контексте каждой записи. При отсутствии участника записи не объединяются.</p><div class="loading-panel">Читаем локальный архив…</div>');
+  function historyRow(row) {
+    const status = ctx.archiveStatus(row);
+    const ready = row.analysis_state === 'ready';
+    const quality = ready && row.quality_status ? ctx.statusInfo(row.quality_status).label : '—';
+    const link = `?session=${encodeURIComponent(row.id)}#overview`;
+    const name = status.action ? `<a href="${link}">${esc(row.id)}</a>` : esc(row.id);
+    const units = (value, unit) => ready && value != null ? `${fmt(value)} ${unit}` : '—';
+    return `<tr><td>${name}</td><td>${esc(row.participant_code || 'Не указан')}</td><td>${esc(row.protocol_id || '—')}</td>
+      <td>${esc(row.eye_state || '—')}</td><td>${esc(status.label)}</td><td>${esc(quality)}</td>
+      <td>${units(row.usable_eeg_pct, '%')}</td><td>${units(row.pulse_rate_bpm, 'уд/мин')}</td></tr>`;
+  }
+
+  async function verifyHistory(rows, button, signal) {
+    button.disabled = true;
+    const progress = $('#history-progress');
+    const errors = [];
+    let completed = 0;
+    for (const row of rows) {
+      if (signal.aborted) return;
+      progress.textContent = `Проверяем ${completed + errors.length + 1} из ${rows.length} · ${row.id}`;
+      try {
+        await api(`/api/lab/analysis/${encodeURIComponent(row.id)}/verify`, {method:'POST', signal});
+        completed++;
+      } catch (error) {
+        if (signal.aborted) return;
+        errors.push(`${row.id} — ${error.message}`);
+      }
+    }
+    if (!signal.aborted) await showHistory({completed, errors});
+  }
+
+  async function showHistory(lastCheck) {
+    const signal = viewEvents.signal;
+    content().innerHTML=card('История исследований','<div class="loading-panel">Читаем локальный архив…</div>');
     try {
-      history=await api('/api/lab/history');const rows=history.sessions||[];
-      const body=`<p class="chart-caption">${esc(history.notice||'')}</p>`+
-        `<div class="table-wrap"><table class="data-table"><thead><tr><th>Сессия</th><th>Участник</th><th>Протокол</th><th>Глаза</th><th>Качество</th><th>Окна без флагов</th><th>Пульс</th></tr></thead><tbody>${rows.map(s=>`<tr><td>${esc(s.id)}</td><td>${esc(s.participant_code||'Не указан')}</td><td>${esc(s.protocol_id||'—')}</td><td>${esc(s.eye_state||'—')}</td><td>${esc(s.quality_status||'—')}</td><td>${fmt(s.usable_eeg_pct)}%</td><td>${fmt(s.pulse_rate_bpm)} уд/мин</td></tr>`).join('')}</tbody></table></div>`;
-      content().innerHTML=card('История исследований',body,'Показатели — описательные, качество и условия нужно оценивать отдельно')+
-        card('Сопоставимые группы',`<div class="studio-grid">${(history.comparable_groups||[]).map(g=>`<div class="studio-state"><strong>${esc(g.participant_code)} · ${esc(g.protocol_id||'без протокола')}</strong><span>${g.count} записей · глаза: ${esc(g.eye_state)}</span><p>${g.sessions.map(esc).join(', ')}</p></div>`).join('')||'<p>Пока нет как минимум двух записей с одинаковым кодом участника, протоколом, условием глаз, задачей и монтажом. Для новых данных заполните контекст в «Обзоре».</p>'}</div>`);
-    }catch(e){content().innerHTML=card('История недоступна',`<p>${esc(e.message)}</p>`);}
+      const history = await api('/api/lab/history', {signal});
+      if (signal.aborted) return;
+      const rows = history.sessions || [];
+      const closed = rows.filter(row => !row.active && row.analysis_state !== 'active');
+      const waiting = closed.filter(row => row.analysis_state !== 'ready');
+      const targets = waiting.length ? waiting : closed;
+      const caption = waiting.length ? 'Проверить ожидающие' : 'Сверить файлы ещё раз';
+      const action = targets.length ? `<button type="button" id="verify-history" class="button subtle">${caption} (${targets.length})</button>` : '';
+      const result = lastCheck ? `Проверено: ${lastCheck.completed}. Ошибок: ${lastCheck.errors.length}.` : '';
+      const errors = lastCheck?.errors.length ? `<ul>${lastCheck.errors.map(error=>`<li>${esc(error)}</li>`).join('')}</ul>` : '';
+      const body = `<p class="chart-caption">${esc(history.notice||'')}</p>
+        <div class="sessions-toolbar">${action}<span id="history-progress" role="status">${result}</span></div>${errors}
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>Сессия</th><th>Участник</th><th>Протокол</th><th>Глаза</th><th>Состояние отчёта</th><th>Качество сигнала</th><th>Окна без флагов</th><th>Пульс</th></tr></thead>
+        <tbody>${rows.map(historyRow).join('')}</tbody></table></div>`;
+      content().innerHTML=card('История исследований',body,'Показатели доступны после проверки отчёта по исходным файлам.')+
+        card('Сопоставимые группы',`<div class="studio-grid">${(history.comparable_groups||[]).map(g=>`<div class="studio-state"><strong>${esc(g.participant_code)} · ${esc(g.protocol_id||'без протокола')}</strong><span>${g.count} записей · глаза: ${esc(g.eye_state)}</span><p>${g.sessions.map(esc).join(', ')}</p></div>`).join('')||'<p>Для сравнения нужны две проверенные записи с одинаковым кодом участника, протоколом, условием глаз, задачей и монтажом. Условия каждой записи можно заполнить в обзоре.</p>'}</div>`);
+      const button = $('#verify-history');
+      button?.addEventListener('click', () => verifyHistory(targets, button, signal), {once:true, signal});
+    } catch (error) {
+      if (!signal.aborted) content().innerHTML=card('История недоступна',`<p>${esc(error.message)}</p>`);
+    }
   }
   async function showSegment(){
     const r=await api('/api/lab/sessions');sessions=(r.sessions||[]).filter(s=>s.id);
