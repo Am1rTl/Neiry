@@ -15,10 +15,10 @@
   const icon = name => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"/></svg>`;
   const catalog = {
     alpha: {
-      name:'Проверка альфа-ритма', short:'Альфа-ритм', icon:'wave', time:'6 мин', channel:'Затылочная ЭЭГ',
-      copy:'Чередуйте открытые и закрытые глаза. По результатам сравните мощность альфа-ритма в парных блоках.',
+      name:'Проверка альфа-ритма', short:'Альфа-ритм', icon:'wave', time:'2–12 мин', channel:'Затылочная ЭЭГ',
+      copy:'Следуйте подсказкам для открытых и закрытых глаз. По результатам сравните мощность альфа-ритма в парных блоках.',
       stages:{baseline:'Первый замер',repeat:'Повторный замер'},
-      steps:[['Первый замер','3 пары по 60 секунд в каждом состоянии.'],['Повторный замер','Повтори протокол в другой день и сравни результаты по каналам.']],
+      steps:[['Первый замер','В каждой паре один блок с открытыми и один с закрытыми глазами.'],['Повторный замер','Повтори протокол в другой день и сравни результаты по каналам.']],
       outcome:'Отношение мощности альфа-ритма в закрытом и открытом состоянии для каждого канала.',
       advice:'Сядь удобно, надень повязку и включи звуковые подсказки. Держи голову неподвижно при смене состояний.',
     },
@@ -86,7 +86,8 @@
         <form data-ex-form><div class="ex-form-grid">
           <label><span>Источник</span><select name="mode"><option value="live" ${form.mode==='live'?'selected':''}>Neiry Headband</option><option value="demo" ${form.mode==='demo'?'selected':''}>Демо без повязки</option></select></label>
           <label><span>Этап исследования</span><select name="stage">${Object.entries(item.stages).map(([key,label])=>`<option value="${key}" ${key===form.stage?'selected':''}>${esc(label)}</option>`).join('')}</select></label>
-          ${s.kind==='alpha' ? `<label><span>Повторы пар блоков</span>${select('repeats',form.repeats,[[2,'2 пары'],[3,'3 пары']])}</label><label><span>Длительность блока</span>${select('block_s',form.block_s,[[30,'30 секунд'],[60,'60 секунд'],[90,'90 секунд']])}</label>` : ''}
+          ${s.kind==='alpha' ? `<label><span>Повторы пар блоков</span>${select('repeats',form.repeats,[[2,'2 пары'],[3,'3 пары'],[4,'4 пары']])}</label><label><span>Длительность блока</span>${form.mode==='demo'?'<input value="4 секунды в демо" disabled>':select('block_s',form.block_s,[[30,'30 секунд'],[60,'60 секунд'],[90,'90 секунд']])}</label>
+            <label class="ex-wide"><span>Порядок внутри пар</span>${select('alpha_order',form.alpha_order,[['counterbalanced','Балансировать, какое состояние будет первым'],['fixed','Сначала открытые глаза в каждой паре']])}</label>` : ''}
           ${s.kind==='visual' ? `<label><span>Тренировочная ориентация</span>${select('trained_orientation',form.trained_orientation,[[45,'45°'],[135,'135°']])}</label><label><span>Число проб</span>${select('trial_count',form.trial_count,[[80,'80 проб'],[120,'120 проб'],[160,'160 проб'],...(form.stage==='training'?[[360,'360 проб'],[480,'480 проб']]:[])])}</label>` : ''}
           ${s.kind==='feedback' ? `<label><span>Длительность блока</span>${select('duration_s',form.duration_s,[[120,'2 минуты'],[180,'3 минуты'],[300,'5 минут']])}</label>` : ''}
           ${s.kind==='feedback' && form.stage==='control' && form.mode==='live' ? `<label><span>Источник контрольного сигнала</span>${select('replay_run_id',form.replay_run_id,[['','Выбери сессию'],...references.map(row=>[row.id,`${date(row.started_at)} · ${row.context?.participant_code || 'Без кода'}`])])}</label>` : ''}
@@ -99,7 +100,7 @@
           <label class="ex-wide"><span>Заметки</span><textarea name="notes" maxlength="1500" rows="2" placeholder="Время последнего приёма пищи, самочувствие, изменения посадки повязки…">${esc(context.notes)}</textarea></label>
         </div></fieldset>
         <div class="ex-launch"><div>
-          ${s.kind==='alpha' ? `<label class="ex-check"><input type="checkbox" name="sound" ${s.sound?'checked':''}> Звуковые переходы</label>` : ''}
+          ${s.kind==='alpha' ? `<label class="ex-check"><input type="checkbox" name="sound" ${s.sound?'checked':''}> Звуковые переходы</label><button type="button" class="button text" data-ex-test-sound>Проверить сигналы</button><p class="ex-copy">Два тона — открыть глаза, один — закрыть, три — конец. Без звука ведущий вслух подаёт команды с экрана.</p>` : ''}
           <label class="ex-check"><input type="checkbox" name="confirmed" ${s.confirmed?'checked':''} required> Я готов к началу сессии</label>
           <p data-ex-hint aria-live="polite"></p></div><button type="submit" class="button primary ex-start" data-ex-start>${icon('arrow')}<span>${form.mode==='demo'?'Запустить демо':'Начать сессию'}</span></button>
         </div></form></section>
@@ -176,19 +177,24 @@
   async function start(s) {
     if (s.starting) return;
     s.starting = true;
+    closeTestSound(s);
     connection(s);
     let run = null;
     let cue = false;
     const kind = s.kind;
     const form = {...s.forms[kind]};
+    const sound = s.sound;
     const context = {...s.context,sleep_hours:s.context.sleep_hours===''?null:Number(s.context.sleep_hours)};
     try {
       if (!window.NeuroExperimentRunner) throw Error('Модуль экспериментов не загрузился. Обнови страницу.');
-      if (kind==='alpha' && s.sound) cue = window.NeuroExperimentRunner.primeSound();
+      if (kind==='alpha' && sound) cue = window.NeuroExperimentRunner.primeSound();
       const clock = await clockSync(s);
       if (s!==state) return;
+      if (kind==='alpha' && form.mode==='live' && sound && cue?.state!=='running') {
+        throw Error('Звуковые подсказки недоступны. Разрешите звук в браузере или отключите его и попросите ведущего читать команды вслух.');
+      }
       if (form.mode==='live' && !clock) throw Error('Часы браузера и сервера не удалось сопоставить. Повтори запуск.');
-      const settings = {...(kind==='alpha' ? {block_s:form.mode==='demo'?4:Number(form.block_s),repeats:form.mode==='demo'?2:Number(form.repeats),sound:s.sound} :
+      const settings = {...(kind==='alpha' ? {block_s:form.mode==='demo'?4:Number(form.block_s),repeats:Number(form.repeats),alpha_order:form.alpha_order,sound} :
         kind==='visual' ? {trial_count:form.mode==='demo'?12:Number(form.trial_count),trained_orientation:Number(form.trained_orientation),stimulus_ms:250} :
           {duration_s:form.mode==='demo'?15:Number(form.duration_s),replay_run_id:form.replay_run_id || null}),
         clock_offset_ms:clock?.offset ?? null, clock_round_trip_ms:clock?.rtt ?? null,
@@ -240,14 +246,52 @@
   }
   const conditionName = key => key==='trained'?'Тренировочная ориентация':'Контрольная ориентация';
   const phaseName = key => ({eyes_open:'Открытые глаза',eyes_closed:'Закрытые глаза',visual_task:'Зрительное задание',baseline:'Исходный блок',calibration:'Калибровка',live:'Сигнал в реальном времени',control:'Контрольная запись',transfer:'Тест без связи',followup:'Отложенный тест'}[key]||key);
+  const alphaOrderLabel = settings => settings?.alpha_order==='counterbalanced' ? 'Сбалансированный порядок' : 'Фиксированный порядок';
   const bandLabel = band => Array.isArray(band) && band.length===2 ? `${fmt(band[0])}–${fmt(band[1])} Гц` : '—';
+  function highFrequencyCheck(line) {
+    if (!line?.tested_windows) return 'Нет оценки';
+    const count = `${line.flagged_windows} / ${line.tested_windows}`;
+    return line.flagged_windows ? `${count} · пик ${fmt(line.strongest_flagged_peak_hz, 2)} Гц` : count;
+  }
+  function excludedWindows(rejected) {
+    const labels = {
+      host_timestamp_gap:'время доставки', sample_index_gap:'индексы отсчётов',
+      sdk_packet_gap:'непрерывность пакетов SDK', phase_boundary:'граница фазы',
+      poor_contact:'контакт', movement:'движение', amplitude_outlier:'амплитуда',
+      line_noise:'сетевая помеха', dominant_high_frequency_line:'узкая ВЧ-компонента',
+      flatline_or_low_resolution:'плоский сигнал / низкое разрешение',
+      clipping_like:'ограничение амплитуды', sdk_rail:'предел SDK', nonfinite:'пропуск значения'
+    };
+    return Object.entries(rejected || {}).map(([reason,count])=>
+      `${labels[reason] || reason} · ${count}`).join(', ') || '—';
+  }
+  function formatAlphaPower(value) {
+    if (!finite(value)) return '—';
+    return value.toLocaleString('ru-RU', {
+      maximumSignificantDigits: 3,
+      notation: value !== 0 && Math.abs(value) < .001 ? 'scientific' : 'standard',
+    });
+  }
   function resultMetrics(a, run) {
     if (run.kind==='alpha') {
       const summary=a.alpha||{};
       const channels=summary.channels||[];
-      const phases=(summary.phases||[]).flatMap((p,i)=>(p.channels||[]).map(c=>[`${i+1} · ${phaseName(p.label)}`,c.name,fmt(c.alpha_power,3),formatValue(c.relative_alpha_pct,'%'),`${c.usable_windows ?? 0} / ${c.total_windows ?? 0}`]));
-      return `${channels.length ? `<div class="ex-metrics">${channels.map(c=>metric(c.name,formatValue(c.closed_open_ratio,'×'),`Закрытые / открытые · пар: ${c.paired_blocks ?? 0}`)).join('')}</div>` : `<p class="ex-copy">${run.mode==='demo'?'Переходы и таймер сохранены. Для расчёта альфа-мощности нужна запись ЭЭГ.':'Недостаточно пригодных пар блоков для сравнения.'}</p>`}
-        ${phases.length?table(['Блок','Канал','Мощность 8–13 Гц','Доля альфа','Окна без флагов'],phases):''}`;
+      const phases=(summary.phases||[]).flatMap((p,i)=>(p.channels||[]).map(c=>[
+        `${i+1} · ${phaseName(p.label)}`,c.name,formatAlphaPower(c.alpha_power),formatValue(c.relative_alpha_pct,'%'),
+        `${c.usable_windows ?? 0} / ${c.total_windows ?? 0}`,highFrequencyCheck(c.high_frequency_line), excludedWindows(c.rejected)
+      ]));
+      const partial = (summary.interrupted_phases || []).flatMap(p=>
+        (p.channels || []).map(c=>[phaseName(p.label),c.name,
+          `${c.usable_windows} / ${c.total_windows}`,highFrequencyCheck(c.high_frequency_line),
+          excludedWindows(c.rejected)]));
+      const partialTable = partial.length
+        ? '<h3>Прерванные блоки</h3><p class="ex-copy">Эти окна показаны для проверки записи. В расчёт пар вошли только завершённые блоки.</p>'
+          + table(['Этап','Канал','Окна без флагов','Узкая компонента · исключено / проверено','Причины исключения'], partial)
+        : '';
+      const starts = run.settings?.alpha_pair_first;
+      const schedule = Array.isArray(starts) ? ` · первое состояние каждой пары: ${starts.map(phaseName).join(' / ')}` : '';
+      return `<p class="ex-copy">План · ${esc(alphaOrderLabel(run.settings))}${esc(schedule)}</p>${channels.length ? `<div class="ex-metrics">${channels.map(c=>metric(c.name,formatValue(c.closed_open_ratio,'×'),`Закрытые / открытые · пар: ${c.paired_blocks ?? 0}`)).join('')}</div>` : `<p class="ex-copy">${run.mode==='demo'?'Переходы и таймер сохранены. Для расчёта альфа-мощности нужна запись ЭЭГ.':'Недостаточно пригодных пар блоков для сравнения.'}</p>`}
+        ${phases.length?table(['Блок','Канал','Мощность 8–13 Гц, ед. записи²','Доля альфа','Окна без флагов','Узкая компонента 65–95 Гц · исключено / проверено','Причины исключения (могут совпадать)'],phases):''}${partialTable}`;
     }
     if (run.kind==='visual') {
       const rows=Object.entries(a.visual?.conditions||{}).filter(([,c])=>c.trials>0);
@@ -265,9 +309,9 @@
   function quality(a, run) {
     if (run.mode==='demo') return '<div class="ex-tip">'+icon('info')+'<p>В демо показаны работа интерфейса и ответы пользователя. Для анализа ЭЭГ используй сессию с повязкой.</p></div>';
     const q=a.quality||{};
-    return `<h3>Качество записи</h3><div class="ex-metrics ex-metrics-small">${metric('Отсчёты в анализе',fmt(q.samples,0),q.channels?.join(', ')||'')}${metric('Разрывы по времени',fmt(q.timestamp_gaps,0),'По программным меткам')}${metric('Пропуски индексов',fmt(q.missing_recorded_rows ?? q.sample_index_gaps,0))}${metric('Ошибки записи',fmt(q.write_errors,0))}${metric('Окна с движением',fmt(q.movement_windows,0),'По данным гироскопа')}</div>
+    return `<h3>Качество записи</h3><div class="ex-metrics ex-metrics-small">${metric('Отсчёты в анализе',fmt(q.samples,0),q.channels?.join(', ')||'')}${metric('Скачки времени доставки',fmt(q.timestamp_gaps,0),'По программным меткам')}${metric('Пропуски индексов',fmt(q.missing_recorded_rows ?? q.sample_index_gaps,0))}${metric('Ошибки записи',fmt(q.write_errors,0))}${metric('Окна с движением',fmt(q.movement_windows,0),'По данным гироскопа')}</div>
       ${q.warnings?.length?`<ul class="ex-warnings">${q.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
-      <p class="ex-copy">Метки экрана и ЭЭГ сопоставлены по программным часам. Аппаратная синхронизация и счётчик пакетов SDK для этого протокола недоступны.</p>`;
+      <p class="ex-copy">${esc(q.timestamp_note || 'Метки экрана и ЭЭГ сопоставлены по программным часам.')}</p>`;
   }
   async function openResult(s,id,known) {
     s.chart?.destroy();s.chart=null;s.result=null;
@@ -331,7 +375,7 @@
     const v=run.settings||{};
     const p=run.kind==='alpha'?[[v.block_s,' с на блок'],[v.repeats,' пары']]:run.kind==='visual'?[[v.trained_orientation,'°'],[v.trial_count,' проб']]:[[v.duration_s,' с на блок']];
     const leads=(run.channels||run.channel_names||[]).join(', ');
-    return [...p.filter(([value])=>finite(value)).map(([value,unit])=>`${value}${unit}`),leads].filter(Boolean).join(' · ')||'Настройки по умолчанию';
+    return [...p.filter(([value])=>finite(value)).map(([value,unit])=>`${value}${unit}`),run.kind==='alpha'?alphaOrderLabel(v):'',leads].filter(Boolean).join(' · ')||'Настройки по умолчанию';
   }
   function renderCompare(s) {
     const runs=comparableRuns(s);
@@ -398,6 +442,40 @@
     link.href=url;link.download=`experiment-${s.result.run.id}.json`;link.click();
     setTimeout(()=>URL.revokeObjectURL(url),3000);
   }
+  function closeTestSound(s) {
+    const audio = s.testAudio;
+    s.testAudio = null;
+    if (audio && audio.state !== 'closed') void audio.close().catch(()=>{});
+  }
+  async function testCues(s, button) {
+    if (s.testAudio) return;
+    const Runner = window.NeuroExperimentRunner;
+    const audio = Runner.primeSound();
+    if (!audio) { s.notify('Звуковой выход браузера недоступен.', 'error'); return; }
+    button.disabled = true;
+    s.testAudio = audio;
+    let played = false;
+    try {
+      await audio.resume();
+      if (s.testAudio !== audio || !current(s)) return;
+      if (audio.state !== 'running') throw Error('Браузер не разрешил звук.');
+      Runner.playCue(audio, 'open');
+      Runner.playCue(audio, 'closed', 1);
+      Runner.playCue(audio, 'complete', 2);
+      played = true;
+      await new Promise(resolve=>setTimeout(resolve, 2700));
+    } catch (error) {
+      if (s.testAudio === audio && current(s)) s.notify(errorText(error), 'error');
+    } finally {
+      if (s.testAudio === audio) closeTestSound(s);
+      else played = false;
+      button.disabled = false;
+    }
+    if (played && current(s) && s.tab==='setup' && !s.starting && !s.runner) {
+      s.notify('Вы должны услышать два тона, затем один и три. Если какой-то сигнал не слышен, проверьте громкость.');
+    }
+  }
+
   function bind(s) {
     const root=s.mount;
     root.addEventListener('input',event=>{
@@ -428,7 +506,9 @@
     root.addEventListener('click',event=>{
       const b=event.target.closest('button');
       if (!b || b.disabled || s.starting) return;
-      if (b.dataset.exSelect) {
+      if ('exTestSound' in b.dataset) {
+        void testCues(s, b);
+      } else if (b.dataset.exSelect) {
         s.kind=b.dataset.exSelect;s.confirmed=false;render(s);
         $(`[data-ex-select="${s.kind}"]`,s.mount)?.focus();
       } else if (b.dataset.exTab) {
@@ -461,13 +541,14 @@
     const s={...options,mount:$('#experiment-lab'),tab:'setup',kind:'alpha',historyMode:'live',compareMode:'live',compareKind:'alpha',
       compareParticipant:'',compareGroup:'',runs:[],analyses:new Map(),readKey:0,sound:true,confirmed:false,
       context:{participant_code:'',sleep_hours:'',sleep_quality:'',caffeine:'',notes:''},
-      forms:{alpha:{mode:'live',stage:'baseline',block_s:60,repeats:3},visual:{mode:'live',stage:'baseline',trained_orientation:45,trial_count:80},feedback:{mode:'live',stage:'baseline',duration_s:120,replay_run_id:''}}};
+      forms:{alpha:{mode:'live',stage:'baseline',block_s:60,repeats:4,alpha_order:'counterbalanced'},visual:{mode:'live',stage:'baseline',trained_orientation:45,trial_count:80},feedback:{mode:'live',stage:'baseline',duration_s:120,replay_run_id:''}}};
     state=s;bind(s);render(s);refreshStatus(s);refreshRuns(s,true);
     s.timer=setInterval(()=>{if(!s.runner&&!s.starting)refreshStatus(s);},2500);
   }
   function leave() {
     if (!state) return;
     const s=state;
+    closeTestSound(s);
     clearInterval(s.timer);s.timer=null;
     s.chart?.destroy();s.chart=null;
     if(s.runner||s.starting){

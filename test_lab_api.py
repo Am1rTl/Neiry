@@ -169,6 +169,120 @@ class LabApiIntegration(unittest.TestCase):
             report_path.write_text(json.dumps(cached),encoding='utf-8')
             self.assertEqual(self.get_report().status_code,200);self.assertEqual(analysis.call_count,4)
 
+    def test_archive_listing_and_history_require_verified_revision(self):
+        for ident in (self.ident, 'session_other'):
+            if ident != self.ident:
+                shutil.copytree(self.session, self.records / ident)
+            self.client.patch('/api/lab/context/' + ident, json={'participant_code': 'p1'})
+        def item(endpoint, ident=None):
+            return next(row for row in self.client.get('/api/lab/' + endpoint).json()['sessions']
+                        if row['id'] == (ident or self.ident))
+
+        self.assertEqual(item('sessions')['analysis_state'], 'pending')
+        response = self.client.post(f'/api/lab/analysis/{self.ident}/verify')
+        self.assertEqual(response.status_code, 200)
+        revision = response.json()['analysis_revision']
+        self.assertEqual(set(response.json()), {'id', 'analysis_state', 'analysis_revision'})
+        self.client.post('/api/lab/analysis/session_other/verify').raise_for_status()
+        self.assertEqual(self.get_report().json()['analysis_revision'], revision)
+        self.assertEqual(item('history')['quality_status'], 'no_eeg')
+        self.assertEqual(len(self.store.history()['comparable_groups']), 1)
+
+        self.active = self.ident
+        self.assertEqual(item('sessions')['analysis_state'], 'active')
+        self.assertFalse(item('history')['analysis_ready'])
+        self.assertEqual(self.client.post(f'/api/lab/analysis/{self.ident}/verify').status_code, 409)
+        self.active = None
+        (self.session / 'events.jsonl').write_text('{"type":"marker","ts_unix":1}\n', encoding='utf-8')
+        with patch('analysis_engine.recording_source_signatures', side_effect=AssertionError("bulk hashing")):
+            for endpoint in ('sessions', 'history'):
+                row = item(endpoint)
+                self.assertEqual(row['analysis_state'], 'stale')
+                self.assertFalse(row['analysis_ready'])
+                self.assertIsNone(row['analysis_revision'])
+                self.assertIsNone(row['duration_s'])
+                self.assertEqual(row['quality_status'], 'pending')
+            self.assertEqual(self.store.history()['comparable_groups'], [])
+            self.store._verified.clear()
+            self.assertEqual(item('sessions')['analysis_state'], 'stale')
+            self.assertEqual(item('sessions', 'session_other')['analysis_state'], 'unverified')
+        refreshed = self.get_report().json()
+        self.assertEqual(refreshed['session']['markers_count'], 1)
+        self.assertNotEqual(refreshed['analysis_revision'], revision)
+        self.assertEqual(item('history')['analysis_revision'], refreshed['analysis_revision'])
+
+    def test_mixed_report_and_manifest_cannot_return_a_partial_session(self):
+        report_path = self.reports / f'{self.ident}.json'
+        old_revision = self.get_report().json()['analysis_revision']
+        old = report_path.read_bytes()
+        (self.session / 'events.jsonl').write_text('{"type":"marker","ts_unix":1}\n', encoding='utf-8')
+        self.assertEqual(self.get_report().json()['session']['markers_count'], 1)
+        report_path.write_bytes(old)  # current manifest survives a restored/externally exported report
+        self.assertEqual(self.store.summaries()['sessions'][0]['analysis_state'], 'stale')
+        self.store._verified.clear()
+        result = self.get_report().json()
+        self.assertEqual(result['session']['markers_count'], 1)
+        self.assertNotEqual(result['analysis_revision'], old_revision)
+        self.assertEqual(self.store.summaries()['sessions'][0]['analysis_revision'], result['analysis_revision'])
+
+    def test_imported_cli_report_needs_one_verification_against_finished_sources(self):
+        # A CLI-produced legacy report lacks the server's before/after checks
+        # and may have been generated while the recording was still growing.
+        old = analysis_engine.analyze_session(self.session)
+        (self.reports / f'{self.ident}.json').write_text(json.dumps(old), encoding='utf-8')
+        with patch('analysis_engine.analyze_session', wraps=analysis_engine.analyze_session) as compute:
+            self.assertEqual(self.store.summaries()['sessions'][0]['analysis_state'], 'unverified')
+            self.get_report().raise_for_status()
+            self.assertEqual(compute.call_count, 1)
+            self.store._verified.clear()
+            self.get_report().raise_for_status()
+            self.assertEqual(compute.call_count, 1)
+
+    def test_explicit_verify_hashes_bytes_even_if_filesystem_state_appears_unchanged(self):
+        import lab_api
+        events = self.session / "events.jsonl"
+        events.write_text('{"type":"marker","ts_unix":1}\n', encoding="utf-8")
+        first = self.get_report().json()["analysis_revision"]
+        unchanged = lab_api._source_state(self.session)
+        with patch("lab_api._source_state", return_value=unchanged), \
+                patch("analysis_engine.analyze_session", wraps=analysis_engine.analyze_session) as compute, \
+                patch("analysis_engine.recording_source_signatures", wraps=analysis_engine.recording_source_signatures) as digest:
+            # Mimic an in-place write on a filesystem that does not expose change time.
+            events.write_text('{"type":"marker","ts_unix":2}\n', encoding="utf-8")
+            self.assertEqual(self.store.summaries()["sessions"][0]["analysis_revision"], first)
+            self.assertEqual(digest.call_count, 0)
+            url = f"/api/lab/analysis/{self.ident}/verify"
+            checked = self.client.post(url).json()["analysis_revision"]
+            self.assertNotEqual(checked, first)
+            self.assertEqual(self.client.post(url).json()["analysis_revision"], checked)
+            self.assertEqual(compute.call_count, 1)
+            self.assertGreaterEqual(digest.call_count, 2)
+
+    def test_exports_keep_readiness_and_narrowband_denominators(self):
+        from lab_api import _csv_report, _html_report
+        report = self.get_report().json()
+        self.assertIn("Готовность к исследованию", _html_report(report, {}))
+        self.assertIn("alpha.status,no_eeg", _csv_report(report))
+        qc = {"supported": True, "target_hz": 250 / 3, "dominance_fraction": .5, "eligible_windows": 7,
+              "screened_windows": 0, "target_dominant_windows": 0, "combined_dominant_windows": 6,
+              "screened_target_dominant_windows": 0, "screened_combined_dominant_windows": 0}
+        report["eeg"]["channels"] = [{"name": "O1-T3", "narrowband_qc": qc}]
+        csv_rows = list(csv.reader(io.StringIO(_csv_report(report))))
+        values = {r[2]: r[3] for r in csv_rows if r[0] == "narrowband_qc"}
+        self.assertEqual(values["target_dominant_windows"], "0")
+        self.assertEqual(values["screened_target_dominant_windows"], "")
+        self.assertEqual(values["eligible_windows"], "7")
+        page = _html_report(report, {})
+        self.assertIn("6 из 7 окон", page)
+        self.assertIn("нет пригодных для подсчёта окон", page)
+        qc["supported"] = False
+        self.assertNotIn("6 из 7 окон", _html_report(report, {}))
+        self.assertNotIn(",eligible_windows,", _csv_report(report))
+        del report["eeg"]["channels"][0]["narrowband_qc"]
+        del report["research_readiness"]
+        self.assertNotIn("Готовность к исследованию", _html_report(report, {}))
+        self.assertNotIn("narrowband_qc", _csv_report(report))
+
     def test_context_sidecar_preserves_raw_and_metrics(self):
         before=hashes(self.session);computed=self.get_report().json()
         payload={'eye_state':'closed','task':'Покой','notes':'<script>alert("x")</script>'}

@@ -25,6 +25,8 @@ jobs:
         run: python -m scripts.run_tests
       - name: Python syntax
         run: python -m compileall -q .
+      - name: Alpha experiment runner
+        run: node --test scripts/test_alpha_runner.cjs
       - name: Browser script syntax
         run: |
           node --check static/lab.js

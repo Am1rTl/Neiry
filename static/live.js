@@ -1216,14 +1216,15 @@
     const started = meta.started_at || meta.started_at_iso;
     const title = started ? ctx.dateLabel(started, true) : id;
     const duration = n(summary.duration_s);
+    const analysis = ctx.archiveStatus(s);
     const info = [started && id, meta.device || summary.device, duration !== null && ctx.duration(duration)].filter(Boolean);
     const streams = [['eeg_samples','ЭЭГ'],['ppg_samples','ФПГ'],['mems_samples','Движение']]
       .filter(([key]) => n(summary.counts?.[key]) > 0).map(([,name]) => name);
     const primary = s.active ? sectionLink('К текущей записи','live') :
-      `<a class="button subtle" href="#signals" data-session-analysis="${esc(id)}">Анализ</a>`;
+      `<a class="button subtle" href="?session=${encodeURIComponent(id)}#signals" data-session-analysis="${esc(id)}">${esc(analysis.action)}</a>`;
     return `<article class="archive-row"><div class="archive-record">
       <h2>${esc(title)}</h2>${info.length ? `<p>${info.map(esc).join(' · ')}</p>` : ''}
-      ${s.active ? '<span class="archive-recording">Идёт запись</span>' : ''}
+      ${s.active ? '<span class="archive-recording">Идёт запись</span>' : `<p>${esc(analysis.label)}</p>`}
       ${streams.length ? `<div class="archive-streams" aria-label="Записанные сигналы">${streams.map(x=>`<span>${x}</span>`).join('')}</div>` : ''}
       </div><div class="archive-actions">${primary}<details name="session-actions"><summary class="button subtle">Действия</summary>
       <div class="archive-more"><button type="button" class="button subtle" data-checkpoint-list="${esc(id)}" aria-controls="checkpoint-panel">Чекпоинты</button>
@@ -1260,16 +1261,21 @@
     const request = ++sessionRequest;
     const summary = $('#sessions-summary');
     try {
-      const out = await api('/api/records');
+      const [out, index] = await Promise.all([
+        api('/api/records'), api('/api/lab/sessions').catch(() => ({sessions: []})),
+      ]);
       if (request !== sessionRequest || !summary.isConnected || view !== 'sessions') return;
+      const byId = new Map((Array.isArray(index.sessions) ? index.sessions : []).map(row => [row.id, row]));
       sessionRows = (Array.isArray(out.sessions) ? out.sessions : []).filter(s=>s?.session_id).map(s=>{
         const meta = s.meta || {}, started = meta.started_at || meta.started_at_iso;
+        const indexed = byId.get(s.session_id);
         const date = started ? new Date(started) : null;
         const terms = [s.session_id, meta.device || s.summary?.device, started];
         if (date && Number.isFinite(date.getTime())) {
           terms.push(ctx.dateLabel(started, true), sessionNumericDate.format(date));
         }
-        return {...s, searchText:terms.join(' ').toLocaleLowerCase('ru')};
+        return {...s, active:s.active || indexed?.active, analysis_state:indexed?.analysis_state,
+          searchText:terms.join(' ').toLocaleLowerCase('ru')};
       });
       renderSessionRows();
     } catch(err) {

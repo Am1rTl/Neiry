@@ -54,6 +54,20 @@ class AnalysisNumerics(unittest.TestCase):
         self.assertTrue(any(v is not None for v in r['psd']['raw_power']))
         self.assertIsNone(r['alpha_peak_hz'])
         self.assertTrue(all(v is None for v in r['relative_power'].values()))
+        self.assertEqual(r['band_waveforms'], {})
+
+    def test_band_waveforms_match_excerpt_timing_and_separate_frequencies(self):
+        fs = 250
+        time = np.arange(12 * fs) / fs
+        raw = np.sin(2 * np.pi * 2 * time) + np.sin(2 * np.pi * 10 * time)
+        channel = analyze_eeg(stream(raw, fs), {}, 0, AnalysisConfig())['channels'][0]
+        excerpt_time = np.asarray(channel['excerpt']['time_s'])
+        for name, frequency in [('delta', 2), ('alpha', 10)]:
+            waveform = channel['band_waveforms'][name]
+            self.assertEqual(len(waveform), len(excerpt_time))
+            expected = np.sin(2 * np.pi * frequency * excerpt_time)
+            self.assertGreater(np.corrcoef(waveform, expected)[0, 1], .98)
+
 
     def test_nonfinite_windows_rejected_not_interpolated(self):
         fs=250;t=np.arange(fs*20)/fs;y=np.sin(2*np.pi*10*t);y[1000:1500]=np.nan
