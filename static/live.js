@@ -10,7 +10,10 @@
   const fmt = (v, digits=1) => n(v) == null ? '—' : Number(v).toLocaleString('ru-RU',{maximumFractionDigits:digits});
   const blank = '—';
   let ctx = {}, view = null, preview = false, pollTimer = null, statusRequest = null, ws = null, wsRetry = null;
-  let status = null, replay = {active:false}, chartClock = 0, statusFingerprint = '', sessionRows = [], liveRange = 15, metricRange = 300, allowRaw = false;
+  let status = null, replay = {active:false}, chartClock = 0, liveRange = 15, metricRange = 300, allowRaw = false;
+  const sessionPageSize = 12;
+  const sessionNumericDate = new Intl.DateTimeFormat('ru-RU', {timeZone:'Europe/Moscow'});
+  let sessionRows = [], sessionPage = 0, sessionRequest = 0;
   let calibrationAudio = null, useCalibrationSound = true;
   let calibrationAudioRun = false, calibrationCue = '', nextPulseAt = 0;
   let plotObserver = null, chartFrame = null, lastStreamStatusAt = -Infinity, lastIndicatorsAt = -Infinity;
@@ -49,7 +52,7 @@
     idle:['Не подключено','neutral'], searching:['Поиск устройства','pending'],
     found:['Устройство найдено','pending'], connecting:['Подключаем…','pending'],
     connected:['Подключено','good'], disconnected:['Связь потеряна','bad'],
-    error:['Ошибка подключения','bad'], sdk_missing:['SDK не найден','bad']
+    error:['Ошибка подключения','bad'], sdk_missing:['Capsule SDK недоступен','neutral']
   };
   function label(state) { return statuses[state] || ['Ожидание','neutral']; }
   function notice(message, kind='') { ctx.notify?.(message,kind); }
@@ -68,9 +71,9 @@
   }
   function connected() { return Boolean(status?.connected); }
   function safeInfo(s) {
-    if (!s?.sdk_available || s.status === 'sdk_missing') return 'SDK не найден. Все архивные записи и научный анализ доступны без устройства.';
+    if (s?.status === 'sdk_missing') return 'Для подключения повязки нужен Capsule SDK. Сохранённые записи можно открыть уже сейчас.';
     if (s.status === 'searching') return 'Поиск Bluetooth выполняется. Включите повязку и держите её рядом с компьютером.';
-    if (s.status === 'connecting') return 'Проверяем реальное соединение. Если подключение не удастся, появится ошибка и кнопка повторного поиска.';
+    if (s.status === 'connecting') return 'Ждём подтверждения от повязки. Держите её рядом с компьютером.';
     return s?.message || 'Нажмите «Найти устройство», чтобы обнаружить повязку.';
   }
   function stopCalibrationNotes() {
@@ -233,13 +236,20 @@
       ? 'Калибратор Capsule недоступен.' : 'Дождитесь стабильного контакта электродов.';
     if (s.calibration_phase==='failed') detail = s.message || detail;
     if (s.calibration_reconnect) detail += ' Переподключите повязку для повтора.';
+    let frequencies = '';
     if (s.calibration_phase==='complete' && s.calibration_result) {
       const result = s.calibration_result;
-      detail = `Индивидуальная частота SDK · ${fmt(result.individualFrequency,2)} Гц. Глаза можно открыть.`;
+      const hz = value => n(value) > 0 ? `${fmt(value,2)} Гц` : 'Нет данных';
+      const low = n(result.lowerFrequency), high = n(result.upperFrequency);
+      frequencies = `<dl class="cal-frequencies">
+        <div><dt>Индивидуальная частота</dt><dd>${hz(result.individualFrequency)}</dd></div>
+        <div><dt>Частота пика</dt><dd>${hz(result.individualPeakFrequency)}</dd></div>
+        <div><dt>Индивидуальная полоса</dt><dd>${low > 0 && high > low ? `${fmt(low,2)}–${fmt(high,2)} Гц` : 'Нет данных'}</dd></div></dl>`;
+      detail = 'Глаза можно открыть.';
       if (s.recording_error) detail += ` ${s.recording_error}`;
       else if (s.recording) detail += s.recording_origin==='calibration'?' Запись началась автоматически.':' Запись продолжается.';
     }
-    return `<div class="cal-state" role="status"><strong>${titles[s.calibration_phase]||'Нет калибровки'}</strong><small>${esc(detail)}</small></div>
+    return `<div class="cal-state" role="status"><strong>${titles[s.calibration_phase]||'Нет калибровки'}</strong><small>${esc(detail)}</small></div>${frequencies}
       <div class="cal-actions">${pButton(s.calibrated?'Повторить калибровку':'Настроить калибровку','calibration','subtle',!s.calibration_available)}
         ${s.calibration_phase==='ready'?pButton('Пропустить','skip-cal','subtle'):''}</div>`;
   }
@@ -280,31 +290,78 @@
       state==='settling'?[required_seconds,stable_seconds,sample_count]:null,
       (channels||[]).map(r=>[r.channel,n(r.kohm)===null?null:Math.round(r.kohm*10),r.good,r.preferred])]);
   }
-  function statusBox(s) {
-    const [title, tone] = label(s?.status);
-    return `<div class="device-hero ${tone}">
-      <div class="device-emblem"><span class="connection-ring"></span><svg class="icon"><use href="#i-wave"/></svg></div>
-      <div class="device-hero-copy"><div class="section-kicker">ПОДКЛЮЧЕНИЕ / CAPSULE</div>
-        <h2>${esc(title)}</h2><p>${esc(safeInfo(s))}</p>
-        ${s?.connected?`<div class="device-facts"><span>${esc(s.device || 'Neiry Headband')}</span><span>Серийный № ${esc(s.serial||blank)}</span><span>Батарея ${n(s.battery)!==null?`${fmt(s.battery,0)}%`:blank}</span>${s.firmware_version?`<span>Прошивка ${esc(s.firmware_version)}</span>`:''}${s.sdk_version?`<span>Capsule ${esc(s.sdk_version)}</span>`:''}</div>`:''}
-      </div><div class="device-hero-actions">${s?.connected?pButton('Отключить','disconnect','subtle'):
-        pButton(s?.scanning?'Идёт поиск…':'Найти устройство','scan','primary',Boolean(s?.scanning||s?.status==='connecting'||!s?.sdk_ready))}</div>
-    </div>`;
+  function sectionLink(name, view, cls='subtle') {
+    return `<a class="button ${cls}" href="#${view}" data-go="${view}">${esc(name)}</a>`;
   }
-  function devicePanel(s) {
-    if (!s) s = {status:'idle',sdk_available:false,discovered:[]};
+  function statusBox(s) {
+    const [title, tone] = label(s.status);
+    let action = pButton(s.scanning ? 'Идёт поиск…' : 'Найти устройство', 'scan',
+      s.discovered?.length ? 'subtle' : 'primary', s.scanning || !s.sdk_ready);
+    let detail = safeInfo(s);
+    if (s.connected) {
+      action = sectionLink('Открыть монитор', 'live', 'primary');
+      detail = s.recording ? `Идёт запись · ${s.recording}` : s.message;
+    } else if (s.status === 'connecting') {
+      action = pButton('Отменить подключение', 'disconnect');
+    } else if (s.status === 'sdk_missing') {
+      action = sectionLink('Открыть записи', 'sessions', 'primary');
+    }
+    return `<section class="device-hero ${tone}">
+      <div class="device-emblem" aria-hidden="true"><svg class="icon"><use href="#i-wave"/></svg></div>
+      <div class="device-hero-copy"><h2>${esc(s.connected ? s.device || 'Повязка подключена' : title)}</h2>
+        <p>${esc(detail)}</p></div><div class="device-hero-actions">${action}</div></section>`;
+  }
+  function deviceConnection(s) {
+    if (s.status === 'sdk_missing') {
+      return `<section class="card device-setup">${heading('Как подключить повязку')}
+        <ol><li>Установите Python-обёртку и нативную библиотеку из поставки Capsule SDK для вашей системы.</li>
+        <li>Укажите папку SDK в <code>CAPSULE_SDK_DIR</code>. Если библиотека находится отдельно, укажите путь в <code>CAPSULE_LIB</code>.</li>
+        <li>Перезапустите NeuroScope, включите Bluetooth и запустите поиск повязки.</li></ol>
+        ${s.sdk_error ? `<details><summary>Сообщение SDK</summary><p>${esc(s.sdk_error)}</p></details>` : ''}</section>`;
+    }
+    const reconnect = `<label class="toggle-row"><input type="checkbox" id="auto-reconnect"
+      ${s.auto_reconnect ? 'checked' : ''} ${!s.sdk_ready ? 'disabled' : ''}>
+      <span><strong>Автоматическое переподключение</strong><small>При потере связи искать эту же повязку.</small></span></label>`;
+    if (s.connected) {
+      const facts = [
+        ['Серийный номер', s.serial], ['Заряд', n(s.battery) !== null ? `${fmt(s.battery,0)}%` : null],
+        ['Прошивка', s.firmware_version], ['Capsule SDK', s.sdk_version]
+      ];
+      return `<section class="card device-connection">${heading('Устройство')}
+        <dl class="device-specs">${facts.map(([name,value]) => `<div><dt>${name}</dt><dd>${esc(value ?? blank)}</dd></div>`).join('')}</dl>
+        <div class="connection-options">${reconnect}</div>
+        <div class="device-disconnect">${pButton('Отключить повязку','disconnect')}
+        ${s.recording ? '<small>Отключение завершит запись.</small>' : ''}</div></section>`;
+    }
     const devices = Array.isArray(s.discovered) ? s.discovered : [];
-    const found = s.connected ? `<div class="info-stack"><strong>Текущее подключение</strong><p>Потоки доступны в разделе «Живой монитор». Отключение завершит текущую запись и освободит устройство.</p><a class="button primary" href="#live" data-go="live">Перейти к сигналам</a></div>`:
-      devices.length ? devices.map(d=>`<div class="found-device"><span class="found-icon"><svg class="icon"><use href="#i-wave"/></svg></span><span class="found-copy"><strong>${esc(d.name)}</strong><small>${esc(d.serial)}</small></span>${pButton('Подключить','connect:'+d.serial,'primary',s.status==='connecting')}</div>`).join('') :
-      `<div class="no-device">${s.scanning?'<span class="loader"></span> Поиск выполняется…':'Пока нет найденных устройств.'}<small>Поиск выполняется только после нажатия кнопки. Его можно повторить.</small></div>`;
-    const cal = s.connected ? `${contactPanel(s.contact)}<div class="cal-box">${calibrationPanel(s)}</div>`:
-      `<div class="no-device small">Подключите повязку для калибровки.</div>`;
-    return `${statusBox(s)}<div class="device-two-col">
-      <section class="card">${heading('Обнаруженные устройства','Сначала поиск, затем явный выбор и проверка соединения')}${found}
-      <div class="connection-options"><label class="toggle-row"><input type="checkbox" id="auto-reconnect" ${s.auto_reconnect?'checked':''} ${!s.sdk_ready?'disabled':''}><span><strong>Автоматическое переподключение</strong><small>По умолчанию выключено; после потери связи повторить поиск и попытаться подключить прежнее устройство</small></span></label></div></section>
-      <section class="card">${heading('Контакт электродов и калибровка','Сначала измерения сопротивления, затем стабильный контакт и калибровка')}${cal}
-      <div class="steps-list"><div><b>01</b><span>Включите повязку и Bluetooth на компьютере.</span></div><div><b>02</b><span>Нажмите «Найти устройство», дождитесь окончания поиска.</span></div><div><b>03</b><span>Выберите найденный Neiry Headband. Приложение подтвердит связь через SDK.</span></div><div><b>04</b><span>Наденьте повязку, дождитесь снижения реального сопротивления каждого канала и стабильности показаний.</span></div><div><b>05</b><span>После проверки контакта запустите калибровку. При пропуске персональные метрики SDK не отображаются.</span></div></div></section>
-    </div>${!s.sdk_ready?`<section class="card device-warning">${heading('SDK не готов','Это не значит, что записи недоступны')}<p>Живое подключение требует поставку Capsule SDK и нативную библиотеку для вашей системы. Укажите <code>CAPSULE_SDK_DIR</code> перед запуском и проверьте, что Bluetooth доступен приложению.</p><p class="device-error">${esc(s.sdk_error || 'При отсутствии SDK аппаратный поиск недоступен.')}</p><a href="#sessions" data-go="sessions" class="button subtle">Открыть сохранённые записи</a></section>`:''}`;
+    const found = devices.map(d => `<div class="found-device"><span class="found-copy"><strong>${esc(d.name || 'Neiry Headband')}</strong>
+      <small>Серийный номер · ${esc(d.serial)}</small></span>${pButton('Подключить','connect:'+d.serial,'primary',s.status==='connecting')}</div>`).join('');
+    const empty = s.scanning ? 'Ожидаем ответ от устройств поблизости.'
+      : 'Включите повязку и Bluetooth на компьютере. Освободите повязку, если её использует другое приложение.';
+    return `<section class="card device-connection">${heading('Доступные повязки')}
+      ${found || `<p class="device-instruction">${empty}</p>`}
+      <div class="connection-options">${reconnect}</div></section>`;
+  }
+  function renderDevice(s) {
+    const content = $('#content');
+    if (!$('#device-workspace')) {
+      content.innerHTML = `<div id="device-workspace"><div id="device-status-box"></div>
+        <div class="device-workspace-grid">
+          <div id="device-connection"></div>
+          <section id="device-contact" class="card" hidden>${heading('Контакт электродов')}<div id="device-contact-body"></div></section>
+          <section id="device-calibration" class="card" hidden>${heading('Калибровка Capsule')}<div id="device-calibration-body"></div></section>
+        </div></div>`;
+    }
+    setMarkup($('#device-status-box'), statusBox(s));
+    setMarkup($('#device-connection'), deviceConnection(s));
+    $('#device-workspace').classList.toggle('connected', s.connected);
+    $('#device-contact').hidden = !s.connected;
+    $('#device-calibration').hidden = !s.connected;
+    if (s.connected) {
+      setMarkup($('#device-contact-body'), contactPanel(s.contact));
+      setMarkup($('#device-calibration-body'), calibrationPanel(s));
+      updateCalibrationProgress(s);
+    }
   }
   function heading(title,subtitle='') {return `<div class="card-header"><div><h2>${esc(title)}</h2>${subtitle?`<p class="card-subtitle">${esc(subtitle)}</p>`:''}</div></div>`;}
   function livePlot(id, title, subtitle='', wide=false, details='') {
@@ -313,16 +370,36 @@
         <p class="live-chart-empty">Ожидаем отсчёты</p></div>${details}</section>`;
   }
   function livePanel() {
-    return `<div class="live-banner" id="live-banner"><span class="activity-dot"></span><div><strong id="live-mode">Ожидание сигнала</strong><p id="live-message">Подключите устройство или запустите воспроизведение записи.</p></div><div class="live-banner-actions"><a class="button subtle" href="#device" data-go="device">Устройство</a><button class="button subtle" id="replay-pause" data-action="pause-replay" hidden>Пауза</button><button class="button subtle" id="replay-forward" data-action="seek-forward" hidden>+30 с</button><button class="button subtle" id="replay-stop" data-action="stop-replay" hidden>Остановить воспроизведение</button></div></div>
-      <div id="live-contact-card" class="contact-live-wrap">${contactPanel(status?.contact,true)}</div>
+    return `<div class="live-banner" id="live-banner"><span class="activity-dot" aria-hidden="true"></span><div><strong id="live-mode">Ожидание сигнала</strong><p id="live-message">Подключите устройство или запустите воспроизведение записи.</p></div><div class="live-banner-actions"><a class="button subtle" href="#device" data-go="device">Повязка</a><a class="button subtle" href="#sessions" id="live-archive-link">Архив записей</a><button class="button subtle" id="replay-pause" data-action="pause-replay" hidden>Пауза</button><button class="button subtle" id="replay-forward" data-action="seek-forward" hidden>+30 с</button><button class="button subtle" id="replay-stop" data-action="stop-replay" hidden>Остановить воспроизведение</button></div></div>
+      <section class="card live-controls">
+        <div class="controls-grid"><div><h2>Запись</h2><p id="live-recording-state">Нет активной записи</p><div class="control-actions">${pButton('Начать запись','start-record','primary',true)}${pButton('Остановить запись','stop-record','subtle',true)}</div></div>
+        <div><h2>Метки записи</h2><p>Момент сохраняется сразу. Название можно добавить позже.</p><div class="control-actions">
+          <button type="button" class="button subtle" data-checkpoint-create aria-keyshortcuts="Alt+M" aria-controls="checkpoint-panel" disabled>Поставить чекпоинт <kbd aria-hidden="true">Alt+M</kbd></button>
+          <button type="button" class="button subtle" data-checkpoint-list aria-controls="checkpoint-panel" disabled>Список</button>
+        </div></div></div>
+      </section>
       <div class="live-metrics"><section class="metric-card"><div class="metric-label">Пульс · SDK</div><div class="metric-value" id="live-hr">—</div><div class="metric-note" id="live-hr-note">уд/мин · Capsule SDK</div></section>
       <section class="metric-card"><div class="metric-label">Внимание · SDK</div><div class="metric-value" id="live-attention">—</div><div class="metric-note">Индекс производителя, не % концентрации</div></section>
       <section class="metric-card"><div class="metric-label">Расслабление · SDK</div><div class="metric-value" id="live-relax">—</div><div class="metric-note">Индекс производителя</div></section></div>
-      <section class="card live-stream-card">${heading('Контакт и поток','Отсчёты датчиков и доступность расчётов Capsule')}<div id="live-sensors" class="sensor-summary"><p>Потоков пока нет.</p></div><div id="live-resistances" class="resistance-values"></div></section>
+      <div class="live-diagnostic-strip">
+        <details class="card live-disclosure"><summary>Датчики и контакт</summary>
+          <div id="live-contact-card" class="contact-live-wrap">${contactPanel(status?.contact,true)}</div>
+          <div id="live-sensors" class="sensor-summary"><p>Потоков пока нет.</p></div><div id="live-resistances" class="resistance-values"></div>
+        </details>
+        <details class="card live-disclosure" id="live-artifact-details"><summary>Флаги артефактов ЭЭГ <span id="live-artifact-state">Ожидание устройства</span></summary>
+          <div id="live-artifact-values"></div></details>
+      </div>
+      <fieldset class="live-group-picker"><legend>Графики</legend>
+        <label><input type="radio" name="live-group" value="eeg" checked><span>ЭЭГ и пульс</span></label>
+        <label><input type="radio" name="live-group" value="motion"><span>Движение и электроды</span></label>
+        <label><input type="radio" name="live-group" value="sdk"><span>Индексы Capsule</span></label>
+      </fieldset>
+      <details class="live-chart-options"><summary>Настройки графиков</summary>
       <div class="studio-controls"><label style="max-width:200px">Сырые сигналы · окно<select id="live-time-range">${[5,15,30,60].map(s=>`<option value="${s}" ${s===liveRange?'selected':''}>${s} с</option>`).join('')}</select></label><label style="max-width:210px">Индексы SDK · окно<select id="metric-time-range">${[60,300,900].map(s=>`<option value="${s}" ${s===metricRange?'selected':''}>${s/60} мин</option>`).join('')}</select></label><label class="toggle-row raw-toggle"><input type="checkbox" id="show-unverified-raw" ${allowRaw?'checked':''}><span><strong>Диагностический сырой поток</strong><small>Показывать ЭЭГ и ФПГ до проверки контакта</small></span></label></div>
-      <section class="live-graph-group" aria-labelledby="live-primary-label">
+      </details>
+      <section class="live-graph-group" data-plot-group="eeg" aria-labelledby="live-primary-label">
         <h2 id="live-primary-label">ЭЭГ и пульс</h2><div class="live-graphs">
-          ${livePlot('live-eeg','ЭЭГ','Метки каналов и частота дискретизации из SDK',true,'<p class="chart-caption"><span id="live-channels">Каналы: —</span> <span id="live-eeg-sr"></span></p>')}
+          ${livePlot('live-eeg','ЭЭГ','Отведения и частота дискретизации из источника',true,'<p class="chart-caption"><span id="live-channels">Каналы: —</span> <span id="live-eeg-sr"></span></p>')}
           ${livePlot('live-ppg','ФПГ · пульсовая волна','Оптический сигнал',false,'<p class="chart-caption" id="live-ppg-sr"></p>')}
           ${livePlot('live-hr-chart','Пульс во времени · SDK','Фрагменты, прошедшие проверку флагов Capsule')}
           <section class="card wide" data-live-diagnostic="spectrogram">${heading('Спектрограмма ЭЭГ','Мощность нормируется отдельно для каждого канала')}<div class="live-spectrograms" id="live-spectrograms"></div><p class="chart-caption" id="live-spectrogram-note">Для построения нужны не менее трёх секунд ЭЭГ.</p></section>
@@ -330,7 +407,7 @@
           <section class="card wide" data-live-diagnostic="paired">${heading('Спектр ЭЭГ на 3D-схеме','Доли мощности обоих отведений по частотным полосам')}${window.NeuroPairedPanel.markup()}</section>
         </div>
       </section>
-      <section class="live-graph-group" aria-labelledby="live-motion-label">
+      <section class="live-graph-group" data-plot-group="motion" hidden aria-labelledby="live-motion-label">
         <h2 id="live-motion-label">Движение и электроды</h2><div class="live-graphs">
           ${livePlot('live-motion','Модуль ускорения','Модуль вектора XYZ',true,'<p class="chart-caption" id="live-mems-sr"></p>')}
           ${livePlot('live-acc','Акселерометр · XYZ')}
@@ -338,7 +415,7 @@
           ${livePlot('live-resistance','Сопротивление электродов','Отдельная линия для каждого электрода',true)}
         </div>
       </section>
-      <section class="live-graph-group" aria-labelledby="live-sdk-label">
+      <section class="live-graph-group" data-plot-group="sdk" hidden aria-labelledby="live-sdk-label">
         <h2 id="live-sdk-label">Индексы Capsule SDK</h2><div class="live-graphs">
           ${livePlot('live-nfb','Нейрообратная связь','Пять частотных полос α, β, θ, δ и SMR',true)}
           ${livePlot('live-emotions','Оценки внимания и состояний','Индексы производителя',true)}
@@ -347,18 +424,18 @@
           ${livePlot('live-si-chart','Кардиоиндекс стресса','Расчёт SDK по ФПГ')}
           ${livePlot('live-ki-chart','Индекс Каплана','Расчёт SDK по ФПГ')}
         </div>
-      </section>
-      <section class="card live-controls">${heading('Управление сессией','Запись и метки требуют реального подключения; воспроизведение доступно без устройства')}
-        <div class="controls-grid"><div><h3>Запись</h3><p id="live-recording-state">Нет активной записи</p><div class="control-actions">${pButton('Начать запись','start-record','primary')}${pButton('Остановить запись','stop-record')}</div></div>
-        <div><h3>Чекпоинты</h3><p>Момент сохраняется сразу. Название можно добавить позже.</p><div class="control-actions">
-          <button type="button" class="button subtle" data-checkpoint-create aria-keyshortcuts="Alt+M" aria-controls="checkpoint-panel" disabled>Поставить чекпоинт <kbd aria-hidden="true">Alt+M</kbd></button>
-          <button type="button" class="button subtle" data-checkpoint-list aria-controls="checkpoint-panel" disabled>Список</button>
-        </div></div></div>
       </section>`;
   }
   function sessionsPanel() {
-    return `<section class="card">${heading('Сохранённые сессии','Все действия прямо в NeuroScope: анализ, воспроизведение, экспорт и удаление')}
-      <div class="sessions-toolbar"><button class="button subtle" data-action="reload-sessions">Обновить список</button><span id="sessions-summary" class="card-subtitle">Загружаем записи…</span></div><div id="sessions-body" class="sessions-list"><div class="loading-panel"><span class="loader"></span><p>Читаем записи…</p></div></div></section>`;
+    return `<section class="card archive-catalog">
+      <div class="archive-toolbar"><label for="session-query">Поиск по записям
+        <input id="session-query" type="search" autocomplete="off" placeholder="Дата, название повязки или ID" disabled>
+      </label>${pButton('Обновить список','reload-sessions')}</div>
+      <div id="sessions-summary" class="archive-summary" role="status">Загружаем записи…</div>
+      <div id="sessions-body" class="sessions-list"></div>
+      <nav id="session-pager" class="session-pager" aria-label="Страницы записей" hidden>
+        ${pButton('Назад','sessions-prev')}<span id="session-page"></span>${pButton('Далее','sessions-next')}
+      </nav></section>`;
   }
   function previewPanel(which) { return `<section class="card"><div class="offline-icon"><svg class="icon"><use href="#i-wave"/></svg></div><h2>${which==='live'?'Живой монитор':which==='device'?'Подключение устройства':'Управление сессиями'} доступно в запущенном проекте</h2><p class="card-subtitle" style="margin-top:12px">Это автономный HTML-файл со встроенными результатами ранее записанных измерений. В нём нет сервера, WebSocket, поиска Bluetooth или управления записью. Для этих функций запустите NeuroScope через start.sh / start.bat.</p><a class="button primary" style="margin-top:22px" href="#overview" data-go="overview">Вернуться к анализу</a></section>`; }
   function setTopStatus(s) {
@@ -373,6 +450,17 @@
     const map={scan:'/api/device/scan',disconnect:'/api/device/disconnect','skip-cal':'/api/device/calibration/skip',
       'start-record':'/api/recording/start','stop-record':'/api/recording/stop','stop-replay':'/api/replay/stop','pause-replay':'/api/replay/pause','resume-replay':'/api/replay/resume'};
     try {
+      if (action === 'retry-status') { await poll(); return; }
+      if (action === 'sessions-next' || action === 'sessions-prev') {
+        sessionPage += action === 'sessions-next' ? 1 : -1;
+        renderSessionRows();
+        // At a boundary the activated button becomes disabled.
+        const pager = $('#session-pager');
+        if (!pager.contains(document.activeElement) || document.activeElement.disabled) {
+          $('button:not(:disabled)', pager)?.focus();
+        }
+        return;
+      }
       if (action==='calibration') {openCalibrationSetup();return;}
       if (action.startsWith('connect:')) {
         await api('/api/device/connect',{method:'POST',body:JSON.stringify({serial:action.slice(8)})}); notice('Подключение начато. Дождитесь подтверждения SDK.');
@@ -396,13 +484,40 @@
   function bind(root=$('#content')) {
     if (!root || root.dataset.neuroLiveBound) return;
     root.dataset.neuroLiveBound = '1';
+    root.addEventListener('input', e=>{
+      if(e.target.id==='session-query') {sessionPage=0;renderSessionRows();}
+    });
+    root.addEventListener('keydown', e=>{
+      const actions = e.target.closest('.archive-actions details[open]');
+      if (e.key === 'Escape' && actions) {
+        actions.open = false;
+        $('summary', actions).focus();
+      }
+    });
     root.addEventListener('click', e=>{
+      if (!view) return;
+      if (view === 'sessions') {
+        const open = $('.archive-actions details[open]', root);
+        if (open && !open.contains(e.target)) open.open = false;
+      }
+      const analysis=e.target.closest('[data-session-analysis]');
+      if(analysis) {
+        e.preventDefault();
+        ctx.selectSession?.(analysis.dataset.sessionAnalysis);
+        location.hash='signals';
+        return;
+      }
       const btn=e.target.closest('[data-action]');
       if(btn){e.preventDefault();if(!btn.disabled)act(btn.dataset.action);return;}
       const go=e.target.closest('[data-go]');
       if(go){e.preventDefault();location.hash=go.dataset.go;}
     });
     root.addEventListener('change', async e=>{
+      if (e.target.name === 'live-group') {
+        for (const group of $$('[data-plot-group]', root)) group.hidden = group.dataset.plotGroup !== e.target.value;
+        requestChartFrame();
+        return;
+      }
       if(e.target.id==='live-time-range'){
         const previous=liveRange;
         liveRange=Number(e.target.value)||15;
@@ -829,8 +944,8 @@
     if(tick.replay){
       replay=tick.replay;
       lastStreamStatusAt=now;
-      const {connected,device,message,recording,recording_origin,recording_error,contact,validity,sensor_status}=tick;
-      status={...status,connected,device,message,recording,recording_origin,recording_error,contact,validity,sensor_status,status:tick.status};
+      const {connected,device,message,recording,recording_origin,recording_error,contact,validity,sensor_status,eeg_artifacts}=tick;
+      status={...status,connected,device,message,recording,recording_origin,recording_error,contact,validity,sensor_status,eeg_artifacts,status:tick.status};
     }
     const archived=valid.source_mode==='replay'||(!valid.source_mode&&replay?.active);
     const source=archived?`replay:${tick.stream_epoch??''}`:tick.connected?`live:${tick.serial||''}:${tick.stream_epoch??''}`:'idle';
@@ -932,14 +1047,47 @@
       }).join('');
     setMarkup(panel,html);
   }
+  function updateArtifactReport(report, isConnected, archived) {
+    const details = $('#live-artifact-details');
+    details.hidden = Boolean(archived);
+    const state = !isConnected ? 'disconnected' : (report?.state || 'unknown');
+    const labels = {
+      disconnected: 'Нет подключения', unsupported: 'Недоступно в этой версии SDK',
+      waiting: 'Ожидаем первый пакет', fresh: 'Получен пакет',
+      stale: 'Данные устарели', unknown: 'Нет сведений от SDK'
+    };
+    const rows = report?.channels || [];
+    const hasPacket = !archived && (state === 'fresh' || state === 'stale');
+    const age = hasPacket && n(report.age_s) !== null ? ` · ${fmt(Math.floor(report.age_s),0)} с назад` : '';
+    const marked = rows.filter(row => row.flags > 0).length;
+    const counts = hasPacket && rows.length === report.channel_count ? ` · с флагом: ${marked} из ${rows.length}` : '';
+    details.dataset.state = state;
+    setText($('#live-artifact-state'), (labels[state] || labels.unknown) + age + counts);
+    const body = $('#live-artifact-values');
+    if (archived || !hasPacket) {
+      setText(body, archived ? '' : 'После получения пакета здесь появятся исходные значения Capsule по каждому каналу.');
+      return;
+    }
+    const channelRows = rows.map(channel =>
+      `<tr><th scope="row">Канал ${fmt(channel.index + 1,0)}</th>
+        <td>${fmt(channel.flags,0)}</td><td>${fmt(channel.quality,3)}</td></tr>`);
+    const truncated = report.channel_count > rows.length
+      ? `<p>Показано каналов: ${rows.length} из ${fmt(report.channel_count,0)}.</p>` : '';
+    setMarkup(body, `<p>В таблице показаны коды и оценки последнего пакета Capsule. Для проверки помеченного канала сопоставьте его ЭЭГ с движением и контактом электродов.</p>
+      <div class="table-wrap"><table class="data-table"><thead><tr><th>Канал SDK</th><th>Флаги, код</th><th>Качество, ед. SDK</th></tr></thead>
+      <tbody>${channelRows.join('')}</tbody></table></div>${truncated}`);
+  }
   function updateLiveStatus() {
     if(view!=='live'||!$('#live-mode'))return;
     const activeReplay=replay?.active;
     const isConnected=connected();
-    setText($('#live-mode'),activeReplay?'Воспроизведение сохранённой записи':isConnected?(status.contact?.ready?'Контакт электродов подтверждён':'Подключено, контакта пока нет'):'Нет активного источника сигнала');
+    $('#live-banner').dataset.mode = activeReplay ? 'replay' : isConnected ? 'connected' : 'idle';
+    $('#live-archive-link').hidden = activeReplay || isConnected;
+    updateArtifactReport(status?.eeg_artifacts, isConnected, activeReplay);
+    setText($('#live-mode'),activeReplay?'Воспроизведение сохранённой записи':isConnected?(status.contact?.ready?'Повязка подключена · контакт подтверждён':'Повязка подключена · проверка контакта'):'Нет активного источника сигнала');
     setText($('#live-message'),activeReplay?`Запись ${replay.session_id} · скорость ×${fmt(replay.speed,1)} · это не текущие данные человека.`:
       isConnected?(status.contact?.message || 'Подключено. Ожидаем показатели сопротивления электродов.'):
-      'Подключите устройство на вкладке «Устройство» или воспроизведите архивную сессию на вкладке «Записи».');
+      'Подключите повязку или выберите сохранённую запись для воспроизведения.');
     const stop=$('#replay-stop');if(stop)stop.hidden=!activeReplay;
     const pause=$('#replay-pause');if(pause){pause.hidden=!activeReplay;pause.dataset.action=replay?.paused?'resume-replay':'pause-replay';setText(pause,replay?.paused?'Продолжить':'Пауза');}
     const forward=$('#replay-forward');if(forward)forward.hidden=!activeReplay;
@@ -994,11 +1142,12 @@
       const [s,replayStatus]=await Promise.all([api('/api/device/status',options),
         view==='live'&&!healthyLiveStatus()?api('/api/replay/status',options).catch(()=>null):null]);
       if(request!==statusRequest)return;
+      const previousStatus = status;
       status=s;setTopStatus(s);syncCalibrationAudio(s);
-      if(view==='device'&&$('#content')){
-        const fingerprint=JSON.stringify({status:s.status,message:s.message,connected:s.connected,discovered:s.discovered,calibration_phase:s.calibration_phase,calibration_available:s.calibration_available,calibration_stage:s.calibration_run?.stage,calibration_result:s.calibration_result,contact:s.calibration_run?null:contactSignature(s.contact),scanning:s.scanning,auto_reconnect:s.auto_reconnect,battery:s.battery,firmware_version:s.firmware_version,sdk_version:s.sdk_version,recording:s.recording,recording_error:s.recording_error});
-        if(fingerprint!==statusFingerprint){statusFingerprint=fingerprint;$('#content').innerHTML=devicePanel(s);bind();}
-        updateCalibrationProgress(s);
+      if (view === 'device') renderDevice(s);
+      if (view === 'sessions') {
+        if (previousStatus && previousStatus.recording !== s.recording) void loadSessions();
+        else updateReplayButtons();
       }
       if(view==='live'){
         if(replayStatus&&!healthyLiveStatus())replay=replayStatus;
@@ -1008,9 +1157,25 @@
     }catch(e){
       if(request!==statusRequest)return;
       syncCalibrationAudio(null);
-      statusFingerprint='';
+      if (view === 'sessions') {status = null;updateReplayButtons();}
+      if (view === 'live' && !healthyLiveStatus()) {
+        status = null;
+        replay = {active:false};
+        refreshDiagnosticSource();
+        updateLiveStatus();
+        updateStreamSummary({}, false);
+        setText($('#live-mode'), 'Нет связи с сервером');
+        setText($('#live-message'), 'Состояние записи неизвестно. Монитор обновится при восстановлении связи.');
+        setText($('#live-recording-state'), 'Состояние записи неизвестно');
+        setText($('#live-artifact-state'), 'Нет связи с сервером');
+        setText($('#live-artifact-values'), 'Ждём обновления от сервера.');
+        setText($('#live-contact-card'), 'Свежих данных о контакте нет.');
+        delete $('#live-contact-card').dataset.contactSignature;
+        setText($('#live-resistances'), '');
+        for (const id of ['live-hr', 'live-attention', 'live-relax']) setText(document.getElementById(id), '—');
+      }
       setTopStatus({status:'error',message:'Не удаётся связаться с локальным сервером'});
-      if(view==='device')$('#content').innerHTML=`<section class="card"><h2>Нет связи с сервером</h2><p>${esc(e.message)}</p>${pButton('Повторить','scan')}</section>`;
+      if(view==='device')$('#content').innerHTML=`<section class="card"><h2>Нет связи с сервером</h2><p>${esc(e.message)}</p>${pButton('Повторить проверку','retry-status')}</section>`;
     }finally{
       if(request===statusRequest)statusRequest=null;
     }
@@ -1040,20 +1205,80 @@
     }
     scheduleStatusPoll(0);
   }
+  function updateReplayButtons() {
+    for (const button of $$('[data-session-replay]')) {
+      button.disabled = !status || connected();
+      button.title = !status ? 'Проверяем подключение' : connected() ? 'Для воспроизведения отключите повязку' : '';
+    }
+  }
+  function sessionRow(s) {
+    const id = s.session_id, meta = s.meta || {}, summary = s.summary || {};
+    const started = meta.started_at || meta.started_at_iso;
+    const title = started ? ctx.dateLabel(started, true) : id;
+    const duration = n(summary.duration_s);
+    const info = [started && id, meta.device || summary.device, duration !== null && ctx.duration(duration)].filter(Boolean);
+    const streams = [['eeg_samples','ЭЭГ'],['ppg_samples','ФПГ'],['mems_samples','Движение']]
+      .filter(([key]) => n(summary.counts?.[key]) > 0).map(([,name]) => name);
+    const primary = s.active ? sectionLink('К текущей записи','live') :
+      `<a class="button subtle" href="#signals" data-session-analysis="${esc(id)}">Анализ</a>`;
+    return `<article class="archive-row"><div class="archive-record">
+      <h2>${esc(title)}</h2>${info.length ? `<p>${info.map(esc).join(' · ')}</p>` : ''}
+      ${s.active ? '<span class="archive-recording">Идёт запись</span>' : ''}
+      ${streams.length ? `<div class="archive-streams" aria-label="Записанные сигналы">${streams.map(x=>`<span>${x}</span>`).join('')}</div>` : ''}
+      </div><div class="archive-actions">${primary}<details name="session-actions"><summary class="button subtle">Действия</summary>
+      <div class="archive-more"><button type="button" class="button subtle" data-checkpoint-list="${esc(id)}" aria-controls="checkpoint-panel">Чекпоинты</button>
+      ${s.active ? '' : `<button type="button" class="button subtle" data-session-replay data-action="replay:${esc(id)}">Воспроизвести</button>`}
+      <a class="button subtle" href="/api/records/${encodeURIComponent(id)}/download" download>Скачать ZIP</a>
+      ${pButton('Удалить','delete:'+id,'subtle archive-delete',s.active)}</div></details></div></article>`;
+  }
+  function renderSessionRows() {
+    const query = $('#session-query');
+    if (!query) return;
+    if (!sessionRows.length) query.value = '';
+    const term = query.value.trim().toLocaleLowerCase('ru');
+    const rows = term ? sessionRows.filter(s => s.searchText.includes(term)) : sessionRows;
+    const pages = Math.ceil(rows.length / sessionPageSize);
+    sessionPage = Math.max(0, Math.min(sessionPage, pages - 1));
+    const start = sessionPage * sessionPageSize, end = Math.min(start + sessionPageSize, rows.length);
+    const summary = $('#sessions-summary');
+    summary.textContent = rows.length ? `${start+1}–${end} из ${rows.length} · Время начала по Москве` :
+      term ? 'Найдено записей: 0' : 'Записей пока нет';
+    query.disabled = !sessionRows.length;
+    const box = $('#sessions-body');
+    if (rows.length) box.innerHTML = rows.slice(start, end).map(sessionRow).join('');
+    else if (term) box.innerHTML = '<p class="archive-empty">Измените дату или попробуйте часть идентификатора.</p>';
+    else box.innerHTML = `<div class="archive-empty"><p>Для первой записи подключите повязку и откройте живой монитор.</p>${sectionLink('К подключению','device')}</div>`;
+    const pager = $('#session-pager');
+    pager.hidden = pages < 2;
+    $('#session-page').textContent = `${sessionPage + 1} / ${pages}`;
+    $('[data-action="sessions-prev"]', pager).disabled = sessionPage === 0;
+    $('[data-action="sessions-next"]', pager).disabled = end >= rows.length;
+    updateReplayButtons();
+  }
   async function loadSessions() {
     if(preview||view!=='sessions')return;
+    const request = ++sessionRequest;
+    const summary = $('#sessions-summary');
     try {
-      const out=await api('/api/records');sessionRows=Array.isArray(out.sessions)?out.sessions:[];
-      $('#sessions-summary').textContent=`Всего: ${sessionRows.length}`;
-      const box=$('#sessions-body');if(!box)return;
-      if(!sessionRows.length){box.innerHTML='<div class="no-device">Пока нет сохранённых сессий. Подключите устройство и начните запись.</div>';return;}
-      box.innerHTML=sessionRows.map(s=>{
-        const id=s.session_id,meta=s.meta||{},counts=s.summary?.counts||{};
-        return `<article class="session-list-row"><div class="session-list-icon"><svg class="icon"><use href="#i-folder"/></svg></div><div class="session-list-data"><strong>${esc(id)}</strong><small>${esc(meta.started_at||meta.started_at_iso||'Сохранённая сессия')} ${s.active?' · Идёт запись':''}</small><div class="session-list-info">${Object.keys(counts).slice(0,4).map(k=>`${esc(k)}: ${fmt(counts[k],0)}`).join(' · ')}</div></div>
-        <div class="session-list-actions"><a class="button subtle" href="#signals" data-session-analysis="${esc(id)}">Анализ</a><button type="button" class="button subtle" data-checkpoint-list="${esc(id)}" aria-controls="checkpoint-panel">Чекпоинты</button>${pButton('Воспроизвести','replay:'+id,'subtle',s.active||connected())}<a class="button subtle" href="/api/records/${encodeURIComponent(id)}/download" download>ZIP</a>${pButton('Удалить','delete:'+id,'subtle',s.active)}</div></article>`;
-      }).join('');
-      $$('[data-session-analysis]',box).forEach(a=>a.addEventListener('click',e=>{e.preventDefault();ctx.selectSession?.(a.dataset.sessionAnalysis);location.hash='signals';}));
-    }catch(err){if($('#sessions-body'))$('#sessions-body').innerHTML=`<div class="no-device">Ошибка списка записей: ${esc(err.message)}</div>`;}
+      const out = await api('/api/records');
+      if (request !== sessionRequest || !summary.isConnected || view !== 'sessions') return;
+      sessionRows = (Array.isArray(out.sessions) ? out.sessions : []).filter(s=>s?.session_id).map(s=>{
+        const meta = s.meta || {}, started = meta.started_at || meta.started_at_iso;
+        const date = started ? new Date(started) : null;
+        const terms = [s.session_id, meta.device || s.summary?.device, started];
+        if (date && Number.isFinite(date.getTime())) {
+          terms.push(ctx.dateLabel(started, true), sessionNumericDate.format(date));
+        }
+        return {...s, searchText:terms.join(' ').toLocaleLowerCase('ru')};
+      });
+      renderSessionRows();
+    } catch(err) {
+      if (request !== sessionRequest || !summary.isConnected || view !== 'sessions') return;
+      sessionRows = [];
+      renderSessionRows();
+      summary.textContent = 'Не удалось загрузить записи';
+      $('#sessions-body').innerHTML = `<p class="archive-empty">${esc(err.message)}. Повторите загрузку кнопкой «Обновить список».</p>`;
+    }
   }
   function init(options) {
     ctx=options;preview=Boolean(options.preview);
@@ -1068,7 +1293,9 @@
     const box=$('#content');if(!box)return;
     if(preview){box.innerHTML=previewPanel(view);bind();return;}
     if(view==='device'){
-      statusFingerprint='';box.innerHTML=devicePanel(status);bind();await poll();
+      if (status) renderDevice(status);
+      else box.innerHTML='<div class="loading-panel" role="status">Проверяем подключение…</div>';
+      bind();await poll();
     }else if(view==='live'){
       box.innerHTML=livePanel();bind();
       // The montage is useful even when status requests fail or no device is connected.
@@ -1077,7 +1304,7 @@
       observePlots();
       openWS(); await poll();
     }else if(view==='sessions'){
-      box.innerHTML=sessionsPanel();bind();await loadSessions();
+      sessionPage=0;box.innerHTML=sessionsPanel();bind();await Promise.all([loadSessions(),poll()]);
     }
   }
   function leave(){closeWS();clearGraphs();view=null;}

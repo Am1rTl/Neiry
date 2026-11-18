@@ -18,18 +18,18 @@
   const colors = ['#7ce3cb','#8ca9ff','#e4a2ad','#f0c38a','#b7a7ee'];
   const bandDefs = [{id:'delta',name:'Дельта',range:'1–4 Гц',color:'#8da8cb'},{id:'theta',name:'Тета',range:'4–8 Гц',color:'#a49cde'},{id:'alpha',name:'Альфа',range:'8–13 Гц',color:'#7ce3cb'},{id:'beta',name:'Бета',range:'13–30 Гц',color:'#8ca9ff'},{id:'gamma',name:'30–45 Гц',range:'Верхняя полоса',color:'#d1b489'}];
   const titles = {
-    device: ['Подключение устройства', 'Поиск, состояние Bluetooth и калибровка без навязанных экранов.', 'Устройство'],
-    live: ['Живой монитор', 'ЭЭГ, ФПГ, движение и показатели SDK в реальном времени.', 'Живой монитор'],
-    sessions: ['Записи и воспроизведение', 'Управляйте сессиями, анализом, загрузкой и replay в одном окне.', 'Записи'],
-    experiments: ['Лаборатория экспериментов', 'Альфа-ритм, зрительное обучение и нейрообратная связь с Neiry Headband.', 'Эксперименты'],
-    'timed-protocol': ['Протоколы с таймером', 'Настраиваемые этапы для записи покоя, задачи и восстановления.', 'Протоколы с таймером'],
-    segment: ['Исследование фрагмента', 'Выделяйте участки сигнала, сохраняйте аннотации и экспортируйте данные.', 'Исследователь'],
-    history: ['История исследований', 'Сопоставляйте только явно отмеченные измерения одного участника.', 'История'],
-    overview: ['Лаборатория сигналов', 'Отдельные измерения. Общая картина. Проверяемые выводы.', 'Обзор записей'],
-    signals: ['Сигналы и метрики', 'Проверяйте каждый вывод по исходному сигналу и условиям расчёта.', 'Сигналы и метрики'],
-    compare: ['Сравнение сессий', 'Различия записей с учётом качества, длительности и условий.', 'Сравнить сессии'],
-    knowledge: ['Как это работает', 'Нейрофизиология, возможности измерений и научные источники.', 'Как это работает'],
-    protocol: ['Следующая запись', 'Больше контекста и меньше артефактов для более полезного анализа.', 'Протокол записи']
+    device: ['Подключение повязки', 'Найдите устройство и проверьте контакт электродов перед записью.'],
+    live: ['Живой монитор', 'Следите за потоками ЭЭГ, пульса и движения и отмечайте события во время записи.'],
+    sessions: ['Архив записей', 'Откройте запись для анализа, воспроизведите её или скачайте исходные данные.'],
+    experiments: ['Эксперименты', 'Выберите протокол для повязки или откройте журнал прошедших экспериментов.'],
+    'timed-protocol': ['Протоколы с таймером', 'Настройте длительность этапов покоя, задачи и восстановления.'],
+    segment: ['Анализ фрагмента', 'Выберите участок записи для детального просмотра, аннотации и экспорта.'],
+    history: ['История исследований', 'Просмотрите условия записи и сопоставимые сессии одного участника.'],
+    overview: ['Обзор записи', 'Качество сигнала и основные показатели выбранной сессии.'],
+    signals: ['Сигналы и метрики', 'Исходные сигналы, спектры и результаты расчётов по каналам.'],
+    compare: ['Сравнение записей', 'Сопоставьте спектры и показатели с учётом качества, длительности и условий записи.'],
+    knowledge: ['Как это работает', 'Какие сигналы измеряет повязка и как интерпретировать их по научным источникам.'],
+    protocol: ['Протокол записи', 'Подготовьте повязку, зафиксируйте условия и наметьте этапы сессии.']
   };
   const state = {sessions:[], current:null, analysis:null, analysisPending:new Map(), knowledge:null, view:'overview', charts:[], channel:0, raw:false, log:true, renderId:0, context:null};
 
@@ -38,13 +38,18 @@
     const n = Math.max(0, Math.round(Number(v))), h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), s = n % 60;
     return h ? `${h} ч ${m} мин` : m ? `${m} мин ${s.toString().padStart(2,'0')} с` : `${s} с`;
   }
+  const dateOptions = {day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Moscow'};
+  const shortDate = new Intl.DateTimeFormat('ru-RU', {...dateOptions, month: 'short'});
+  const longDate = new Intl.DateTimeFormat('ru-RU', {...dateOptions, month: 'long', year: 'numeric'});
+
   function dateLabel(v, long = false) {
+    if (!v) return 'Дата не указана';
     const d = new Date(v);
     if (!Number.isFinite(d.getTime())) return String(v || 'Дата не указана');
-    return new Intl.DateTimeFormat('ru-RU', {day:'numeric', month:long?'long':'short', ...(long?{year:'numeric'}:{}), hour:'2-digit', minute:'2-digit', timeZone:'Europe/Moscow'}).format(d).replace(' г.', '');
+    return (long ? longDate : shortDate).format(d).replace(' г.', '');
   }
   function statusInfo(v) {
-    const key = String(typeof v === 'object' ? v.status : v || '').toLowerCase();
+    const key = String(v?.status ?? v ?? '').toLowerCase();
     if (['ok','good','acceptable','usable','pass','available'].includes(key)) return {label:'Пройден фильтр качества', cls:'good'};
     if (['poor','bad','unusable','unreliable','failed','insufficient','insufficient_data','rejected'].includes(key)) return {label:'Ограниченная пригодность', cls:'bad'};
     if (['missing','no_eeg','not_available','unavailable','absent','empty','no_data'].includes(key)) return {label:'Недостаточно данных', cls:''};
@@ -126,9 +131,23 @@
   function legend(channels) { return `<div class="legend">${channels.map((c,i)=>`<span><i style="background:${colors[i%colors.length]}"></i>${esc(c.name)}</span>`).join('')}</div>`; }
 
   function renderSessions() {
-    $('#session-selector').innerHTML = state.sessions.map(s => `<button class="session-option ${s.id===state.current?'selected':''}" data-session="${esc(s.id)}" aria-pressed="${s.id===state.current}" title="${esc(s.id)}"><span class="session-symbol">${icon(s.eeg_available?'wave':'heart')}</span><span class="session-info"><strong>${esc(dateLabel(s.started_at))}</strong><small>${esc(duration(s.wall_duration_s??s.duration_s))} · ${s.active?'Идёт запись':s.analysis_ready?'Анализ готов':'Сохранённая запись'}</small></span><span class="session-state" aria-hidden="true"></span></button>`).join('');
-    $$('#session-selector [data-session]').forEach(b => b.addEventListener('click',()=>selectSession(b.dataset.session)));
-    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(state.view);
+    const panel = $('#session-selector');
+    const hadFocus = panel.contains(document.activeElement);
+    panel.hidden = !state.sessions.length || !['overview', 'signals'].includes(state.view);
+    const options = state.sessions.map(session => {
+      const date = dateLabel(session.started_at, true);
+      const length = duration(session.wall_duration_s ?? session.duration_s);
+      const label = `${date} · ${length} · ${session.active ? 'Идёт запись' : session.id}`;
+      return `<option value="${esc(session.id)}">${esc(label)}</option>`;
+    });
+    panel.innerHTML = `<label class="record-picker" for="analysis-session">
+      <span>${icon('folder')} Запись для анализа <small>МСК</small></span>
+      <select id="analysis-session" class="select">${options.join('')}</select>
+    </label>`;
+    const select = $('#analysis-session');
+    select.value = state.current || '';
+    select.addEventListener('change', () => selectSession(select.value));
+    if (hadFocus && !panel.hidden) select.focus({preventScroll:true});
   }
   function updateExports() {
     ['html','json','csv'].forEach(format => { $(`#export-${format}`).href = `/api/lab/analysis/${encodeURIComponent(state.current || '')}/export?format=${format}`; });
@@ -152,13 +171,29 @@
   function nav(view, refreshList = true) {
     if (!titles[view]) view = 'overview';
     state.view = view;
-    const [title, subtitle, short] = titles[view];
-    $('#page-title').innerHTML = `${esc(title)}<span class="title-dot">.</span>`;
+    const [title, subtitle] = titles[view];
+    document.title = `${title} · NeuroScope`;
+    $('#page-title').textContent = title;
     $('#page-subtitle').textContent = subtitle;
-    $('#breadcrumb-current').textContent = short;
-    $$('.nav-item[data-view]').forEach(a=>{const active=a.dataset.view===view;a.classList.toggle('active',active);if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
-    $('#session-selector').hidden = ['knowledge','protocol','device','live','sessions','experiments','timed-protocol','segment','history'].includes(view);
-    updateExports(); closeMenu(); render({refreshList});
+    const section = view === 'timed-protocol' ? 'experiments' : view;
+    for (const link of $$('.nav-item[data-view]')) {
+      const active = link.dataset.view === section;
+      link.classList.toggle('active', active);
+      if (active) {
+        link.setAttribute('aria-current', view === section ? 'page' : 'location');
+        $('#breadcrumb-current').textContent = link.closest('nav').querySelector('h2').textContent;
+      } else {
+        link.removeAttribute('aria-current');
+      }
+    }
+    $('#session-selector').hidden = !state.sessions.length || !['overview', 'signals'].includes(view);
+    updateExports();
+    setMenuOpen(false);
+    if (refreshList) {
+      $('#page-title').focus({preventScroll: true});
+      window.scrollTo({top: 0, behavior: 'instant'});
+    }
+    render({refreshList});
   }
   async function selectSession(id) {
     state.current = id; state.context = null; renderSessions();
@@ -230,7 +265,22 @@
         await loadComparison(renderId);
         return;
       }
-      if (!state.current) { $('#content').innerHTML=empty('Записей пока нет','Подключите устройство в живом мониторе и начните запись. Сессии появятся здесь после сохранения.','folder'); return; }
+      if (!state.current) {
+        $('#content').innerHTML = `<div class="archive-start">
+          <section class="card archive-welcome">
+            <span class="start-icon">${icon('folder')}</span>
+            <h2>Записей пока нет</h2>
+            <p>Подключите повязку и проверьте контакт электродов. После остановки записи здесь появятся сигналы, доля пригодных окон и результаты анализа.</p>
+            <a class="button primary" href="#device">Подключить повязку ${icon('arrow')}</a>
+          </section>
+          <section class="card archive-prepare">
+            <h2>Подготовка к записи</h2>
+            <a href="#experiments">${icon('checklist')}<span><strong>Выбрать эксперимент</strong><small>Условия и порядок выполнения</small></span>${icon('arrow')}</a>
+            <a href="#protocol">${icon('book')}<span><strong>Открыть протокол</strong><small>Посадка повязки и метки событий</small></span>${icon('arrow')}</a>
+          </section>
+        </div>`;
+        return;
+      }
       const session = state.sessions.find(item => item.id === state.current);
       if (session?.active) {
         $('#content').innerHTML = empty('Сессия ещё записывается','После остановки записи NeuroScope автоматически откроет результаты при следующем просмотре.','clock')
@@ -257,12 +307,23 @@
   }
 
   function headlineMetrics(a) {
-    const eeg=a.eeg||{}, cs=arr(eeg.channels), p=a.ppg||{}, c=cs[0]||{}, q=statusInfo(a.quality?.status);
-    const signalDuration = num(c.sample_count)!==null&&num(eeg.sample_rate_hz)!==null ? c.sample_count/eeg.sample_rate_hz : null;
-    const peak = num(c.alpha_peak_hz), peak2 = num(cs[1]?.alpha_peak_hz);
-    const alphaValue = !eeg.available?'—':peak!==null?fmt(peak,2):'Не выделен';
-    const alphaNote = cs[1] ? `${c.name||'Канал 1'}${peak2!==null?` · ${cs[1].name}: ${fmt(peak2,2)} Гц`:` · ${cs[1].name}: пик не выделен`}` : (eeg.available?'Кандидат в диапазоне 8–13 Гц':'В записи отсутствует ЭЭГ');
-    return `<div class="metric-grid">${metric('Длительность ЭЭГ',eeg.available?duration(signalDuration):'Нет ЭЭГ','',eeg.available?`${integer(eeg.sample_rate_hz)} Гц · ${cs.length} биполярных канала`:'Доступны другие потоки','clock',tag(eeg.available?'По количеству отсчётов':'Не измерено',eeg.available?'blue':''))}${metric('Окна без флагов',fmt(a.quality?.usable_eeg_pct,1),num(a.quality?.usable_eeg_pct)!==null?'%':'','Перекрывающиеся окна 4 с, шаг 2 с','shield',tag(q.label,q.cls))}${metric('Альфа-пик · кандидат',alphaValue,peak!==null?'Гц':'',alphaNote,'wave',tag('Не показатель интеллекта',''))}${metric('Частота пульса',fmt(p.pulse_rate_bpm,1),num(p.pulse_rate_bpm)!==null?'уд/мин':'',p.available?'Медиана принятых окон PPG':'Оптический сигнал отсутствует','heart',tag(num(p.pulse_rate_bpm)!==null?'Проверяйте качество PPG':'Оценка недоступна',num(p.pulse_rate_bpm)!==null?'blue':''))}</div>`;
+    const eeg = a.eeg || {};
+    const channels = arr(eeg.channels);
+    const sampleCount = num(channels[0]?.sample_count);
+    const rate = num(eeg.sample_rate_hz);
+    const signalDuration = sampleCount !== null && rate > 0 ? duration(sampleCount / rate) : '—';
+    const firstPeak = channels.find(channel => num(channel.alpha_peak_hz) !== null);
+    const peaks = channels.filter(channel => num(channel.alpha_peak_hz) !== null);
+    const coverage = num(a.quality?.usable_eeg_pct);
+    const pulse = num(a.ppg?.pulse_rate_bpm);
+    return `<div class="metric-grid">
+      ${metric('Длительность ЭЭГ', signalDuration, '', eeg.available ? `По отсчётам · ${fmt(rate,0)} Гц` : 'ЭЭГ отсутствует', 'clock')}
+      ${metric('Окна без флагов', fmt(coverage), coverage === null ? '' : '%', 'Среднее по каналам · окна по 4 с', 'shield')}
+      ${metric('Кандидат в альфа-пик', firstPeak ? fmt(firstPeak.alpha_peak_hz,2) : '—', firstPeak ? 'Гц' : '',
+        firstPeak ? [firstPeak.name, ...peaks.slice(1).map(c => `${c.name} · ${fmt(c.alpha_peak_hz,2)} Гц`)].join(' / ') : 'Нет выделенного пика в 8–13 Гц', 'wave')}
+      ${metric('Частота пульса', fmt(pulse), pulse === null ? '' : 'уд/мин',
+        pulse !== null ? 'Медиана по принятым окнам ФПГ' : 'Недостаточно данных ФПГ для оценки', 'heart')}
+    </div>`;
   }
   function spectrumCard(a, id='overview-spectrum') {
     const cs=arr(a.eeg?.channels), c=cs[state.channel]||{};
@@ -328,10 +389,12 @@
       irregular_or_noisy_intervals:'нестабильные интервалы между пиками',
       low_periodicity:'слабая периодичность', large_transient:'выброс сигнала'
     };
+    const recordedStreams = [];
     const rows = Object.entries(streamNames).map(([key,name])=>{
       const stream = review.streams?.[key];
       if (!stream) return '';
       const recorded = stream.recorded ?? (num(stream.sample_count) > 0);
+      if (recorded) recordedStreams.push(name);
       const [label, tone] = stream.status==='ready' ? [readyLabels[key],'good']
         : stream.status==='limited' ? [limitedLabels[key]||'Ограниченная оценка','warning']
         : labels[stream.status] || labels.unavailable;
@@ -378,11 +441,13 @@
     for (const [key,stream] of indexBreaks) {
       evidence.push(`<li>${streamNames[key]} · ${integer(stream.index_discontinuities)} непоследовательных переходов индекса сохранённых строк.</li>`);
     }
-    return `<section class="card quick-review" aria-label="Автоматический разбор сессии">
-      ${cardHeader('Автоматический разбор','Наличие сигналов и пригодность оценок')}
+    const streams = recordedStreams.length ? recordedStreams.join(' · ') : 'Нет записанных потоков';
+    return `<details class="card quick-review review-disclosure">
+      <summary><span class="review-icon">${icon('checklist')}</span><span><strong>Состав и качество записи</strong>
+        <small>${esc(streams)}</small></span><span class="review-chevron">${icon('chevron')}</span></summary>
       <div class="review-grid">${rows}</div>
       ${evidence.length ? `<details class="details-block"><summary>Метки времени и артефакты</summary><ul>${evidence.join('')}</ul></details>` : ''}
-    </section>`;
+    </details>`;
   }
   function montageCard(a) {
     const names = arr(a.eeg?.channels).map(c=>c.name).filter(Boolean);
@@ -510,22 +575,85 @@
     $$('#protocol-checklist input').forEach(input=>input.addEventListener('change',()=>{$('#checklist-progress').textContent=`Выполнено ${$$('#protocol-checklist input:checked').length} из 6`;}));bindContent();
   }
   function bindContent() { $$('#content [data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();location.hash=a.dataset.view;})); }
-  function closeMenu() { $('#sidebar').classList.remove('open');$('#menu-button').setAttribute('aria-expanded','false'); }
+  const mobileMenu = window.matchMedia('(max-width: 800px)');
+
+  function setMenuOpen(open, restoreFocus = false) {
+    const sidebar = $('#sidebar');
+    const wasOpen = sidebar.classList.contains('open');
+    open = open && mobileMenu.matches;
+    sidebar.classList.toggle('open', open);
+    document.body.classList.toggle('menu-open', open);
+    $('#menu-button').setAttribute('aria-expanded', String(open));
+    sidebar.inert = mobileMenu.matches && !open;
+    for (const area of $$('.main-shell, .checkpoint-widget, .skip-link')) area.inert = open;
+    if (open) {
+      sidebar.setAttribute('role', 'dialog');
+      sidebar.setAttribute('aria-modal', 'true');
+      $('#menu-close').focus();
+    } else {
+      sidebar.removeAttribute('role');
+      sidebar.removeAttribute('aria-modal');
+      if (wasOpen && restoreFocus) $('#menu-button').focus();
+    }
+  }
+
+  function bindNavigation() {
+    setMenuOpen(false);
+    $('#menu-button').addEventListener('click', () => setMenuOpen(true));
+    $('#menu-close').addEventListener('click', () => setMenuOpen(false, true));
+    $('#sidebar-scrim').addEventListener('click', () => setMenuOpen(false, true));
+    mobileMenu.addEventListener('change', () => {
+      const focusWasInside = $('#sidebar').contains(document.activeElement);
+      setMenuOpen(false);
+      if (mobileMenu.matches && focusWasInside) $('#menu-button').focus();
+    });
+    $('.skip-link').addEventListener('click', event => {
+      event.preventDefault();
+      $('#content').focus();
+    });
+    for (const link of $$('#sidebar [data-view], .top-help[data-view]')) {
+      link.addEventListener('click', event => {
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        if (location.hash.slice(1) === link.dataset.view) {
+          event.preventDefault();
+          nav(link.dataset.view);
+        }
+      });
+    }
+    window.addEventListener('hashchange', () => {
+      const view = location.hash.slice(1);
+      if (Object.hasOwn(titles, view)) nav(view);
+      else if (!view) nav('overview');
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false, true);
+        const menu = $('#export-menu');
+        if (menu.open && menu.contains(document.activeElement)) menu.querySelector('summary').focus();
+        menu.open = false;
+      } else if (event.key === 'Tab' && $('#sidebar').classList.contains('open')) {
+        const controls = $$('#sidebar a[href], #sidebar button').filter(el => el.getClientRects().length);
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    });
+  }
 
   async function start() {
     if (preview) {
-      $('.sidebar-foot').innerHTML='<span class="local-dot"></span><div>Без подключения к сети<small>Результаты встроены в этот файл</small></div>';
+      $('.sidebar-foot span').textContent = 'Автономный отчёт';
       $('#refresh-button').hidden=true;
       $('.export-dropdown a[href="/api/lab/report"]').href='docs/NeuroScope_Research_Report.pdf';
-      $('.brand').href='#overview';
     }
     window.NeuroCheckpoints?.init({api, preview:!!preview});
-    window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions});
-    $$('.nav-item[data-view], .top-help[data-view]').forEach(a=>a.addEventListener('click',e=>{e.preventDefault();if(location.hash.slice(1)===a.dataset.view)nav(a.dataset.view);else location.hash=a.dataset.view;}));
-    window.addEventListener('hashchange',()=>{if(titles[location.hash.slice(1)])nav(location.hash.slice(1));});
-    $('#menu-button').addEventListener('click',()=>{const open=$('#sidebar').classList.toggle('open');$('#menu-button').setAttribute('aria-expanded',String(open));});
-    $('#sidebar-scrim').addEventListener('click',closeMenu);
-    document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeMenu();$('#export-menu').open=false;}});
+    window.NeuroLive?.init({api, notify, preview:!!preview, selectSession, reloadSessions, dateLabel, duration});
+    bindNavigation();
     document.addEventListener('click',e=>{if(!$('#export-menu').contains(e.target))$('#export-menu').open=false;});
     $('#refresh-button').addEventListener('click',async()=>{
       if(!state.current)return;const analysisId=state.current;const button=$('#refresh-button');button.disabled=true;button.innerHTML=`${icon('refresh')}<span>Анализируем…</span>`;notify('Пересчитываем показатели из исходных файлов. Это может занять некоторое время.');
@@ -537,7 +665,7 @@
       let saved=null;try{saved=localStorage.getItem('neuroscope.session');}catch(_){}
       const query=new URLSearchParams(location.search).get('session');
       state.current=(state.sessions.find(s=>s.id===(query||saved))||state.sessions.find(s=>!s.active)||state.sessions[0])?.id||null;
-      state.view=titles[location.hash.slice(1)]?location.hash.slice(1):'overview';renderSessions();nav(state.view,false);
+      state.view=Object.hasOwn(titles,location.hash.slice(1))?location.hash.slice(1):'overview';renderSessions();nav(state.view,false);
     } catch(error) {
       $('#content').innerHTML=`<div class="error-panel"><h2>Список записей недоступен</h2><p>${esc(error.message)}</p><button class="button primary" id="initial-retry">Повторить загрузку</button></div>`;
       $('#initial-retry')?.addEventListener('click',()=>location.reload());

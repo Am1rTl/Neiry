@@ -327,6 +327,7 @@ PPG_WINDOW = settings.PPG_WINDOW
 MEMS_WINDOW = settings.MEMS_WINDOW
 RES_WINDOW = settings.RES_WINDOW
 HIST_LEN = settings.HIST_LEN
+EEG_ARTIFACT_DISPLAY_CHANNELS = 16
 
 
 class State:
@@ -378,6 +379,7 @@ class State:
         self.firmware_version: str | None = None
         self.recording_error: str | None = None
         self.latest_resistances: list[dict[str, Any]] = []
+        self.latest_eeg_artifacts: dict[str, Any] | None = None
         self.contact_tracker = ElectrodeContact(ContactOptions(
             ready_ohm=settings.CONTACT_READY_OHM,
             preferred_ohm=settings.SKIN_WARN_OHM,
@@ -440,6 +442,21 @@ def _contact_locked() -> dict[str, Any]:
 def _fresh_locked(name: str, max_age: float, now: float) -> bool:
     stamp = S.metrics_updated_at.get(name)
     return stamp is not None and 0 <= now - stamp <= max_age
+
+
+def _eeg_artifacts_locked() -> dict[str, Any]:
+    """Report delivery of the optional SDK event independently of EEG contact."""
+    if not S._device_ready or S.status != "connected":
+        state = "disconnected"
+    elif not S.stream_support.get("eeg_artifacts"):
+        state = "unsupported"
+    elif S.latest_eeg_artifacts is None:
+        state = "waiting"
+    else:
+        age = time.monotonic() - S.metrics_updated_at["eeg_artifacts"]
+        return {**S.latest_eeg_artifacts, "age_s": round(age, 2),
+                "state": "fresh" if age <= settings.METRIC_STALE_SECONDS else "stale"}
+    return {"state": state, "age_s": None, "channel_count": None, "channels": []}
 
 
 def _stream_freshness_limit(name: str) -> float:
@@ -710,6 +727,7 @@ def on_eeg(device, eeg) -> None:
 
 
 def _subscribe_eeg_artifacts(device, lib):
+    epoch = S.stream_epoch
     pointer_type = ctypes.POINTER(ctypes.c_int)
     callback_type = ctypes.CFUNCTYPE(None, pointer_type, pointer_type)
     subscribe = lib.clCDevice_SetOnEEGArtifactsEvent
@@ -735,16 +753,30 @@ def _subscribe_eeg_artifacts(device, lib):
 
     @callback_type
     def on_artifacts(_device, artifacts):
-        rec = RECORDER
-        if not artifacts or not rec or not rec.active:
+        if not artifacts:
             return
         try:
+            with STATE_LOCK:
+                if S.stream_epoch != epoch:
+                    return
+                rec = RECORDER
+            recording = rec is not None and rec.active
+            total = read(count, artifacts)
+            if total <= 0:
+                return
+            # Archive the full native event. A live-only view has a bounded cost.
+            display_count = min(total, EEG_ARTIFACT_DISPLAY_CHANNELS)
             channels = []
-            for i in range(read(count, artifacts)):
+            for i in range(total if recording else display_count):
                 value = read(quality, artifacts, i)
                 channels.append({"index": i, "flags": read(flags, artifacts, i),
                                  "quality": value if math.isfinite(value) else None})
-            if channels:
+            with STATE_LOCK:
+                if S.stream_epoch != epoch:
+                    return
+                S.latest_eeg_artifacts = {"channel_count": total, "channels": channels[:display_count]}
+                _stamp_metric("eeg_artifacts")
+            if recording:
                 rec.record_metric("eeg_artifacts", {
                     "sdk_timestamp_ms": read(timestamp, artifacts),
                     "channels": channels,
@@ -1045,6 +1077,7 @@ def _clear_live_connection(reason: str, status: str = "idle", *, preserve_device
         S.latest_calibration = None
         S.latest_emotions = S.latest_cardio = S.latest_phy = S.latest_prod = None
         S.latest_resistances = []
+        S.latest_eeg_artifacts = None
         S.res_channel_names = []
         S.contact_tracker.reset()
         S.metrics_updated_at.clear()
@@ -1107,14 +1140,15 @@ def _prepare_device(device, lib) -> tuple[list[Any], dict, dict]:
     device.set_on_eeg(on_eeg)
     device.set_on_resistances(on_resistances)
     handles: list[Any] = []
+    support = {"eeg": True, "eeg_artifacts": False}
     try:
         handles.append(_subscribe_eeg_artifacts(device, lib))
+        support["eeg_artifacts"] = True
     except AttributeError:
         log.info("[capsule] EEG artifact stream unavailable in this SDK")
     except Exception:
         log.exception("[capsule] cannot subscribe to EEG artifacts")
     baseline_handlers = {}
-    support = {"eeg": True}
     for label, factory, subscriptions in (
         ("Emotions", Emotions, (("emotions", "set_on_states_update", on_emotions_states),)),
         ("Cardio", Cardio, (("cardio", "set_on_indexes_update", on_cardio_indexes),
@@ -1802,6 +1836,7 @@ def _device_status_payload() -> dict[str, Any]:
             "last_device_serial": S.last_device_serial,
             "calibration_phase": S.calibration_phase if ready else "unavailable",
             "contact": (contact := _contact_locked()),
+            "eeg_artifacts": _eeg_artifacts_locked(),
             "validity": (validity := _validity_locked(contact)),
             "sensor_status": finite_json(_verified_sensor_status(S, validity, contact)),
             "calibration_available": ready and S._calibrator is not None and contact["calibration_allowed"]
@@ -2730,6 +2765,7 @@ def _build_tick_snapshot(deltas: tuple[_WSDelta, ...] | None = None) -> dict[str
             "contact": contact,
             "validity": validity,
             "replay": replay,
+            "eeg_artifacts": None if archived else _eeg_artifacts_locked(),
             "emotions": S.latest_emotions if (archived or validity["emotions"]) else None,
             "cardio": S.latest_cardio if validity["cardio"] else None,
             "phy": S.latest_phy if (archived or validity["phy"]) else None,
@@ -2861,7 +2897,9 @@ def _build_client_tick(snap: dict[str, Any], delta: _WSDelta) -> dict[str, Any]:
         "recording_error": snap["recording_error"],
         "records_dir": snap["records_dir"],
     }
-    if not delta.lean:
+    if delta.lean:
+        payload["eeg_artifacts"] = snap["eeg_artifacts"]
+    else:
         # The compatibility dashboard uses raw tails as a fallback.
         payload.update(
             cardio_history=snap["cardio_history"] if first else [],

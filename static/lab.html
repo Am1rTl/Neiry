@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#0b111b">
-  <meta name="description" content="NeuroScope: воспроизводимый анализ ЭЭГ, пульса и движения с прозрачными ограничениями.">
+  <meta name="theme-color" content="#101b25">
+  <meta name="description" content="NeuroScope — локальная лаборатория для записи и анализа ЭЭГ, пульса и движения с Neiry Headband.">
   <title>NeuroScope — лаборатория сигналов</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230b111b'/%3E%3Cpath d='M10 33h10l5-15 10 29 6-14h13' fill='none' stroke='%237ce3cb' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/lab.css">
+  <link rel="stylesheet" href="/static/device_workspace.css">
+  <link rel="stylesheet" href="/static/monitor_workspace.css">
   <link rel="stylesheet" href="/static/experiment_lab.css">
   <link rel="stylesheet" href="/static/experiment_runner.css">
   <script defer src="/static/vendor/chart.umd.min.js"></script>
@@ -47,41 +49,46 @@
   </defs></svg>
 
   <aside class="sidebar" id="sidebar" aria-label="Основная навигация">
-    <a href="/" class="brand" aria-label="NeuroScope, главная"><span class="brand-mark"><svg class="icon"><use href="#i-wave"/></svg></span><span>NeuroScope<small>ЛАБОРАТОРИЯ СИГНАЛОВ</small></span></a>
-    <div class="sidebar-label">УСТРОЙСТВО И ПОТОК</div>
-    <nav class="nav-main" aria-label="Работа с устройством">
-      <a href="#device" class="nav-item" data-view="device"><svg class="icon"><use href="#i-signal"/></svg><span>Подключение</span></a>
-      <a href="#live" class="nav-item" data-view="live"><svg class="icon"><use href="#i-wave"/></svg><span>Живой монитор</span></a>
-      <a href="#sessions" class="nav-item" data-view="sessions"><svg class="icon"><use href="#i-folder"/></svg><span>Записи и replay</span></a>
-      <a href="#experiments" class="nav-item" data-view="experiments"><svg class="icon"><use href="#i-checklist"/></svg><span>Эксперименты</span></a>
-    </nav>
-    <div class="sidebar-label">АНАЛИЗ</div>
-    <nav class="nav-main" aria-label="Анализ записей">
-      <a href="#overview" class="nav-item active" data-view="overview" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>Обзор записей</span><span class="nav-dot"></span></a>
-      <a href="#signals" class="nav-item" data-view="signals"><svg class="icon"><use href="#i-signal"/></svg><span>Сигналы и метрики</span></a>
-      <a href="#compare" class="nav-item" data-view="compare"><svg class="icon"><use href="#i-compare"/></svg><span>Сравнить сессии</span></a>
-      <a href="#segment" class="nav-item" data-view="segment"><svg class="icon"><use href="#i-wave"/></svg><span>Исследовать участок</span></a>
-      <a href="#history" class="nav-item" data-view="history"><svg class="icon"><use href="#i-grid"/></svg><span>История</span></a>
-    </nav>
-    <div class="sidebar-label">СПРАВОЧНИК</div>
-    <nav class="nav-main" aria-label="Научная база">
-      <a href="#knowledge" class="nav-item" data-view="knowledge"><svg class="icon"><use href="#i-book"/></svg><span>Как это работает</span></a>
-      <a href="#protocol" class="nav-item" data-view="protocol"><svg class="icon"><use href="#i-checklist"/></svg><span>Протокол записи</span></a>
-    </nav>
-    <div class="sidebar-foot"><span class="local-dot"></span><div>Локальный анализ<small>Обработка на этом сервере</small></div><svg class="icon"><use href="#i-shield"/></svg></div>
+    <div class="sidebar-head">
+      <a href="#overview" class="brand" data-view="overview" aria-label="NeuroScope, обзор записи"><span class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-wave"/></svg></span><span>NeuroScope</span></a>
+      <button type="button" id="menu-close" class="icon-button mobile-menu" aria-label="Закрыть меню"><svg class="icon" aria-hidden="true"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="sidebar-sections">
+      <nav class="nav-main" aria-labelledby="nav-device-title">
+        <h2 class="sidebar-label" id="nav-device-title">Работа с повязкой</h2>
+        <a href="#device" class="nav-item" data-view="device"><svg class="icon"><use href="#i-signal"/></svg><span>Подключение</span></a>
+        <a href="#live" class="nav-item" data-view="live"><svg class="icon"><use href="#i-wave"/></svg><span>Живой монитор</span></a>
+        <a href="#experiments" class="nav-item" data-view="experiments"><svg class="icon"><use href="#i-checklist"/></svg><span>Эксперименты</span></a>
+      </nav>
+      <nav class="nav-main" aria-labelledby="nav-archive-title">
+        <h2 class="sidebar-label" id="nav-archive-title">Архив и анализ</h2>
+        <a href="#sessions" class="nav-item" data-view="sessions"><svg class="icon"><use href="#i-folder"/></svg><span>Архив записей</span></a>
+        <a href="#overview" class="nav-item active" data-view="overview" aria-current="page"><svg class="icon"><use href="#i-grid"/></svg><span>Обзор записи</span></a>
+        <a href="#signals" class="nav-item" data-view="signals"><svg class="icon"><use href="#i-signal"/></svg><span>Сигналы и метрики</span></a>
+        <a href="#segment" class="nav-item" data-view="segment"><svg class="icon"><use href="#i-wave"/></svg><span>Анализ фрагмента</span></a>
+        <a href="#compare" class="nav-item" data-view="compare"><svg class="icon"><use href="#i-compare"/></svg><span>Сравнение записей</span></a>
+        <a href="#history" class="nav-item" data-view="history"><svg class="icon"><use href="#i-clock"/></svg><span>История исследований</span></a>
+      </nav>
+      <nav class="nav-main" aria-labelledby="nav-help-title">
+        <h2 class="sidebar-label" id="nav-help-title">Справка</h2>
+        <a href="#knowledge" class="nav-item" data-view="knowledge"><svg class="icon"><use href="#i-book"/></svg><span>Как это работает</span></a>
+        <a href="#protocol" class="nav-item" data-view="protocol"><svg class="icon"><use href="#i-checklist"/></svg><span>Протокол записи</span></a>
+      </nav>
+    </div>
+    <div class="sidebar-foot"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span>Локальная обработка</span></div>
   </aside>
-  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+  <div class="sidebar-scrim" id="sidebar-scrim" aria-hidden="true"></div>
 
   <main class="main-shell">
     <header class="topbar">
       <button class="icon-button mobile-menu" id="menu-button" aria-label="Открыть меню" aria-controls="sidebar" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button>
-      <div class="breadcrumbs"><span>Рабочее пространство</span><span>/</span><strong id="breadcrumb-current">Обзор записей</strong></div>
+      <div class="breadcrumbs"><span>NeuroScope</span><span aria-hidden="true">/</span><strong id="breadcrumb-current">Архив и анализ</strong></div>
       <div class="topbar-right"><a id="device-top-status" class="device-status-top" href="#device" title="Открыть подключение устройства"><span class="status-pin neutral"></span>Проверка устройства…</a><a class="top-help" href="#knowledge" data-view="knowledge" aria-label="Справка по анализу"><svg class="icon"><use href="#i-info"/></svg></a></div>
     </header>
 
     <div class="workspace">
       <section class="page-heading">
-        <div><div class="eyebrow" id="page-eyebrow">NEIRY / ИССЛЕДОВАТЕЛЬСКИЙ АНАЛИЗ</div><h1 id="page-title">Лаборатория сигналов<span class="title-dot">.</span></h1><p id="page-subtitle">Отдельные измерения. Общая картина. Проверяемые выводы.</p></div>
+        <div><h1 id="page-title" tabindex="-1">Обзор записи</h1><p id="page-subtitle">Качество сигнала и основные показатели выбранной сессии.</p></div>
         <div class="heading-actions" id="analysis-actions">
           <button class="button subtle" id="refresh-button"><svg class="icon"><use href="#i-refresh"/></svg><span>Пересчитать</span></button>
           <details class="export-menu" id="export-menu"><summary class="button primary"><svg class="icon"><use href="#i-download"/></svg>Экспорт<svg class="icon small"><use href="#i-chevron"/></svg></summary><div class="export-dropdown"><a href="/api/lab/report" target="_blank" rel="noopener">Полное исследование PDF <span>Все записи и научная база</span></a><a id="export-html" href="#">Отчёт HTML <span>Для чтения и печати</span></a><a id="export-json" href="#" download>Данные JSON <span>Полный результат анализа</span></a><a id="export-csv" href="#" download>Метрики CSV <span>Таблица показателей</span></a></div></details>
