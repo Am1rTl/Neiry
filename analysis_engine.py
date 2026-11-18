@@ -25,7 +25,7 @@ from cardio_quality import sdk_cardio_issues
 from checkpoints import LABEL_EVENT, checkpoint_index
 from paired_eeg import analyze_pair
 
-ANALYSIS_VERSION = "2.4.1"
+ANALYSIS_VERSION = "2.5.0"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -208,6 +208,31 @@ def _excerpt(values: np.ndarray, fs: float, start: int = 0, seconds: float = 4.)
             "selection": "Первое прошедшее скрининг окно; если таких окон нет — начало записи. Исходные значения без сглаживания."}
 
 
+def _band_excerpt(values: np.ndarray, indices: np.ndarray, fs: float, start: int, length: int) -> dict:
+    """Filter a short waveform around the excerpt, keeping its original timestamps."""
+    if length < fs:
+        return {}
+    padding = round(3 * fs)
+    end = start + length
+    left, right = max(0, start - padding), min(len(values), end + padding)
+    for begin, stop in ((left, right), (start, end)):
+        window = values[begin:stop]
+        sample_index = indices[begin:stop]
+        if (np.isfinite(window).all() and np.isfinite(sample_index).all()
+                and np.all(np.diff(sample_index) == 1)):
+            result = {}
+            for name, (low, high) in BANDS.items():
+                if high >= fs / 2:
+                    continue
+                sos = signal.butter(4, (low, high), btype="bandpass", fs=fs, output="sos")
+                padlen = 3 * (2 * len(sos) + 1)
+                if len(window) > padlen:
+                    filtered = signal.sosfiltfilt(sos, window, padlen=padlen)
+                    result[name] = filtered[start - begin:end - begin].tolist()
+            return result
+    return {}
+
+
 def analyze_motion(s: dict, config: AnalysisConfig) -> dict:
     if len(s["ts"])<2 or s["values"].shape[1]<6 or s["rate"]<=0:
         return {"available": False, "summary": {}, "timeline": []}
@@ -337,6 +362,10 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
                       unique_levels=int(len(np.unique(x[np.isfinite(x)]))), median_window_unique_levels=median_levels,
                       quantization_concern=coarse, rail_0p8_samples=rail_count,
                       rail_0p8_pct=100*rail_count/len(x),total_power_1_45=power_total)
+        excerpt = _excerpt(x, fs, typical_start, config.epoch_s)
+        excerpt["selection"] = ("Окно с наиболее близким к медиане RMS среди прошедших скрининг. "
+                                "Если таких нет — начало записи. Исходные значения без сглаживания.")
+        band_waveforms = _band_excerpt(x, s["index"], fs, typical_start, len(excerpt["values"])) if n_good else {}
         channels.append({"name":name,"sample_count":len(x),"stats":chstat,
              "quality":{"total_windows":total,"usable_windows":n_good,
                         "usable_pct":100*n_good/total if total else 0,
@@ -354,7 +383,7 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
                      "raw_power":raw[freqmask].tolist(),"units":(unit_label or "SDK")+"²/Hz"},
              "timeline":timeline,
              "spectral_interpretability":"severely_limited" if (coarse or (linepower/widepower if widepower and widepower>0 else 0)>.5 or not n_good) else "limited",
-             "excerpt":dict(_excerpt(x,fs,typical_start,config.epoch_s), selection="Окно с наиболее близким к медиане RMS среди прошедших скрининг. Если таких нет — начало записи. Исходные значения без сглаживания.")})
+             "excerpt":excerpt, "band_waveforms":band_waveforms})
     return sanitize({"available":True,"sample_rate_hz":fs,"units":units,"unit_source":"meta.units.eeg (declared, not independently calibrated)" if unit_label else "unverified", "band_power_units":(unit_label or "SDK")+"²", "channels":channels,
                      "band_definitions_hz":BANDS,"spectral_denominator":"1–45 Гц",
                      "spectral_interpretability":"severely_limited" if any(c.get("spectral_interpretability")=="severely_limited" for c in channels) else "limited",
@@ -844,6 +873,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
     methods={
        "eeg_spectrum":"Односторонняя PSD scipy.signal.periodogram, periodic Hann, linear detrend; окна 4 с, шаг 2 с, среднее. Для агрегатного screened-спектра требуется ≥15 окон; иначе он и полосовые метрики null, без подстановки raw. SciPy правильно удваивает положительные частоты, кроме DC/Nyquist. Частотный шаг 0.25 Гц при 250 Гц.",
        "band_power":"Интеграл PSD с интерполяцией границ: δ 1–4, θ 4–8, α 8–13, β 13–30, low-γ 30–45 Гц. Относительная мощность нормирована на сумму этих полос (1–45 Гц); пределы условны.",
+       "band_waveforms":"Фрагмент прошедшей отбор ЭЭГ после двунаправленной полосовой фильтрации Баттерворта (порядок 4). Отображается отдельно от расчёта спектральной мощности.",
        "quality":"Отбор окон по NaN/Infinity, flatline, повторяющимся ±0.8 (legacy observed rail), экстремальному RMS/производной (max(median+6×1.4826×MAD,8×median)), выраженному движению (gyro RMS > max(median+6×1.4826×MAD,3×median)) и доминирующей компоненте 48–52 Гц (>50% мощности 1–100 Гц при Nyquist≥100 Гц). Последний порог — инженерная эвристика, не опубликованная клиническая норма. Пороговые эвристики не валидированы клинически; прошедшие окна всё ещё могут содержать артефакты.",
        "alpha":"Локальный максимум строго внутри 8–13 Гц, log-PSD prominence≥3 dB и ≥15 прошедших окон. Если >50% соседних отсчётов одинаковы или медиана уровней в окне <20, alpha_peak_hz скрыт, численный кандидат только в alpha_peak. Это эвристика ограничения квантования. Отдельное моделирование апериодического фона и реактивность не выполнены.",
        "entropy":"Shannon entropy распределения мощности 1–45 Гц, нормированная на log(число частотных отсчётов); зависит от параметров PSD, шума и фильтрации, не мера интеллекта.",
