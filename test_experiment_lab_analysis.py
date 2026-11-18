@@ -10,7 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 from experiment_lab import MAX_IDLE_S, ExperimentLab
-from experiment_lab_analysis import summarize_run
+from experiment_lab_analysis import _window_power, summarize_run
 from recording import SessionRecorder
 
 
@@ -59,6 +59,44 @@ class ExperimentAnalysisTests(unittest.TestCase):
                 self.assertEqual(lead["paired_blocks"], 1)
                 self.assertAlmostEqual(lead["closed_open_ratio"], 4, delta=.02)
             json.dumps(analysis, allow_nan=False)
+
+    def test_alpha_ratio_rejects_a_single_contaminated_lead(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            recorder = SessionRecorder(Path(temporary), channel_names=["O1-T3", "O2-T4"],
+                                       sample_rates={"eeg": RATE})
+            path = recorder.start()
+            t = np.arange(60 * RATE) / RATE
+            closed = t >= 30
+            clean = np.where(closed, 2., 1.) * np.cos(2 * np.pi * 10 * t)
+            right = clean + closed * 8 * np.cos(2 * np.pi * 87.5 * t)
+            recorder.record_eeg(np.c_[clean, right], UNIX_TIME + t)
+            recorder.close()
+            run = {"kind": "alpha", "mode": "live", "status": "completed",
+                   "events": phase("eyes_open", 0, 0, 30) + phase("eyes_closed", 1, 30, 60)}
+            result = summarize_run(run, path)["alpha"]
+            left, right = result["channels"]
+            self.assertAlmostEqual(left["closed_open_ratio"], 4., delta=.02)
+            self.assertIsNone(right["closed_open_ratio"])
+            self.assertEqual(right["paired_blocks"], 0)
+            closed_right = result["phases"][1]["channels"][1]
+            line = closed_right["high_frequency_line"]
+            self.assertEqual(line["flagged_windows"], closed_right["total_windows"])
+            self.assertEqual(line["tested_windows"], closed_right["total_windows"])
+            self.assertEqual(line["strongest_flagged_peak_hz"], 87.5)
+            self.assertEqual(closed_right["rejected"]["dominant_high_frequency_line"], line["flagged_windows"])
+
+    def test_high_frequency_line_requires_coverage_and_concentrated_power(self):
+        t = np.arange(1000) / RATE
+        distributed = sum(np.sin(2 * np.pi * hz * t) for hz in [70.5, 75.5, 80, 85.5, 90])
+        window = _window_power(distributed, RATE)
+        self.assertLess(window["high_frequency_fraction"], .5)
+        self.assertNotIn("dominant_high_frequency_line", window["reasons"])
+        for rate, values in [(128, np.sin(2 * np.pi * 10 * np.arange(512) / 128)),
+                             (RATE, np.zeros(1000)), (RATE, np.full(1000, np.nan))]:
+            with self.subTest(rate=rate, first=values[0]):
+                window = _window_power(values, rate)
+                self.assertNotIn("high_frequency_fraction", window)
+                self.assertNotIn("dominant_high_frequency_line", window["reasons"])
 
     def test_long_alpha_blocks_use_sdk_continuity_but_keep_the_host_epoch(self):
         with tempfile.TemporaryDirectory() as temporary:

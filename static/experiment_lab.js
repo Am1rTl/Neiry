@@ -248,15 +248,50 @@
   const phaseName = key => ({eyes_open:'Открытые глаза',eyes_closed:'Закрытые глаза',visual_task:'Зрительное задание',baseline:'Исходный блок',calibration:'Калибровка',live:'Сигнал в реальном времени',control:'Контрольная запись',transfer:'Тест без связи',followup:'Отложенный тест'}[key]||key);
   const alphaOrderLabel = settings => settings?.alpha_order==='counterbalanced' ? 'Сбалансированный порядок' : 'Фиксированный порядок';
   const bandLabel = band => Array.isArray(band) && band.length===2 ? `${fmt(band[0])}–${fmt(band[1])} Гц` : '—';
+  function highFrequencyCheck(line) {
+    if (!line?.tested_windows) return 'Нет оценки';
+    const count = `${line.flagged_windows} / ${line.tested_windows}`;
+    return line.flagged_windows ? `${count} · пик ${fmt(line.strongest_flagged_peak_hz, 2)} Гц` : count;
+  }
+  function excludedWindows(rejected) {
+    const labels = {
+      host_timestamp_gap:'время доставки', sample_index_gap:'индексы отсчётов',
+      sdk_packet_gap:'непрерывность пакетов SDK', phase_boundary:'граница фазы',
+      poor_contact:'контакт', movement:'движение', amplitude_outlier:'амплитуда',
+      line_noise:'сетевая помеха', dominant_high_frequency_line:'узкая ВЧ-компонента',
+      flatline_or_low_resolution:'плоский сигнал / низкое разрешение',
+      clipping_like:'ограничение амплитуды', sdk_rail:'предел SDK', nonfinite:'пропуск значения'
+    };
+    return Object.entries(rejected || {}).map(([reason,count])=>
+      `${labels[reason] || reason} · ${count}`).join(', ') || '—';
+  }
+  function formatAlphaPower(value) {
+    if (!finite(value)) return '—';
+    return value.toLocaleString('ru-RU', {
+      maximumSignificantDigits: 3,
+      notation: value !== 0 && Math.abs(value) < .001 ? 'scientific' : 'standard',
+    });
+  }
   function resultMetrics(a, run) {
     if (run.kind==='alpha') {
       const summary=a.alpha||{};
       const channels=summary.channels||[];
-      const phases=(summary.phases||[]).flatMap((p,i)=>(p.channels||[]).map(c=>[`${i+1} · ${phaseName(p.label)}`,c.name,fmt(c.alpha_power,3),formatValue(c.relative_alpha_pct,'%'),`${c.usable_windows ?? 0} / ${c.total_windows ?? 0}`]));
+      const phases=(summary.phases||[]).flatMap((p,i)=>(p.channels||[]).map(c=>[
+        `${i+1} · ${phaseName(p.label)}`,c.name,formatAlphaPower(c.alpha_power),formatValue(c.relative_alpha_pct,'%'),
+        `${c.usable_windows ?? 0} / ${c.total_windows ?? 0}`,highFrequencyCheck(c.high_frequency_line), excludedWindows(c.rejected)
+      ]));
+      const partial = (summary.interrupted_phases || []).flatMap(p=>
+        (p.channels || []).map(c=>[phaseName(p.label),c.name,
+          `${c.usable_windows} / ${c.total_windows}`,highFrequencyCheck(c.high_frequency_line),
+          excludedWindows(c.rejected)]));
+      const partialTable = partial.length
+        ? '<h3>Прерванные блоки</h3><p class="ex-copy">Эти окна показаны для проверки записи. В расчёт пар вошли только завершённые блоки.</p>'
+          + table(['Этап','Канал','Окна без флагов','Узкая компонента · исключено / проверено','Причины исключения'], partial)
+        : '';
       const starts = run.settings?.alpha_pair_first;
       const schedule = Array.isArray(starts) ? ` · первое состояние каждой пары: ${starts.map(phaseName).join(' / ')}` : '';
       return `<p class="ex-copy">План · ${esc(alphaOrderLabel(run.settings))}${esc(schedule)}</p>${channels.length ? `<div class="ex-metrics">${channels.map(c=>metric(c.name,formatValue(c.closed_open_ratio,'×'),`Закрытые / открытые · пар: ${c.paired_blocks ?? 0}`)).join('')}</div>` : `<p class="ex-copy">${run.mode==='demo'?'Переходы и таймер сохранены. Для расчёта альфа-мощности нужна запись ЭЭГ.':'Недостаточно пригодных пар блоков для сравнения.'}</p>`}
-        ${phases.length?table(['Блок','Канал','Мощность 8–13 Гц','Доля альфа','Окна без флагов'],phases):''}`;
+        ${phases.length?table(['Блок','Канал','Мощность 8–13 Гц, ед. записи²','Доля альфа','Окна без флагов','Узкая компонента 65–95 Гц · исключено / проверено','Причины исключения (могут совпадать)'],phases):''}${partialTable}`;
     }
     if (run.kind==='visual') {
       const rows=Object.entries(a.visual?.conditions||{}).filter(([,c])=>c.trials>0);
@@ -274,9 +309,9 @@
   function quality(a, run) {
     if (run.mode==='demo') return '<div class="ex-tip">'+icon('info')+'<p>В демо показаны работа интерфейса и ответы пользователя. Для анализа ЭЭГ используй сессию с повязкой.</p></div>';
     const q=a.quality||{};
-    return `<h3>Качество записи</h3><div class="ex-metrics ex-metrics-small">${metric('Отсчёты в анализе',fmt(q.samples,0),q.channels?.join(', ')||'')}${metric('Разрывы по времени',fmt(q.timestamp_gaps,0),'По программным меткам')}${metric('Пропуски индексов',fmt(q.missing_recorded_rows ?? q.sample_index_gaps,0))}${metric('Ошибки записи',fmt(q.write_errors,0))}${metric('Окна с движением',fmt(q.movement_windows,0),'По данным гироскопа')}</div>
+    return `<h3>Качество записи</h3><div class="ex-metrics ex-metrics-small">${metric('Отсчёты в анализе',fmt(q.samples,0),q.channels?.join(', ')||'')}${metric('Скачки времени доставки',fmt(q.timestamp_gaps,0),'По программным меткам')}${metric('Пропуски индексов',fmt(q.missing_recorded_rows ?? q.sample_index_gaps,0))}${metric('Ошибки записи',fmt(q.write_errors,0))}${metric('Окна с движением',fmt(q.movement_windows,0),'По данным гироскопа')}</div>
       ${q.warnings?.length?`<ul class="ex-warnings">${q.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
-      <p class="ex-copy">Метки экрана и ЭЭГ сопоставлены по программным часам. Аппаратная синхронизация и счётчик пакетов SDK для этого протокола недоступны.</p>`;
+      <p class="ex-copy">${esc(q.timestamp_note || 'Метки экрана и ЭЭГ сопоставлены по программным часам.')}</p>`;
   }
   async function openResult(s,id,known) {
     s.chart?.destroy();s.chart=null;s.result=null;
