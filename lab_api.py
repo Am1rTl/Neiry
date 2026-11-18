@@ -11,9 +11,12 @@ import re
 import shutil
 import stat
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -36,10 +39,16 @@ def _read_json(path: Path, default: Any = None) -> Any:
 
 def _atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(finite_json(value), ensure_ascii=False, indent=2,
-                               allow_nan=False), encoding="utf-8")
-    os.replace(temp, path)
+    temp = None
+    try:
+        with NamedTemporaryFile(dir=path.parent, prefix=path.name + ".", suffix=".tmp",
+                                mode="w", encoding="utf-8", delete=False) as handle:
+            temp = Path(handle.name)
+            json.dump(finite_json(value), handle, ensure_ascii=False, indent=2, allow_nan=False)
+        os.replace(temp, path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
 
 
 def _source_state(path: Path) -> tuple:
@@ -52,7 +61,9 @@ def _source_state(path: Path) -> tuple:
         directory = path.lstat()
         if not stat.S_ISDIR(directory.st_mode):
             raise HTTPException(409, _INPUT_CHANGED)
-        state = [fingerprint("", directory)]
+        # The set of regular input files below tracks additions/removals. A
+        # notebook or another unrelated file must not invalidate raw signals.
+        state = [("", directory.st_dev, directory.st_ino, 0, 0, 0)]
         for file in recording_source_paths(path):
             info = file.lstat()
             if stat.S_ISLNK(info.st_mode):
@@ -62,6 +73,45 @@ def _source_state(path: Path) -> tuple:
         return tuple(state)
     except FileNotFoundError as exc:
         raise HTTPException(409, _INPUT_CHANGED) from exc
+
+
+def _report_state(path: Path) -> tuple | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise HTTPException(409, "Файл отчёта должен быть обычным файлом")
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+@dataclass(frozen=True)
+class VerifiedReport:
+    sources: tuple
+    report: tuple
+    revision: str
+    summary: dict
+    history: dict
+
+    @classmethod
+    def from_analysis(cls, sources: tuple, report: tuple, result: dict) -> VerifiedReport:
+        session = result["session"]
+        eeg = result["eeg"]
+        channels = eeg["channels"]
+        quality = result["quality"]
+        return cls(sources, report, result["analysis_revision"], {
+            "duration_s": session["duration_s"],
+            "wall_duration_s": session["wall_duration_s"],
+            "eeg_available": eeg["available"],
+            "quality_status": quality["status"],
+            "usable_eeg_pct": quality["usable_eeg_pct"],
+            "summary": quality.get("summary", ""),
+        }, {
+            "alpha_peak_hz": channels[0].get("alpha_peak_hz") if channels else None,
+            "pulse_rate_bpm": result["ppg"].get("pulse_rate_bpm"),
+            "channel_labels": [c.get("name") for c in channels],
+            "sample_rate_hz": eeg.get("sample_rate_hz"),
+        })
 
 
 class SessionContext(BaseModel):
@@ -79,7 +129,7 @@ class AnalysisStore:
         self.active = active
         self._locks: dict[str, threading.Lock] = {}
         self._guard = threading.Lock()
-        self._verified: dict[str, tuple] = {}
+        self._verified: dict[str, VerifiedReport] = {}
 
     def session(self, ident: str) -> Path:
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,180}", ident):
@@ -127,25 +177,30 @@ class AnalysisStore:
         try:
             path = self.session(ident)
             before = _source_state(path)
-            if self._verified.get(ident) != before:
+            report_path = self.reports / f"{ident}.json"
+            verified = self._verified.get(ident)
+            if not verified or verified.sources != before or verified.report != _report_state(report_path):
                 return None
-            cached = _read_json(self.reports / f"{ident}.json")
-            if not cached or cached.get("analysis_version") != ANALYSIS_VERSION:
+            cached = _read_json(report_path)
+            if (not isinstance(cached, dict) or cached.get("analysis_version") != ANALYSIS_VERSION
+                    or cached.get("analysis_revision") != verified.revision):
+                return None
+            if _report_state(report_path) != verified.report:
                 return None
             self._require_unchanged(ident, path, before)
             return {**cached, "context": self.context(ident)}
         finally:
             lock.release()
 
-    async def request(self, ident: str, force: bool = False) -> dict:
-        if not force:
+    async def request(self, ident: str, force: bool = False, verify_hashes: bool = False) -> dict:
+        if not force and not verify_hashes:
             cached = await run_in_threadpool(self._verified_report, ident)
             if cached is not None:
                 return cached
-        return await asyncio.get_running_loop().run_in_executor(_ARCHIVE_WORKER, self.get, ident, force)
+        return await asyncio.get_running_loop().run_in_executor(_ARCHIVE_WORKER, self.get, ident, force, verify_hashes)
 
-    def get(self, ident: str, force: bool = False) -> dict:
-        from analysis_engine import analyze_session, ANALYSIS_VERSION, recording_source_signatures
+    def get(self, ident: str, force: bool = False, verify_hashes: bool = False) -> dict:
+        from analysis_engine import AnalysisConfig, analyze_session, ANALYSIS_VERSION, recording_source_signatures
 
         with self._lock(ident):
             path = self.session(ident)
@@ -153,9 +208,15 @@ class AnalysisStore:
             report_path = self.reports / f"{ident}.json"
             cache_path = self.reports / "cache" / f"{ident}.json"
             before = _source_state(path)
-            cached = None if force else _read_json(report_path)
-            valid_version = bool(cached and cached.get("analysis_version") == ANALYSIS_VERSION)
-            if valid_version and self._verified.get(ident) == before:
+            disk_state = _report_state(report_path)
+            cached = None if force or disk_state is None else _read_json(report_path)
+            if not isinstance(cached, dict):
+                cached = {}
+            if disk_state != _report_state(report_path):
+                raise HTTPException(409, _INPUT_CHANGED)
+            verified = self._verified.get(ident)
+            if (not verify_hashes and verified and verified.sources == before and verified.report == disk_state
+                    and cached.get("analysis_revision") == verified.revision):
                 result = cached
             else:
                 try:
@@ -163,8 +224,19 @@ class AnalysisStore:
                 except FileNotFoundError as exc:
                     raise HTTPException(409, _INPUT_CHANGED) from exc
                 self._require_unchanged(ident, path, before)
-                stamp = _read_json(cache_path, {}) if valid_version else {}
-                if stamp.get("inputs") == source:
+                # Bind the actual report to the raw bytes. A separately written
+                # cache manifest can outlive or disagree with a replaced report.
+                files = [{"name": name, "size_bytes": sig["bytes"], "sha256": sig["sha256"]}
+                         for name, sig in sorted(source.items())]
+                stamp = _read_json(cache_path)
+                revision = cached.get("analysis_revision")
+                if (isinstance(revision, str) and revision
+                        and isinstance(stamp, dict) and stamp.get("report_revision") == revision
+                        and stamp.get("analysis_version") == ANALYSIS_VERSION and stamp.get("inputs") == source
+                        and cached.get("analysis_version") == ANALYSIS_VERSION
+                        and isinstance(cached.get("session"), dict) and cached["session"].get("id") == ident
+                        and cached.get("configuration") == asdict(AnalysisConfig())
+                        and isinstance(cached.get("provenance"), dict) and cached["provenance"].get("files") == files):
                     result = cached
                 else:
                     result = analyze_session(path, source_signatures=source)
@@ -173,12 +245,16 @@ class AnalysisStore:
                     if os.name == "nt" and recording_source_signatures(path) != source:
                         raise HTTPException(409, _INPUT_CHANGED)
                     self._require_unchanged(ident, path, before)
+                    result["analysis_revision"] = uuid.uuid4().hex
                     _atomic_json(report_path, result)
-                    _atomic_json(cache_path, {"analysis_version": ANALYSIS_VERSION,
-                                              "inputs": source})
-                self._verified[ident] = before
+                    disk_state = _report_state(report_path)
+                    _atomic_json(cache_path, {"analysis_version": ANALYSIS_VERSION, "inputs": source,
+                                              "report_revision": result["analysis_revision"]})
+                if disk_state is None or disk_state != _report_state(report_path):
+                    raise HTTPException(409, _INPUT_CHANGED)
+                verified = VerifiedReport.from_analysis(before, disk_state, result)
+                self._verified[ident] = verified
             self._require_unchanged(ident, path, before)
-            # Context is explicitly separate from computed observations.
             return {**result, "context": self.context(ident)}
 
     def delete(self, ident: str) -> dict:
@@ -208,28 +284,11 @@ class AnalysisStore:
 
         Missing participant identity is never treated as evidence of same person.
         """
-        rows=[]
-        for item in self.summaries()['sessions']:
-            ident=item['id']
-            cached=_read_json(self.reports/f'{ident}.json',{})
-            context=self.context(ident)
-            eeg=cached.get('eeg') or {}
-            channels=eeg.get('channels') or []
-            q=cached.get('quality') or {}
-            ppg=cached.get('ppg') or {}
-            row={**item, 'participant_code':context.get('participant_code') or None,
-                 'protocol_id':context.get('protocol_id') or None,
-                 'eye_state':context.get('eye_state','unknown'),
-                 'task':context.get('task',''),
-                 'alpha_peak_hz':(channels[0].get('alpha_peak_hz') if channels else None),
-                 'pulse_rate_bpm':ppg.get('pulse_rate_bpm'),
-                 'channel_labels':[c.get('name') for c in channels],
-                 'sample_rate_hz':eeg.get('sample_rate_hz')}
-            rows.append(row)
+        rows = self._archive_rows(include_history=True)
         comparable={}
         for row in rows:
             code=row.get('participant_code')
-            if not code:continue
+            if not code or not row['analysis_ready']:continue
             key=(code,row.get('protocol_id'),row.get('eye_state'),
                  (row.get('task') or '').strip().casefold(),
                  tuple(row.get('channel_labels') or []),row.get('sample_rate_hz'))
@@ -250,35 +309,78 @@ class AnalysisStore:
                 logging.getLogger("capsule").exception("Automatic analysis failed for %s", ident)
         _ARCHIVE_WORKER.submit(work)
 
-    def summaries(self) -> dict:
+    def _listing_state(self, path: Path) -> tuple[str, VerifiedReport | None]:
         from analysis_engine import ANALYSIS_VERSION
-        active_id = self.active()
-        out = []
-        if self.records.is_dir():
-            for d in sorted(self.records.iterdir(), reverse=True):
-                if not d.is_dir() or d.is_symlink() or not re.fullmatch(r"[A-Za-z0-9_-]{1,180}", d.name):
+
+        if self.active() == path.name:
+            return "active", None
+        disk_state = _report_state(self.reports / f"{path.name}.json")
+        if disk_state is None:
+            return "pending", None
+        sources = _source_state(path)
+        verified = self._verified.get(path.name)
+        if verified:
+            if verified.sources == sources and verified.report == disk_state:
+                return "ready", verified
+            return "stale", None
+        # An imported report or one seen before restart needs one SHA check.
+        # File sizes and analyzer versions can prove a mismatch, never a match.
+        stamp = _read_json(self.reports / "cache" / f"{path.name}.json")
+        if isinstance(stamp, dict) and isinstance(stamp.get("inputs"), dict):
+            expected = {k: v.get("bytes") for k, v in stamp["inputs"].items() if isinstance(v, dict)}
+            sizes = {name: size for name, _, _, size, _, _ in sources if name}
+            if stamp.get("analysis_version") != ANALYSIS_VERSION or expected != sizes:
+                return "stale", None
+        return "unverified", None
+
+    def _archive_rows(self, include_history: bool = False) -> list[dict]:
+        rows = []
+        if not self.records.is_dir():
+            return rows
+        for path in sorted(self.records.iterdir(), reverse=True):
+            if not path.is_dir() or path.is_symlink() or not re.fullmatch(r"[A-Za-z0-9_-]{1,180}", path.name):
+                continue
+            try:
+                if any(child.is_symlink() for child in path.iterdir()):
                     continue
-                if any(child.is_symlink() for child in d.iterdir()):
-                    continue
-                meta = _read_json(d / "meta.json", {})
-                cached = _read_json(self.reports / f"{d.name}.json", {})
-                s, q = cached.get("session", {}), cached.get("quality", {})
-                final = _read_json(d / "summary.json", {}) or {}
+                state, verified = self._listing_state(path)
+                meta = _read_json(path / "meta.json", {}) or {}
+                final = _read_json(path / "summary.json", {}) or {}
+                eeg = path / "eeg.csv"
                 counts = final.get("counts") or {}
-                eeg = d / "eeg.csv"
                 eeg_recorded = bool(counts["eeg_samples"]) if "eeg_samples" in counts else (
                     eeg.is_file() and eeg.stat().st_size > 100)
-                out.append({"id": d.name, "started_at": meta.get("started_at"),
-                            "duration_s": s.get("duration_s"),
-                            "wall_duration_s": s.get("wall_duration_s", final.get("duration_s")),
-                            "eeg_available": cached.get("eeg", {}).get("available", eeg_recorded),
-                            "channels": meta.get("channels", []),
-                            "quality_status": q.get("status", "pending"),
-                            "usable_eeg_pct": q.get("usable_eeg_pct"),
-                            "analysis_ready": cached.get("analysis_version") == ANALYSIS_VERSION,
-                            "active": active_id == d.name,
-                            "summary": q.get("summary", "")})
-        return {"sessions": out, "mode": "local", "analysis_is_medical": False}
+                row = {"id": path.name, "started_at": meta.get("started_at"), "channels": meta.get("channels", []),
+                       "eeg_available": eeg_recorded, "duration_s": None, "wall_duration_s": final.get("duration_s"),
+                       "quality_status": "pending", "usable_eeg_pct": None, "summary": "",
+                       "analysis_state": state, "analysis_ready": state == "ready", "active": state == "active",
+                       "analysis_revision": verified.revision if verified else None}
+                if verified:
+                    row.update(verified.summary)
+                if include_history:
+                    context = self.context(path.name)
+                    row.update(participant_code=context.get("participant_code") or None,
+                               protocol_id=context.get("protocol_id") or None, eye_state=context.get("eye_state", "unknown"),
+                               task=context.get("task", ""), alpha_peak_hz=None, pulse_rate_bpm=None,
+                               channel_labels=[], sample_rate_hz=None)
+                    if verified:
+                        row.update(verified.history)
+                rows.append(row)
+            except (FileNotFoundError, HTTPException):
+                # The recording can be removed or replaced during enumeration.
+                continue
+        return rows
+
+    def summaries(self) -> dict:
+        return {"sessions": self._archive_rows(), "mode": "local", "analysis_is_medical": False}
+
+
+_NARROWBAND_COUNTS = (
+    ("target_dominant_windows", "fs/3", "eligible_windows"),
+    ("combined_dominant_windows", "fs/3 и 48–52 Гц вместе", "eligible_windows"),
+    ("screened_target_dominant_windows", "fs/3 после скрининга", "screened_windows"),
+    ("screened_combined_dominant_windows", "Обе полосы после скрининга", "screened_windows"),
+)
 
 
 def _csv_report(report: dict) -> str:
@@ -289,6 +391,14 @@ def _csv_report(report: dict) -> str:
     w.writerow(["session", "", "id", s.get("id"), "", ""])
     w.writerow(["session", "", "duration_s", s.get("duration_s"), "s", "sample-count time"])
     w.writerow(["quality", "", "status", report.get("quality", {}).get("status"), "", "heuristic screening"])
+    readiness = report.get("research_readiness")
+    if readiness:
+        alpha = readiness["alpha"]
+        for key in ("status", "runs", "paired_blocks", "pairs_with_coverage"):
+            w.writerow(["research_readiness", "", "alpha." + key, alpha.get(key), "", alpha.get("detail")])
+        w.writerow(["research_readiness", "", "decoder.status", readiness["decoder"]["status"], "",
+                    readiness["decoder"]["detail"]])
+        w.writerow(["research_readiness", "", "next_action", readiness["next_action"], "", readiness["clock"]])
     eeg = report.get("eeg", {})
     for ch in eeg.get("channels", []):
         for key in ("alpha_peak_hz", "entropy"):
@@ -299,6 +409,16 @@ def _csv_report(report: dict) -> str:
             for band, val in (ch.get(metric) or {}).items():
                 w.writerow(["eeg", ch.get("name"), metric + "." + band,
                             json.dumps(val, ensure_ascii=False) if isinstance(val, dict) else val, unit, "1–45 Hz denominator; see methods"])
+        qc = ch.get("narrowband_qc")
+        if qc:
+            w.writerow(["narrowband_qc", ch["name"], "supported", qc["supported"], "", "fs/3 and 48–52 Hz"])
+            if qc["supported"]:
+                for key, unit in (("target_hz", "Hz"), ("dominance_fraction", "fraction of 1–100 Hz power"),
+                                  ("eligible_windows", "windows"), ("screened_windows", "windows")):
+                    w.writerow(["narrowband_qc", ch["name"], key, qc.get(key), unit, ""])
+                for key, _, denominator in _NARROWBAND_COUNTS:
+                    value = qc.get(key) if qc.get(denominator) else None
+                    w.writerow(["narrowband_qc", ch["name"], key, value, "windows", denominator])
     for key, val in report.get("ppg", {}).get("prv", {}).items():
         if not isinstance(val, (dict, list)):
             w.writerow(["ppg", "", key, val, "", "PRV is not ECG HRV"])
@@ -325,7 +445,32 @@ def _html_report(report: dict, knowledge: dict) -> str:
     for ch in report.get("eeg", {}).get("channels", []):
         bands = "; ".join(f"{k}: {v:.4f}" if isinstance(v, (float, int)) else f"{k}: {v}" for k, v in (ch.get("relative_power") or {}).items())
         parts.append(f"<tr><td>{esc(ch.get('name'))}</td><td>{esc(ch.get('alpha_peak_hz'))} Hz</td><td>{esc(bands)}</td></tr>")
-    parts.append("</table><h2>Контекст пользователя</h2><p>Добавлен после записи; не является синхронной разметкой событий.</p>")
+    parts.append("</table>")
+    readiness = report.get("research_readiness")
+    if readiness:
+        alpha = readiness["alpha"]
+        parts.extend(["<h2>Готовность к исследованию</h2>",
+                      f"<p>{esc(alpha['detail'])}</p><p>Пар с пригодным сигналом: "
+                      f"{esc(alpha['pairs_with_coverage'])} из {esc(alpha['paired_blocks'])}.</p>",
+                      f"<p>{esc(readiness['decoder']['detail'])}</p><p>{esc(readiness['next_action'])}</p>",
+                      f"<small>{esc(readiness['clock'])}</small>"])
+    narrow = [(c["name"], c["narrowband_qc"]) for c in report.get("eeg", {}).get("channels", [])
+              if c.get("narrowband_qc")]
+    if narrow:
+        parts.append("<h2>Узкополосные компоненты ЭЭГ</h2>")
+        for name, qc in narrow:
+            parts.append(f"<h3>{esc(name)}</h3>")
+            if not qc["supported"]:
+                parts.append("<p>Частотная сетка этой записи не поддерживает проверку.</p>")
+                continue
+            parts.append(f"<p>Полоса около {esc(round(qc['target_hz'], 2))} Гц (fs/3 ±1,5 Гц). "
+                         f"Порог превышения: {esc(100 * qc['dominance_fraction'])}% мощности 1–100 Гц.</p><ul>")
+            for key, label, denominator in _NARROWBAND_COUNTS:
+                count = (f"{esc(qc[key])} из {esc(qc[denominator])} окон" if qc.get(denominator)
+                         else "нет пригодных для подсчёта окон")
+                parts.append(f"<li>{esc(label)}: {count}</li>")
+            parts.append("</ul>")
+    parts.append("<h2>Контекст пользователя</h2><p>Добавлен после записи; не является синхронной разметкой событий.</p>")
     parts.append(f"<pre>{esc(json.dumps(report.get('context', {}), ensure_ascii=False, indent=2))}</pre>")
     parts.append("<h2>Метод и воспроизводимость</h2>")
     parts.append(f"<pre>{esc(json.dumps(report.get('methods', {}), ensure_ascii=False, indent=2))}</pre>")
@@ -351,6 +496,13 @@ def create_lab_router(records: Path, reports: Path, static: Path, active: Callab
     @router.get("/analysis/{ident}")
     async def analysis(ident: str):
         return await store.request(ident)
+
+    @router.post("/analysis/{ident}/verify")
+    async def verify(ident: str):
+        # Also catches in-place, same-size external writes with a restored
+        # mtime on filesystems where Python's ctime denotes creation time.
+        data = await store.request(ident, verify_hashes=True)
+        return {"id": ident, "analysis_state": "ready", "analysis_revision": data["analysis_revision"]}
 
     @router.post("/analysis/{ident}/refresh")
     async def refresh(ident: str):

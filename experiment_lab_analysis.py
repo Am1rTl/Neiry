@@ -17,12 +17,14 @@ from scipy.signal import welch
 from analysis_engine import BANDS, _robust_upper, integrate_band
 from experiment_lab import measured_feedback
 from json_utils import finite_json
+from research_readiness import (documented_browser_clock, sdk_supports_alpha_block,
+                                MIN_SDK_BLOCK_S, ONSET_MARGIN_S, END_MARGIN_S)
 
 
 ALPHA_BAND = BANDS["alpha"]
 WINDOW_S = 4.0
-PHASE_ONSET_MARGIN_S = 3.0
-PHASE_END_MARGIN_S = 1.0
+PHASE_ONSET_MARGIN_S = ONSET_MARGIN_S
+PHASE_END_MARGIN_S = END_MARGIN_S
 MIN_USABLE_WINDOWS = 3
 MIN_TRIALS_PER_LEVEL = 4
 HOST_TIME_NOTE = (
@@ -250,6 +252,9 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
 
     n = round(WINDOW_S * rate)
     windows = []
+    packet_clock = None
+    allow_sdk_blocks = run.get("kind") == "alpha" and documented_browser_clock(run.get("settings"))
+    sdk_windows = 0
     for phase_i, phase in enumerate(phases):
         inside = np.flatnonzero(
             (times >= phase["start_s"] + PHASE_ONSET_MARGIN_S)
@@ -264,20 +269,41 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
             ts = times[i:last]
             reasons = []
             dt = np.diff(ts)
-            if np.any(~np.isfinite(ts)) or np.any(dt <= 0) or np.any(dt > gap_limit):
-                reasons.append("host_timestamp_gap")
+            finite_times = bool(np.all(np.isfinite(ts)))
+            first_host, last_host = (float(ts.min()), float(ts.max())) if finite_times else (math.nan, math.nan)
+            inside_phase = (first_host >= phase["start_s"] + PHASE_ONSET_MARGIN_S
+                            and last_host <= phase["end_s"] - PHASE_END_MARGIN_S)
+            outside_strict = np.any(dt <= 0) or np.any(dt > gap_limit) or not finite_times
+            timing = "strict_host"
+            if run.get("kind") == "alpha" and not inside_phase:
+                reasons.append("outside_phase_or_invalid_time")
+            if outside_strict:
+                if (inside_phase and allow_sdk_blocks and phase["label"] in ("eyes_open", "eyes_closed")
+                        and phase["end_s"] - phase["start_s"] >= MIN_SDK_BLOCK_S):
+                    if packet_clock is None:
+                        from block_timing import read_packet_clock
+                        packet_clock = read_packet_clock(recording_dir / "metrics.jsonl", rate)
+                    if sdk_supports_alpha_block(ts, indices[i:last], rate, phase["start_s"], phase["end_s"], packet_clock):
+                        timing = "sdk_continuity_host_block"
+                        sdk_windows += 1
+                if timing == "strict_host":
+                    reasons.append("host_timestamp_gap")
             row_steps = np.diff(indices[i:last])
             if np.any(~np.isfinite(row_steps)) or np.any(row_steps != 1):
                 reasons.append("sample_index_gap")
             # Use the last recent check before the window and any checks in it.
-            if np.isfinite(ts[0]) and np.isfinite(ts[-1]):
-                c0 = bisect_left(contact_ts, ts[0] - 4.5)
-                c1 = bisect_right(contact_ts, ts[-1])
-                latest_prior = bisect_right(contact_ts, ts[0]) - 1
+            # Strict/legacy paths use the endpoints as before. The SDK route
+            # uses the full envelope because the host clock can step backward.
+            if timing != "sdk_continuity_host_block":
+                first_host, last_host = ts[0], ts[-1]
+            if np.isfinite(first_host) and np.isfinite(last_host):
+                c0 = bisect_left(contact_ts, first_host - 4.5)
+                c1 = bisect_right(contact_ts, last_host)
+                latest_prior = bisect_right(contact_ts, first_host) - 1
                 c0 = max(c0, latest_prior)
                 if False in contact_ok[c0:c1]:
                     reasons.append("poor_contact")
-                g0, g1 = np.searchsorted(motion_ts, [ts[0], ts[-1]])
+                g0, g1 = np.searchsorted(motion_ts, [first_host, last_host])
                 current_motion = motion_g[g0:g1]
                 current_motion = current_motion[np.isfinite(current_motion)]
                 motion_score = float(np.sqrt(np.mean(current_motion ** 2))) if len(current_motion) else None
@@ -290,8 +316,12 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
                 if np.any(~np.isfinite(slice_)):
                     entry["reasons"].append("nonfinite")
                 powers.append(entry)
-            windows.append((phase_i, reasons, motion_score, powers))
+            windows.append((phase_i, reasons, motion_score, powers, timing))
 
+    if sdk_windows:
+        quality["warnings"].append(
+            f"Для {sdk_windows} окон привязка к длительному альфа-блоку опирается на диапазон времени приёма и "
+            "непрерывность пакетов SDK. Скачки времени приёма учтены отдельно. Синхронность с моментом стимула не измерялась.")
     motion_scores = [row[2] for row in windows if row[2] is not None and not row[1]]
     movement_threshold = _robust_upper(np.asarray(motion_scores), 6, 3)
     quality["movement_windows"] = sum(score > movement_threshold for score in motion_scores) if motion_scores else None
@@ -300,25 +330,26 @@ def _raw_eeg(phases: list[dict], recording_dir: Path | None, run: dict) -> tuple
         rms_threshold = _robust_upper(np.array([p["rms"] for p in reference]), 6, 8)
         diff_threshold = _robust_upper(np.array([p["diff_rms"] for p in reference]), 6, 8)
         by_phase = defaultdict(list)
-        for phase_i, common_reasons, motion_score, powers in windows:
+        for phase_i, common_reasons, motion_score, powers, timing in windows:
             window = powers[j]
             reasons = common_reasons + window["reasons"]
             if window.get("rms", 0) > rms_threshold or window.get("diff_rms", 0) > diff_threshold:
                 reasons.append("amplitude_outlier")
             if motion_score is not None and motion_score > movement_threshold:
                 reasons.append("movement")
-            by_phase[phase_i].append((window, reasons))
+            by_phase[phase_i].append((window, reasons, timing))
         for phase_i, section in enumerate(sections):
             entries = by_phase[phase_i]
-            ok = [window for window, reasons in entries if not reasons]
+            ok = [window for window, reasons, _ in entries if not reasons]
             section["channels"].append({
                 "name": name,
                 "alpha_power": _median([w["alpha"] for w in ok]) if len(ok) >= MIN_USABLE_WINDOWS else None,
                 "relative_alpha_pct": _median([w["relative_pct"] for w in ok if w["relative_pct"] is not None])
                 if len(ok) >= MIN_USABLE_WINDOWS else None,
                 "usable_windows": len(ok),
+                "usable_by_timing": dict(Counter(timing for _, reasons, timing in entries if not reasons)),
                 "total_windows": len(entries),
-                "rejected": dict(Counter(reason for _, reasons in entries for reason in reasons)),
+                "rejected": dict(Counter(reason for _, reasons, _ in entries for reason in reasons)),
             })
     return quality, sections
 
@@ -327,9 +358,16 @@ def _alpha_summary(phases: list[dict], names: list[str]) -> dict:
     pairs = []
     per_channel = defaultdict(list)
     ordered = [p for p in phases if p["label"] in {"eyes_open", "eyes_closed"}]
-    for start in range(0, len(ordered) - 1, 2):
-        first, second = ordered[start:start + 2]
-        if first["label"] == second["label"] or second["index"] != first["index"] + 1:
+    by_pair = defaultdict(list)
+    for phase in ordered:
+        if phase["index"] >= 0:
+            by_pair[phase["index"] // 2].append(phase)
+    for number, attempts in sorted(by_pair.items()):
+        if len(attempts) != 2:
+            continue
+        first, second = attempts
+        if (first["index"] != 2 * number or second["index"] != 2 * number + 1
+                or first["label"] == second["label"] or first["end_s"] > second["start_s"]):
             continue
         open_, closed = (first, second) if first["label"] == "eyes_open" else (second, first)
         pair = {"open_index": open_["index"], "closed_index": closed["index"], "channels": []}

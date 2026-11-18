@@ -10,7 +10,7 @@
   const fmt = (v, digits=1) => n(v) == null ? '—' : Number(v).toLocaleString('ru-RU',{maximumFractionDigits:digits});
   const blank = '—';
   let ctx = {}, view = null, preview = false, pollTimer = null, statusRequest = null, ws = null, wsRetry = null;
-  let status = null, replay = {active:false}, chartClock = 0, statusFingerprint = '', sessionRows = [], liveRange = 15, metricRange = 300, allowRaw = false;
+  let status = null, replay = {active:false}, chartClock = 0, statusFingerprint = '', liveRange = 15, metricRange = 300, allowRaw = false;
   let calibrationAudio = null, useCalibrationSound = true;
   let calibrationAudioRun = false, calibrationCue = '', nextPulseAt = 0;
   let plotObserver = null, chartFrame = null, lastStreamStatusAt = -Infinity, lastIndicatorsAt = -Infinity;
@@ -1040,20 +1040,29 @@
     }
     scheduleStatusPoll(0);
   }
+  let sessionListRequest = 0;
   async function loadSessions() {
     if(preview||view!=='sessions')return;
+    const box=$('#sessions-body'), summary=$('#sessions-summary');
+    if(!box||!summary)return;
+    const request = ++sessionListRequest;
     try {
-      const out=await api('/api/records');sessionRows=Array.isArray(out.sessions)?out.sessions:[];
-      $('#sessions-summary').textContent=`Всего: ${sessionRows.length}`;
-      const box=$('#sessions-body');if(!box)return;
+      const [out, index] = await Promise.all([
+        api('/api/records'), api('/api/lab/sessions').catch(()=>({sessions:[]}))
+      ]);
+      if(!box.isConnected || request !== sessionListRequest)return;
+      const sessionRows=Array.isArray(out.sessions)?out.sessions:[];
+      const byId=new Map(index.sessions.map(row=>[row.id,row]));
+      summary.textContent=`Всего: ${sessionRows.length}`;
       if(!sessionRows.length){box.innerHTML='<div class="no-device">Пока нет сохранённых сессий. Подключите устройство и начните запись.</div>';return;}
       box.innerHTML=sessionRows.map(s=>{
         const id=s.session_id,meta=s.meta||{},counts=s.summary?.counts||{};
-        return `<article class="session-list-row"><div class="session-list-icon"><svg class="icon"><use href="#i-folder"/></svg></div><div class="session-list-data"><strong>${esc(id)}</strong><small>${esc(meta.started_at||meta.started_at_iso||'Сохранённая сессия')} ${s.active?' · Идёт запись':''}</small><div class="session-list-info">${Object.keys(counts).slice(0,4).map(k=>`${esc(k)}: ${fmt(counts[k],0)}`).join(' · ')}</div></div>
-        <div class="session-list-actions"><a class="button subtle" href="#signals" data-session-analysis="${esc(id)}">Анализ</a><button type="button" class="button subtle" data-checkpoint-list="${esc(id)}" aria-controls="checkpoint-panel">Чекпоинты</button>${pButton('Воспроизвести','replay:'+id,'subtle',s.active||connected())}<a class="button subtle" href="/api/records/${encodeURIComponent(id)}/download" download>ZIP</a>${pButton('Удалить','delete:'+id,'subtle',s.active)}</div></article>`;
+        const status=ctx.archiveStatus({...byId.get(id), active:s.active||byId.get(id)?.active});
+        return `<article class="session-list-row"><div class="session-list-icon"><svg class="icon"><use href="#i-folder"/></svg></div><div class="session-list-data"><strong>${esc(id)}</strong><small>${esc(meta.started_at||meta.started_at_iso||'Сохранённая сессия')} · ${status.label}</small><div class="session-list-info">${Object.keys(counts).slice(0,4).map(k=>`${esc(k)}: ${fmt(counts[k],0)}`).join(' · ')}</div></div>
+        <div class="session-list-actions">${status.action?`<a class="button subtle" href="?session=${encodeURIComponent(id)}#signals" data-session-analysis="${esc(id)}">${status.action}</a>`:''}<button type="button" class="button subtle" data-checkpoint-list="${esc(id)}" aria-controls="checkpoint-panel">Чекпоинты</button>${pButton('Воспроизвести','replay:'+id,'subtle',s.active||connected())}<a class="button subtle" href="/api/records/${encodeURIComponent(id)}/download" download>ZIP</a>${pButton('Удалить','delete:'+id,'subtle',s.active)}</div></article>`;
       }).join('');
       $$('[data-session-analysis]',box).forEach(a=>a.addEventListener('click',e=>{e.preventDefault();ctx.selectSession?.(a.dataset.sessionAnalysis);location.hash='signals';}));
-    }catch(err){if($('#sessions-body'))$('#sessions-body').innerHTML=`<div class="no-device">Ошибка списка записей: ${esc(err.message)}</div>`;}
+    }catch(err){if(box.isConnected && request === sessionListRequest)box.innerHTML=`<div class="no-device">Ошибка списка записей: ${esc(err.message)}</div>`;}
   }
   function init(options) {
     ctx=options;preview=Boolean(options.preview);

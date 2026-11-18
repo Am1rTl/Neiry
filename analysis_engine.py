@@ -21,11 +21,13 @@ from typing import Any
 import numpy as np
 from scipy import signal
 
+from block_timing import read_packet_clock
 from cardio_quality import sdk_cardio_issues
 from checkpoints import LABEL_EVENT, checkpoint_index
 from paired_eeg import analyze_pair
+from research_readiness import assess_research_readiness
 
-ANALYSIS_VERSION = "2.5.0"
+ANALYSIS_VERSION = "2.6.2"
 SCHEMA_VERSION = "1.0"
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "gamma": (30., 45.)}
@@ -273,10 +275,15 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
     mscore=_motion_at(times,motion,motion_offset)
     mthreshold=motion.get("summary",{}).get("movement_threshold",float("inf"))
     channels=[]
+    third_center = fs / 3
+    third_band = (third_center - 1.5, third_center + 1.5)
+    # Both diagnostic bands must be separate and fully represented on the 1–100 Hz grid.
+    check_third = fs / 2 >= 100 and third_band[0] > 52 and third_band[1] <= 100
     for ch,name in enumerate(s["columns"]):
         x=data[:,ch]
+        fractions = np.full((len(starts), 2), np.nan)
         spectral=[]; rms=[]; diff_rms=[]; unique_levels=[]; base_reasons=[]
-        for i in starts:
+        for window_index, i in enumerate(starts):
             a=x[i:i+nper]; reasons=[]
             index_slice=s["index"][max(0,int(i)-1):int(i)+nper]
             if np.any(~np.isfinite(index_slice)) or np.any(np.diff(index_slice)!=1):
@@ -299,6 +306,9 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
                 power_48_52=integrate_band(f,p,48,52)
                 if power_1_100>0 and power_48_52/power_1_100>config.line_dominance_fraction:
                     reasons.append("line_component_dominant")
+                if check_third and power_1_100 > 0 and not {"sample_index_discontinuity", "flatline"}.intersection(reasons):
+                    fractions[window_index] = (power_48_52 / power_1_100,
+                                               integrate_band(f, p, *third_band) / power_1_100)
             spectral.append(p);base_reasons.append(reasons)
         rr=np.asarray(rms); dd=np.asarray(diff_rms)
         rms_thresh=_robust_upper(rr,config.robust_z,config.minimum_power_ratio_outlier)
@@ -340,13 +350,19 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
         rail_count=int(np.sum(np.isclose(np.abs(x),.8,rtol=0,atol=1e-10)))
         good_indices=[j for j,ok in enumerate(accepted) if ok]
         good_starts=[int(starts[j]) for j in good_indices]
-        typical_start=int(starts[min(good_indices,key=lambda j:abs(rr[j]-np.median(rr[good_indices])))]) if good_indices else 0
+        typical_start = 0
+        if good_indices:
+            accepted_rms = rr[good_indices]
+            representative = np.argmin(np.abs(accepted_rms - np.median(accepted_rms)))
+            typical_start = int(starts[good_indices[representative]])
         power_total=integrate_band(freq,clean,1,45) if n_good else None
         linepower=integrate_band(freq,raw,48,52) if fs/2>=52 else None
         clean_line=integrate_band(freq,clean,48,52) if fs/2>=52 and n_good>=config.minimum_spectral_windows else None
         clean_wide=integrate_band(freq,clean,1,min(100,fs/2)) if fs/2>1 and n_good>=config.minimum_spectral_windows else None
         widepower=integrate_band(freq,raw,1,min(100,fs/2)) if fs/2>1 else None
-        severe_line=bool(widepower and widepower>0 and linepower is not None and linepower/widepower>.5)
+        raw_line_fraction = linepower / widepower if fs/2 >= 100 and widepower and widepower > 0 else None
+        screened_line_fraction = clean_line / clean_wide if fs/2 >= 100 and clean_wide and clean_wide > 0 else None
+        severe_line = bool(widepower and widepower > 0 and linepower is not None and linepower / widepower > .5)
         if severe_line:
             if peak["candidate_hz"] is not None:
                 peak.update(status="unreliable_line_contamination",description="Локальный максимум зависит от отбора немногих окон на фоне доминирующей 50-Гц компоненты. Он сохранён только как свойство цифрового спектра, не как индивидуальная альфа-частота.")
@@ -362,11 +378,27 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
                       unique_levels=int(len(np.unique(x[np.isfinite(x)]))), median_window_unique_levels=median_levels,
                       quantization_concern=coarse, rail_0p8_samples=rail_count,
                       rail_0p8_pct=100*rail_count/len(x),total_power_1_45=power_total)
+        valid = np.isfinite(fractions).all(axis=1)
+        threshold = config.line_dominance_fraction
+        combined = fractions.sum(axis=1) > threshold
+        third_dominant = fractions[:, 1] > threshold
+        screened_valid = valid & np.asarray(accepted, dtype=bool)
+        narrowband = {
+            "supported": check_third, "target_hz": third_center if check_third else None,
+            "target_band_hz": list(third_band) if check_third else None,
+            "reference_band_hz": [1, 100], "dominance_fraction": threshold,
+            "eligible_windows": int(valid.sum()), "screened_windows": int(screened_valid.sum()),
+            "target_dominant_windows": int(third_dominant.sum()),
+            "combined_dominant_windows": int(combined.sum()),
+            "screened_target_dominant_windows": int((screened_valid & third_dominant).sum()),
+            "screened_combined_dominant_windows": int((screened_valid & combined).sum()),
+            "median_target_fraction": float(np.median(fractions[valid, 1])) if valid.any() else None,
+        }
         excerpt = _excerpt(x, fs, typical_start, config.epoch_s)
         excerpt["selection"] = ("Окно с наиболее близким к медиане RMS среди прошедших скрининг. "
                                 "Если таких нет — начало записи. Исходные значения без сглаживания.")
         band_waveforms = _band_excerpt(x, s["index"], fs, typical_start, len(excerpt["values"])) if n_good else {}
-        channels.append({"name":name,"sample_count":len(x),"stats":chstat,
+        channels.append({"name":name,"sample_count":len(x),"stats":chstat,"narrowband_qc":narrowband,
              "quality":{"total_windows":total,"usable_windows":n_good,
                         "usable_pct":100*n_good/total if total else 0,
                         "rejected_reasons":dict(reasons_count),"status":"limited" if n_good>=config.minimum_spectral_windows else "insufficient",
@@ -377,12 +409,12 @@ def analyze_eeg(s: dict, motion: dict, motion_offset: float, config: AnalysisCon
              "alpha_peak_hz":reported_peak,"alpha_peak":peak,
              "entropy":spectral_entropy(freq,clean),
              "advanced":advanced,
-             "line_noise_fraction_48_52_of_1_100":linepower/widepower if widepower and widepower>0 else None,
-             "line_noise_fraction_screened_48_52_of_1_100":clean_line/clean_wide if clean_wide and clean_wide>0 else None,
+             "line_noise_fraction_48_52_of_1_100":raw_line_fraction,
+             "line_noise_fraction_screened_48_52_of_1_100":screened_line_fraction,
              "psd":{"freq_hz":freq[freqmask].tolist(),"power":clean[freqmask].tolist(),
                      "raw_power":raw[freqmask].tolist(),"units":(unit_label or "SDK")+"²/Hz"},
              "timeline":timeline,
-             "spectral_interpretability":"severely_limited" if (coarse or (linepower/widepower if widepower and widepower>0 else 0)>.5 or not n_good) else "limited",
+             "spectral_interpretability":"severely_limited" if (coarse or severe_line or not n_good) else "limited",
              "excerpt":excerpt, "band_waveforms":band_waveforms})
     return sanitize({"available":True,"sample_rate_hz":fs,"units":units,"unit_source":"meta.units.eeg (declared, not independently calibrated)" if unit_label else "unverified", "band_power_units":(unit_label or "SDK")+"²", "channels":channels,
                      "band_definitions_hz":BANDS,"spectral_denominator":"1–45 Гц",
@@ -840,6 +872,17 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
             screened_line=c.get("line_noise_fraction_screened_48_52_of_1_100")
             if max(raw_line or 0,screened_line or 0)>.20:
                 flag("line_component_"+c["name"],"warning",f"Сильная компонента около 50 Гц: {c['name']}",f"Доля мощности 48–52 Гц относительно 1–100 Гц: исходный спектр {100*(raw_line or 0):.1f}%, после скрининга {f'{100*screened_line:.1f}%' if screened_line is not None else 'недоступно (недостаточно окон)'}. Вероятна сетевая помеха; её происхождение спектр сам по себе не доказывает. Полосы 1–45 Гц исключают эту область, но это не подтверждает чистоту оставшегося сигнала.")
+            narrowband = c["narrowband_qc"]
+            target_windows = narrowband["target_dominant_windows"]
+            if target_windows or (narrowband["combined_dominant_windows"] and
+                                  (narrowband["median_target_fraction"] or 0) >= .10):
+                flag("sampling_third_" + c["name"], "warning",
+                     f"Узкая полоса около {narrowband['target_hz']:.1f} Гц · {c['name']}",
+                     f"В {target_windows} из {narrowband['eligible_windows']} доступных окон эта полоса содержит "
+                     f"более {100*cfg.line_dominance_fraction:g}% мощности 1–100 Гц. После обычного скрининга "
+                     f"таких окон {narrowband['screened_target_dominant_windows']} из {narrowband['screened_windows']}. "
+                     f"Вместе с полосой 48–52 Гц порог превышен в {narrowband['combined_dominant_windows']} исходных окнах. "
+                     "Проверьте тракт регистрации. Причина линии неизвестна. Полосы 1–45 Гц рассчитываются отдельно.")
             if c["stats"].get("quantization_concern"):
                 flag("coarse_quantization_"+c["name"],"warning",f"Мало локальных амплитудных уровней: {c['name']}",f"Одинаковые соседние отсчёты: {c['stats']['adjacent_repeat_pct']:.1f}%; медиана уникальных уровней в 4-секундном окне: {c['stats']['median_window_unique_levels']:.0f}. Спектр описывает сохранённую округлённую волну; точный индивидуальный альфа-пик не подтверждается.")
             obs(f"{c['name']}: скрининг сигнала",f"Прошли {q['usable_windows']} из {q['total_windows']} перекрывающихся окон ({q['usable_pct']:.1f}%). Это отбор по эвристикам, не подтверждение физиологической чистоты.","high","quality")
@@ -853,7 +896,8 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
     if eeg["available"] and len(pair_channels) == 2 and not paired["available"]:
         flag("paired_unavailable", "info", "Парный анализ ЭЭГ ограничен", paired["reason"])
     markers=[e for e in events if e.get("type") in {"marker","task","condition"}]
-    if not any(not e.get("checkpoint_id") or e.get("label") for e in markers):
+    has_protocol = any(e.get("type") in {"protocol_phase_start", "experiment_lab_event"} for e in events)
+    if not has_protocol and not any(not e.get("checkpoint_id") or e.get("label") for e in markers):
         flag("no_condition_markers","info","Нет разметки условий","Нет отметок глаза открыты/закрыты, заданий или событий поведения; связь ритмов с состояниями и причинные эффекты не оцениваются.")
     if not (p/"summary.json").exists():
         flag("missing_session_summary","info","Нет итогового файла закрытия","summary.json отсутствует: окончание сессии определяется по доступным строкам, корректное закрытие записи не подтверждено.")
@@ -875,6 +919,7 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
        "band_power":"Интеграл PSD с интерполяцией границ: δ 1–4, θ 4–8, α 8–13, β 13–30, low-γ 30–45 Гц. Относительная мощность нормирована на сумму этих полос (1–45 Гц); пределы условны.",
        "band_waveforms":"Фрагмент прошедшей отбор ЭЭГ после двунаправленной полосовой фильтрации Баттерворта (порядок 4). Отображается отдельно от расчёта спектральной мощности.",
        "quality":"Отбор окон по NaN/Infinity, flatline, повторяющимся ±0.8 (legacy observed rail), экстремальному RMS/производной (max(median+6×1.4826×MAD,8×median)), выраженному движению (gyro RMS > max(median+6×1.4826×MAD,3×median)) и доминирующей компоненте 48–52 Гц (>50% мощности 1–100 Гц при Nyquist≥100 Гц). Последний порог — инженерная эвристика, не опубликованная клиническая норма. Пороговые эвристики не валидированы клинически; прошедшие окна всё ещё могут содержать артефакты.",
+       "narrowband_qc":"Дополнительный аудит мощности в полосе fs/3 ±1.5 Гц, отдельно и в сумме с 48–52 Гц, относительно 1–100 Гц. Считаются конечные непрерывные окна с положительной мощностью до и после основного отбора. Аудит доступен, когда полосы не пересекаются и полностью попадают в частотную сетку. Он не фильтрует исходные данные и не определяет источник линии.",
        "alpha":"Локальный максимум строго внутри 8–13 Гц, log-PSD prominence≥3 dB и ≥15 прошедших окон. Если >50% соседних отсчётов одинаковы или медиана уровней в окне <20, alpha_peak_hz скрыт, численный кандидат только в alpha_peak. Это эвристика ограничения квантования. Отдельное моделирование апериодического фона и реактивность не выполнены.",
        "entropy":"Shannon entropy распределения мощности 1–45 Гц, нормированная на log(число частотных отсчётов); зависит от параметров PSD, шума и фильтрации, не мера интеллекта.",
        "advanced":"Исследовательские Hjorth и линейный log-PSD наклон по отобранным окнам без сильного квантования; это НЕ параметрическая модель specparam и не оценка возбуждения/торможения мозга.",
@@ -897,11 +942,11 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
        "limitations":[
           ("Два биполярных отведения O1–T3 и O2–T4 смешивают вклад нескольких источников. Отдельно локализовать затылочную или височную кору, глубокие структуры и работу всех отделов мозга нельзя." if set(loaded["eeg"]["columns"])=={"O1-T3","O2-T4"} else "Пространственная локализация по этому анализу не выполняется: нужны проверенный монтаж, референсы, достаточное число каналов и модель проводимости."),
           ("Нет подтверждённых физических единиц EEG; " if not unit_label else "Физические единицы объявлены в metadata, независимо не калиброваны; ")+"внутренняя фильтрация, аппаратная синхронизация и непрерывные счётчики устройства требуют отдельной проверки.",
-          "Протокол, состояние глаз, возраст, лекарства, сон, кофеин и выполняемые задания не заданы; стабильные особенности человека не отделяются от состояния и условий записи.",
+          "Сведения о фактическом состоянии глаз, движении, сне и условиях каждой пробы могут быть неполными. Метки подтверждают время зарегистрированной инструкции или действия оператора.",
           "Дельта/тета могут содержать дрейф и движения глаз, beta/gamma — мышечную активность. Автоматический скрининг не доказывает корковое происхождение оставшегося сигнала.",
           "Показатели внимания, релаксации, нагрузки, стресса, усталости и продуктивности SDK — модельные индексы без предоставленной независимой индивидуальной валидации.",
           "Нет оснований для диагноза, оценки IQ, личности, доминирования полушария, чтения мыслей, определения нейромедиаторов или лечения по этим записям.",
-          "Сравнения между сессиями описательные: нет стандартизованных условий, повторных контрольных проб и независимой проверки качества."],
+          "Сравнение записей требует проверенных условий, участника, повторных контрольных проб и независимой проверки качества."],
        "recommendations":[
           "Сохранять EEG без округления; добавить единицы, масштаб, монтаж, референсы, внутренние фильтры и версию SDK в meta.json.",
           "Сохранять device sample counter / hardware timestamp и arrival timestamp раздельно; не перестраивать ось времени по времени callback.",
@@ -910,6 +955,11 @@ def analyze_session(path: str | Path, config: AnalysisConfig | None = None, *,
           "Для связи EEG с задачей сохранять события, ответы, точность/время реакции и дневник сна/кофеина; сравнивать одинаковые условия.",
           "Для пространственных/клинических вопросов нужны многоканальная ЭЭГ, проверенный монтаж и специалист; нынешние два отведения не заменяют обследование."],
        "methods":methods,"configuration":asdict(cfg),"provenance":_provenance(p, source_signatures)}
+    result["research_readiness"] = assess_research_readiness(
+        result, eeg_timestamps=eeg_stream["ts"],
+        eeg_indices=eeg_stream["index"] if eeg_stream.get("index_source") == "sample_index" else None,
+        packet_clock=lambda: read_packet_clock(p / "metrics.jsonl", eeg_stream["rate"]),
+    )
     return sanitize(result)
 
 
