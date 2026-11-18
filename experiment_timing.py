@@ -8,11 +8,12 @@ from pathlib import Path
 import numpy as np
 
 from analysis_engine import _packet_timing
+from research_readiness import MAX_HOST_RESIDUAL_RANGE_S
 
 
 # One quarter of the shortest (1 s) phase margin. This is a QC tolerance,
 # not an estimate of stimulus latency or a clock synchronization bound.
-MAX_HOST_SPREAD_S = 0.25
+MAX_HOST_SPREAD_S = MAX_HOST_RESIDUAL_RANGE_S
 
 
 @dataclass
@@ -72,7 +73,7 @@ def read_packet_coverage(metrics_path: Path, rate: float) -> PacketCoverage:
     return coverage
 
 
-def window_timing_reasons(times, indices, phase_start, phase_end, rate, gap_limit, packets):
+def window_timing_reasons(times, indices, phase_start, phase_end, rate, gap_limit, packets, *, allow_batched_host=True):
     """Screen in acquisition order; keep host and SDK in their own clock domains."""
     reasons = []
     indices_ok = (np.all(np.isfinite(indices)) and np.all(indices == np.floor(indices))
@@ -85,7 +86,7 @@ def window_timing_reasons(times, indices, phase_start, phase_end, rate, gap_limi
         return [*reasons, "host_timestamp_gap"]
     if np.min(times) < phase_start or np.max(times) > phase_end:
         reasons.append("phase_boundary")
-    if packets.present and indices_ok:
+    if allow_batched_host and packets.present and indices_ok:
         # A regular SDK sequence can arrive in bursts. Bound local host
         # variation relative to nominal acquisition instead of dating the
         # stimulus with the SDK epoch. Long backlog or clock steps still fail.

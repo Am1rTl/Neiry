@@ -34,6 +34,7 @@ class ExperimentTimingTests(unittest.TestCase):
 
     def test_blocks_from_different_planned_pairs_are_not_paired(self):
         blocks = [{"index": i, "label": "eyes_closed" if i % 2 else "eyes_open",
+                   "start_s": 30 * i, "end_s": 30 * (i + 1),
                    "channels": [{"name": "O1", "alpha_power": 1.0}]} for i in (1, 2, 3)]
         pairs = _alpha_summary(blocks, ["O1"])["pairs"]
         self.assertEqual([(p["open_index"], p["closed_index"]) for p in pairs], [(2, 3)])

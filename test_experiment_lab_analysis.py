@@ -98,6 +98,38 @@ class ExperimentAnalysisTests(unittest.TestCase):
                 self.assertNotIn("high_frequency_fraction", window)
                 self.assertNotIn("dominant_high_frequency_line", window["reasons"])
 
+    def test_long_alpha_blocks_use_sdk_continuity_but_keep_the_host_epoch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            recorder = SessionRecorder(Path(temporary), channel_names=["O1-T3"], sample_rates={"eeg": RATE})
+            recording = recorder.start()
+            seconds = np.arange(66 * RATE) / RATE
+            values = np.sin(2*np.pi*10*seconds) + np.random.default_rng(8).normal(0, .005, len(seconds))
+            host = seconds + UNIX_TIME
+            host[10::25] -= .04
+            # Deliberately use a different epoch in SDK packets.
+            for i in range(0, len(host), 25):
+                last = min(i + 25, len(host))
+                sdk_epoch = 7_000_000
+                recorder.record_eeg(values[i:last, None], host[i:last],
+                                    sdk_bounds=(sdk_epoch + i*4, sdk_epoch + (last-1)*4))
+            recorder.close()
+            run = {"kind": "alpha", "mode": "live", "status": "completed",
+                   "settings": {"timing": "browser_monotonic_software_clock",
+                                "clock_offset_ms": .2, "clock_round_trip_ms": 2},
+                   "events": phase("eyes_open", 0, 1, 32) + phase("eyes_closed", 1, 33, 65)}
+            analysis = summarize_run(run, recording)
+            self.assertEqual(analysis["alpha"]["channels"][0]["paired_blocks"], 1)
+            for block in analysis["alpha"]["phases"]:
+                lead = block["channels"][0]
+                self.assertGreaterEqual(lead["usable_by_timing"]["sdk_continuity_host_block"], 3)
+                self.assertNotIn("strict_host", lead["usable_by_timing"])
+            unknown = summarize_run({**run, "settings": {}}, recording)
+            self.assertEqual(unknown["alpha"]["channels"][0]["paired_blocks"], 0)
+            (recording / "metrics.jsonl").unlink()
+            legacy = summarize_run(run, recording)
+            self.assertEqual(legacy["alpha"]["channels"][0]["paired_blocks"], 0)
+            self.assertGreater(legacy["alpha"]["phases"][0]["channels"][0]["rejected"]["host_timestamp_gap"], 0)
+
     def test_visual_trial_validity_and_no_unobserved_threshold(self):
         events = []
         for angle, responses in ((1, [True, False, True, False]), (3, [True, True, True, True])):
