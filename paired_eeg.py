@@ -13,6 +13,7 @@ from scipy import signal
 
 BANDS = {"delta": (1., 4.), "theta": (4., 8.), "alpha": (8., 13.),
          "beta": (13., 30.), "low_gamma": (30., 45.)}
+POWER_MIN_EPOCHS = 3
 NOTICE = ("Два биполярных отведения: O1–T3 и O2–T4. Когерентность и wPLI — "
           "свойства записанных электрических сигналов, не доказательство "
           "нейронной связи полушарий. Асимметрия мощности не определяет "
@@ -25,6 +26,30 @@ def _fail(status: str, reason: str, *, count: int = 0, accepted: int = 0,
             "channels": names or ["O1–T3", "O2–T4"], "bands": {},
             "quality": {"total_epochs": count, "accepted_epochs": accepted},
             "notice": NOTICE}
+
+
+def _power_summary(psd: np.ndarray, counts: list[int], rejections: list[dict[str, int]],
+                   freq: np.ndarray, labels: list[str], count: int, epoch_s: float,
+                   min_epochs: int, *, raw: bool = False) -> dict[str, Any]:
+    broad = (freq >= 1) & (freq < 45)
+    bands: dict[str, dict[str, float | None]] = {}
+    channels = []
+    for k, name in enumerate(labels):
+        total = np.trapezoid(psd[broad, k], freq[broad])
+        available = counts[k] >= POWER_MIN_EPOCHS and total > 1e-18
+        channels.append({"name": name, "available": bool(available),
+            "accepted_epochs": counts[k], "total_epochs": count,
+            "rejected_by": rejections[k]})
+        for band, (low, high) in BANDS.items():
+            select = (freq >= low) & (freq < high)
+            value = float(np.trapezoid(psd[select, k], freq[select]) / total) if available else None
+            bands.setdefault(band, {})[["left_relative_power", "right_relative_power"][k]] = value
+    available = any(ch["available"] for ch in channels)
+    return {"available": available,
+        "status": "raw" if raw else "limited" if any(n < max(min_epochs, count) for n in counts) else "screened",
+        "bands": bands, "channels": channels,
+        "quality": {"epoch_seconds": epoch_s, "minimum_epochs": POWER_MIN_EPOCHS},
+        "reason": None if available else f"Для мощности нужны ≥{POWER_MIN_EPOCHS} окон по {epoch_s:g} с хотя бы в одном отведении."}
 
 
 def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
@@ -55,7 +80,7 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
     n = int(round(fs * epoch_s))
     starts = range(0, len(data)-n+1, n)
     count = len(starts)
-    if count < min_epochs:
+    if count == 0:
         return _fail("insufficient", f"Для оценки нужны ≥{min_epochs} неперекрывающихся окон по {epoch_s:g} с.", count=count, names=labels)
     window = signal.windows.hann(n, sym=False)
     freq = np.fft.rfftfreq(n, 1/fs)
@@ -67,28 +92,46 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
     total_cross = np.zeros(freq.size, dtype=complex)
     total_imaginary_abs = np.zeros(freq.size)
     reason_counts: dict[str, int] = {}
+    channel_psd = np.zeros((freq.size, 2))
+    channel_counts = [0, 0]
+    raw_psd = np.zeros((freq.size, 2))
+    raw_counts = [0, 0]
+    channel_rejections: list[dict[str, int]] = [{}, {}]
     for j, start in enumerate(starts):
         a = data[start:start+n]
-        fail = None
-        if usable_window is not None and (j >= len(usable_window) or not usable_window[j]):
-            fail = "quality_screen"
-        elif not np.isfinite(a).all():
-            fail = "nonfinite"
-        elif any(np.ptp(a[:,k]) <= 1e-12 for k in range(2)):
-            fail = "flatline"
-        elif any(np.unique(a[:,k]).size < 20 for k in range(2)):
-            fail = "quantized"
-        elif any(np.mean(np.isclose(np.abs(a[:,k]), .8, atol=1e-10, rtol=0)) > .001 for k in range(2)):
-            fail = "suspected_rail"
-        else:
-            detrended = signal.detrend(a, axis=0, type="linear")
-            z = np.fft.rfft(detrended * window[:,None], axis=0)
-            sp = np.abs(z)**2
-            for k in range(2):
-                if np.sum(sp[broad,k]) <= 1e-20:
-                    fail = "low_power"; break
-                if np.sum(sp[line,k])/np.sum(sp[broad,k]) > .50:
-                    fail = "line_noise"; break
+        failures: list[str | None] = [None, None]
+        z = np.zeros((freq.size, 2), dtype=complex)
+        sp = np.zeros((freq.size, 2))
+        for k in range(2):
+            x = a[:, k]
+            continuous = usable_window is None or (j < len(usable_window) and usable_window[j])
+            if continuous and np.isfinite(x).all() and np.ptp(x) > 1e-12:
+                z[:, k] = np.fft.rfft(signal.detrend(x, type="linear") * window)
+                sp[:, k] = np.abs(z[:, k]) ** 2
+                raw_psd[:, k] += sp[:, k]
+                raw_counts[k] += 1
+            if usable_window is not None and (j >= len(usable_window) or not usable_window[j]):
+                failures[k] = "quality_screen"
+            elif not np.isfinite(x).all():
+                failures[k] = "nonfinite"
+            elif np.ptp(x) <= 1e-12:
+                failures[k] = "flatline"
+            elif np.unique(x).size < 20:
+                failures[k] = "quantized"
+            elif np.mean(np.isclose(np.abs(x), .8, atol=1e-10, rtol=0)) > .001:
+                failures[k] = "suspected_rail"
+            else:
+                if np.sum(sp[broad, k]) <= 1e-20:
+                    failures[k] = "low_power"
+                elif np.sum(sp[line, k]) / np.sum(sp[broad, k]) > .50:
+                    failures[k] = "line_noise"
+            reason = failures[k]
+            if reason:
+                channel_rejections[k][reason] = channel_rejections[k].get(reason, 0) + 1
+            else:
+                channel_psd[:, k] += sp[:, k]
+                channel_counts[k] += 1
+        fail = next((reason for reason in failures if reason), None)
         if fail:
             reason_counts[fail] = reason_counts.get(fail, 0)+1
         else:
@@ -100,10 +143,18 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
     quality = {"total_epochs": count, "accepted_epochs": accepted,
                "accepted_pct": round(100 * accepted / count, 1), "rejected_by": reason_counts,
                "epoch_seconds": epoch_s, "overlap": 0}
+    # Descriptive band power has its own sample requirement. A bad channel must
+    # not hide a usable spectrum from the other lead, or imply valid coupling.
+    spectrum = _power_summary(channel_psd, channel_counts, channel_rejections,
+                              freq, labels, count, epoch_s, min_epochs)
+    raw_spectrum = _power_summary(raw_psd, raw_counts, channel_rejections,
+                                  freq, labels, count, epoch_s, min_epochs, raw=True)
     if accepted < min_epochs or accepted / count < .50:
-        result = _fail("low_quality", f"Прошли проверку только {accepted} из {count} окон; нужно ≥{min_epochs} и ≥50% неперекрывающихся окон.",
+        result = _fail("insufficient" if count < min_epochs else "low_quality", f"Прошли проверку только {accepted} из {count} окон; нужно ≥{min_epochs} и ≥50% неперекрывающихся окон.",
                        count=count, accepted=accepted, names=labels)
         result["quality"] = quality
+        result["spectral_power"] = spectrum
+        result["raw_spectral_power"] = raw_spectrum
         return result
     # Accumulate frequency-bin sums in constant memory even for long recordings.
     norm = fs * np.sum(window ** 2) * accepted
@@ -115,6 +166,8 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
         result = _fail("low_power", "Невозможно надёжно нормировать очень слабые сигналы.",
                        count=count, accepted=accepted, names=labels)
         result["quality"] = quality
+        result["spectral_power"] = spectrum
+        result["raw_spectral_power"] = raw_spectrum
         return result
     bands = {}
     for band, (low, high) in BANDS.items():
@@ -143,7 +196,7 @@ def analyze_pair(raw: Any, sample_rate_hz: float, *, epoch_s: float = 4.,
             "wpli": float(np.clip(band_wpli,0,1)),
         }
     return {"available": bool(bands),"status":"exploratory","reason":None,
-            "channels":labels,"bands":bands,"quality":quality,
+            "channels":labels,"bands":bands,"quality":quality,"spectral_power":spectrum,"raw_spectral_power":raw_spectrum,
             "method":"Hann FFT; non-overlapping, paired epochs; mean spectra, band-integrated MSC / |ImCoh| / wPLI; alpha/beta etc 1–45 Hz; sample-index time",
             "notice":NOTICE,
             "limitations":[

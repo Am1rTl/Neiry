@@ -57,6 +57,66 @@ class TestPairedScientificMetrics(unittest.TestCase):
         self.assertFalse(r['available'])
         self.assertEqual(r['quality']['accepted_epochs'],3)
 
+    def test_power_remains_available_when_too_few_epochs_for_connectivity(self):
+        result = analyze_pair(pair(12), FS)
+        self.assertFalse(result['available'])
+        self.assertFalse(result['bands'])
+        power = result['spectral_power']
+        self.assertTrue(power['available'])
+        self.assertEqual(power['status'], 'limited')
+        self.assertGreater(power['bands']['alpha']['left_relative_power'], .9)
+        self.assertEqual(power['channels'][0]['accepted_epochs'], 3)
+        self.assertNotIn('coherence_msc', power['bands']['alpha'])
+
+    def test_noisy_channel_does_not_hide_usable_other_channel(self):
+        data = pair(40)
+        t = np.arange(len(data)) / FS
+        data[:, 0] += .5 * np.sin(2 * np.pi * 50 * t)
+        result = analyze_pair(data, FS)
+        self.assertFalse(result['available'])
+        power = result['spectral_power']
+        self.assertTrue(power['available'])
+        self.assertIsNone(power['bands']['alpha']['left_relative_power'])
+        self.assertGreater(power['bands']['alpha']['right_relative_power'], .9)
+        self.assertEqual(power['channels'][0]['rejected_by']['line_noise'], 10)
+        self.assertEqual(power['channels'][1]['accepted_epochs'], 10)
+
+    def test_three_clean_windows_among_noise_can_show_limited_power(self):
+        data = pair(40)
+        t = np.arange(FS * 28) / FS
+        data[:FS * 28] += .5 * np.sin(2 * np.pi * 50 * t)[:, None]
+        result = analyze_pair(data, FS)
+        self.assertFalse(result['available'])
+        self.assertEqual(result['quality']['accepted_epochs'], 3)
+        self.assertTrue(result['spectral_power']['available'])
+        self.assertEqual(result['spectral_power']['status'], 'limited')
+        self.assertGreater(result['spectral_power']['bands']['alpha']['left_relative_power'], .9)
+
+    def test_raw_power_displays_contaminated_signal_without_publishing_connectivity(self):
+        data = pair(40)
+        t = np.arange(len(data)) / FS
+        data += .5 * np.sin(2 * np.pi * 50 * t)[:, None]
+        result = analyze_pair(data, FS)
+        self.assertFalse(result['available'])
+        self.assertFalse(result['spectral_power']['available'])
+        raw = result['raw_spectral_power']
+        self.assertTrue(raw['available'])
+        self.assertEqual(raw['status'], 'raw')
+        self.assertEqual(raw['channels'][0]['accepted_epochs'], 10)
+        self.assertGreater(raw['bands']['alpha']['left_relative_power'], .9)
+        self.assertNotIn('coherence_msc', raw['bands']['alpha'])
+        flat = analyze_pair(np.zeros((FS * 40, 2)), FS)
+        self.assertFalse(flat['raw_spectral_power']['available'])
+
+    def test_invalid_windows_never_supply_descriptive_power(self):
+        for data in [np.zeros((FS * 40, 2)), np.full((FS * 40, 2), np.nan), np.round(pair(40), 2)]:
+            result = analyze_pair(data, FS)
+            self.assertFalse(result['spectral_power']['available'])
+            self.assertIsNone(result['spectral_power']['bands']['alpha']['left_relative_power'])
+        result = analyze_pair(pair(40), FS, usable_window=[True] * 2 + [False] * 8)
+        self.assertFalse(result['spectral_power']['available'])
+        self.assertEqual(result['spectral_power']['channels'][0]['accepted_epochs'], 2)
+
     def test_swapped_montage_is_reordered_not_mislabeled(self):
         a=pair(44)
         baseline=analyze_pair(a,FS)

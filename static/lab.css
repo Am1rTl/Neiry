@@ -339,19 +339,33 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
 .pair-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 .pair-dot.left { background: #74e5cf; }
 .pair-dot.right { background: #9ba9ff; }
-.pair-body { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.pair-body { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .pair-map-widget {
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: radial-gradient(ellipse at 50% 38%, #16253a, #0c1725 70%);
+  overflow: hidden;
+  border: 1px solid #334b5e;
+  border-radius: 16px;
+  background: radial-gradient(ellipse at 50% 44%, #1a3041 0, #101e2e 48%, #0d1826 85%);
+  box-shadow: inset 0 1px 0 #c5e6f508;
 }
-.pair-canvas { display: block; width: 100%; height: 320px; cursor: grab; outline-offset: -5px; border-radius: 12px; }
+.pair-map-heading { display: flex; justify-content: space-between; gap: 10px; margin: 18px 20px 12px; align-items: center; }
+.pair-map-heading > span { color: #a8c1d0; font-size: 9px; font-weight: 600; letter-spacing: 1.7px; }
+.pair-map-heading small { color: var(--soft); font-size: 10px; }
+.pair-map-views { display: flex; width: fit-content; gap: 3px; margin: 0 auto; padding: 3px; border: 1px solid #314659; border-radius: 9px; background: #0c172680; }
+.pair-map-views button { min-height: 30px; padding: 5px 13px; background: transparent; color: var(--muted); border: 1px solid transparent; border-radius: 6px; font-size: 11px; }
+.pair-map-views button:hover { color: var(--text); background: #20364a; }
+.pair-map-views button[aria-pressed="true"] { background: #263e4f; border-color: #416072; color: #d5eee9; box-shadow: 0 1px 4px #0003; }
+.pair-map-views .pair-map-reset { border-left-color: #314659; border-radius: 0 6px 6px 0; font-size: 19px; line-height: 1; padding: 3px 10px; }
+.pair-canvas { display: block; width: 100%; height: 410px; cursor: grab; touch-action: none; outline-offset: -5px; border-radius: 12px; }
+.pair-canvas:focus-visible { outline: 2px solid var(--mint); }
 .pair-canvas:active { cursor: grabbing; }
+.pair-map-key { display: flex; justify-content: center; flex-wrap: wrap; gap: 7px 13px; margin: 0 16px 14px; min-height: 14px; }
+.pair-map-key span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; white-space: nowrap; }
+.pair-map-key .pair-dot { width: 5px; height: 5px; }
 .pair-map-footer { display: grid; gap: 4px; margin: 0 16px; padding: 10px 0 14px; border-top: 1px solid var(--line-soft); }
 .pair-map-footer .chart-caption { margin: 0; font-size: 12px; }
 .pair-map-footer [data-map-caption] { color: var(--muted); }
-.pair-results { display: grid; gap: 9px; min-width: 0; }
+.pair-results { display: grid; gap: 13px; min-width: 0; }
 .pair-status {
   font-size: 12px;
   color: var(--muted);
@@ -363,15 +377,15 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
 .pair-spectrum { padding: 5px 8px 7px; border: 1px solid var(--line); border-radius: 12px; background: #101b2a; }
 .pair-spectrum-heading, .pair-band-row {
   display: grid;
-  grid-template-columns: minmax(78px, .85fr) repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(100px, .85fr) repeat(2, minmax(0, 1fr));
   gap: 10px;
   align-items: center;
   padding: 0 8px;
 }
-.pair-spectrum-heading { min-height: 30px; color: var(--muted); font-size: 11px; }
+.pair-spectrum-heading { min-height: 38px; color: var(--muted); font-size: 11px; }
 .pair-band-row {
   width: 100%;
-  min-height: 46px;
+  min-height: 58px;
   margin-top: 2px;
   border: 1px solid transparent;
   border-radius: 7px;
@@ -384,10 +398,11 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
 .pair-band-row[aria-pressed="true"] { border-inline-start-color: var(--pair-band-color); }
 .pair-band-name { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .pair-band-name .pair-dot { background: var(--pair-band-color); flex: 0 0 7px; width: 7px; height: 7px; }
-.pair-band-name b { color: var(--pair-band-color); min-width: 10px; font-size: 14px; }
-.pair-band-name small { color: var(--muted); font-size: 10px; }
+.pair-band-name b { display: grid; place-items: center; width: 25px; height: 30px; flex-shrink: 0; border: 1px solid color-mix(in srgb, var(--pair-band-color) 22%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--pair-band-color) 8%, transparent); color: var(--pair-band-color); font-size: 18px; font-weight: 500; }
+.pair-band-name > span { font-size: 11px; }
+.pair-band-name small { display: block; color: var(--muted); font-size: 10px; }
 .pair-power { display: grid; grid-template-columns: minmax(0, 1fr) 48px; gap: 6px; align-items: center; }
-.pair-track { height: 6px; background: #334358; border-radius: 5px; overflow: hidden; }
+.pair-track { height: 5px; background: #334358; border-radius: 5px; overflow: hidden; }
 .pair-fill { display: block; width: var(--pair-power, 0%); height: 100%; border-radius: inherit; background: var(--pair-band-color); }
 .pair-power strong { font-variant-numeric: tabular-nums; font-size: 12px; text-align: end; }
 .pair-details { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
@@ -396,12 +411,19 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
 .pair-details strong { display: block; font-size: 14px; font-variant-numeric: tabular-nums; }
 .pair-detail-hint, .pair-quality, .pair-disclaimer { color: var(--muted); font-size: 12px; line-height: 1.55; }
 .pair-detail-hint { margin: 0; }
+.pair-quality { white-space: pre-line; }
+.pair-workbench[data-power-state="limited"] .pair-status, .pair-workbench[data-power-state="raw"] .pair-status { border-left-color: var(--amber); color: #e4c798; background: #493b252b; }
 .pair-disclaimer { margin: 12px 0 3px; }
 @media (max-width: 980px) {
   .pair-body { grid-template-columns: 1fr; }
-  .pair-canvas { height: 270px; }
+  .pair-canvas { height: 380px; }
 }
 @media (max-width: 440px) {
+  .pair-map-heading { margin: 15px 14px 12px; }
+  .pair-map-heading > span { letter-spacing: 1px; }
+  .pair-map-heading small { font-size: 9px; }
+  .pair-map-views button { min-height: 36px; }
+  .pair-canvas { height: 360px; }
   .pair-spectrum-heading, .pair-band-row { gap: 7px; padding: 0 5px; }
   .pair-power { grid-template-columns: minmax(0, 1fr) 42px; gap: 4px; }
   .pair-power strong { font-size: 11px; }

@@ -786,6 +786,13 @@
     const current=()=>request===diagnosticRequest&&visibleDiagnostics.has('paired')&&diagnosticAvailable('paired');
     try{
       const pair=await api('/api/live/paired',options);
+      // Older running servers can expose raw PSD without interrupting recording.
+      if(current() && !pair.raw_spectral_power && (status?.contact?.stable_seconds || 0) >= 12) {
+        try {
+          const spec=await api('/api/spectrum?window_s=12&fmax=100',options);
+          if(current()) pair.raw_spectral_power=window.NeuroPairedPanel.rawPowerFromSpectrum(spec);
+        } catch (_) { /* Preserve paired data and its explicit quality reason. */ }
+      }
       if(current())window.NeuroPairedPanel.attach(pairedPanel(),pair);
     }catch(e){
       if(current())window.NeuroPairedPanel.attach(pairedPanel(),{available:false,reason:'Парный анализ недоступен: '+e.message});
@@ -1064,6 +1071,8 @@
       statusFingerprint='';box.innerHTML=devicePanel(status);bind();await poll();
     }else if(view==='live'){
       box.innerHTML=livePanel();bind();
+      // The montage is useful even when status requests fail or no device is connected.
+      window.NeuroPairedPanel.attach(pairedPanel(), {available:false,reason:'Ожидаем состояние устройства и пригодные парные окна ЭЭГ.'});
       window.NeuroCheckpoints?.syncControls();
       observePlots();
       openWS(); await poll();
