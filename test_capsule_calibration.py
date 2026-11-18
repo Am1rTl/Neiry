@@ -159,6 +159,27 @@ class GuidedCalibrationTests(unittest.TestCase):
         self.assertTrue(self.state._calibration_reconnect)
         self.assertEqual(self.client.post('/api/device/calibration/start').status_code, 409)
 
+    def artifact_subscription(self, channels=1):
+        class Error(ctypes.Structure):
+            _fields_ = [('code', ctypes.c_int)]
+
+        pointer = ctypes.pointer(ctypes.c_int(1))
+        quality = Mock(return_value=0.92)
+        lib = SimpleNamespace(
+            clCDevice_SetOnEEGArtifactsEvent=Mock(),
+            clCEEGArtifacts_GetChannelsCount=Mock(return_value=channels),
+            clCEEGArtifacts_GetTimestampMilli=Mock(return_value=1_700_000_000_004),
+            clCEEGArtifacts_GetArtifactByChannel=Mock(return_value=4),
+            clCEEGArtifacts_GetEEGQuality=quality,
+        )
+        device = SimpleNamespace(get_c_pointer=lambda: pointer)
+        self.enterContext(patch.multiple(server, Error=Error, Error_Code=SimpleNamespace(OK=0)))
+        callback = server._subscribe_eeg_artifacts(device, lib)
+        lib.clCDevice_SetOnEEGArtifactsEvent.assert_called_once_with(pointer, callback)
+        self.assertIs(quality.restype, ctypes.c_float)
+        self.state.stream_support['eeg_artifacts'] = True
+        return lib, lambda: callback(pointer, pointer)
+
     def test_raw_capture_records_sdk_batch_bounds_and_artifacts(self):
         eeg = Mock()
         eeg.get_samples_count.return_value = 2
@@ -167,24 +188,8 @@ class GuidedCalibrationTests(unittest.TestCase):
         eeg.get_timestamp.side_effect = [1_700_000_000_000, 1_700_000_000_004]
         server.on_eeg(None, eeg)
 
-        class Error(ctypes.Structure):
-            _fields_ = [('code', ctypes.c_int)]
-
-        pointer = ctypes.pointer(ctypes.c_int(1))
-        quality = Mock(return_value=0.92)
-        lib = SimpleNamespace(
-            clCDevice_SetOnEEGArtifactsEvent=Mock(),
-            clCEEGArtifacts_GetChannelsCount=Mock(return_value=1),
-            clCEEGArtifacts_GetTimestampMilli=Mock(return_value=1_700_000_000_004),
-            clCEEGArtifacts_GetArtifactByChannel=Mock(return_value=4),
-            clCEEGArtifacts_GetEEGQuality=quality,
-        )
-        device = SimpleNamespace(get_c_pointer=lambda: pointer)
-        with patch.multiple(server, Error=Error, Error_Code=SimpleNamespace(OK=0)):
-            callback = server._subscribe_eeg_artifacts(device, lib)
-            lib.clCDevice_SetOnEEGArtifactsEvent.assert_called_once_with(pointer, callback)
-            callback(pointer, pointer)
-        self.assertIs(quality.restype, ctypes.c_float)
+        _, emit = self.artifact_subscription()
+        emit()
         self.rec.close()
         records = [json.loads(line) for line in (self.path / 'metrics.jsonl').read_text().splitlines()]
         batch, artifact = records
@@ -192,6 +197,60 @@ class GuidedCalibrationTests(unittest.TestCase):
                          ('eeg_batch_timing', 2, 0))
         self.assertEqual(batch['sdk_last_ms'] - batch['sdk_first_ms'], 4)
         self.assertEqual(artifact['channels'], [{'index': 0, 'flags': 4, 'quality': 0.92}])
+
+    def test_live_artifacts_age_independently_and_reset_before_reconnect(self):
+        server.RECORDER = None
+
+        def snapshot():
+            return self.client.get('/api/device/status').json()['eeg_artifacts']
+
+        self.assertEqual(snapshot()['state'], 'unsupported')
+        lib, emit = self.artifact_subscription(2)
+        self.assertEqual(snapshot(), {'state': 'waiting', 'age_s': None, 'channel_count': None, 'channels': []})
+        lib.clCEEGArtifacts_GetEEGQuality.side_effect = [float('nan'), 2.4]
+        lib.clCEEGArtifacts_GetArtifactByChannel.side_effect = [0, 7]
+        emit()
+        result = snapshot()
+        self.assertEqual((result['state'], result['channel_count']), ('fresh', 2))
+        self.assertEqual(result['channels'], [{'index': 0, 'flags': 0, 'quality': None},
+                                              {'index': 1, 'flags': 7, 'quality': 2.4}])
+        self.state.metrics_updated_at['eeg_artifacts'] -= server.settings.METRIC_STALE_SECONDS + 1
+        self.state.metrics_updated_at['eeg'] = time.monotonic()
+        self.assertEqual(snapshot()['state'], 'stale')
+        tick = server._build_client_tick(server._build_tick_snapshot(), server._WSDelta(lean=True))
+        self.assertEqual((tick['eeg_artifacts']['state'], tick['eeg_artifacts']['channels']),
+                         ('stale', result['channels']))
+        lib.clCEEGArtifacts_GetChannelsCount.return_value = 0
+        emit()  # Empty events cannot make the last usable result fresh again.
+        self.assertEqual(snapshot()['state'], 'stale')
+
+        server._clear_live_connection('Отключение')
+        self.assertEqual(snapshot()['state'], 'disconnected')
+        replay = SimpleNamespace(status=lambda: {'active': True}, generation=1)
+        with patch.object(server, 'REPLAY', replay):
+            tick = server._build_client_tick(server._build_tick_snapshot(), server._WSDelta(lean=True))
+            self.assertIsNone(tick['eeg_artifacts'])
+        self.state._device_ready = True
+        self.state.status = 'connected'
+        self.state.stream_support['eeg_artifacts'] = True
+        emit()  # A late event from the previous device must not repopulate the view.
+        self.assertEqual(snapshot()['state'], 'waiting')
+        self.assertEqual(lib.clCEEGArtifacts_GetChannelsCount.call_count, 2)
+
+    def test_live_artifact_slice_preserves_all_channels_in_the_recording(self):
+        limit = server.EEG_ARTIFACT_DISPLAY_CHANNELS
+        lib, emit = self.artifact_subscription(limit + 3)
+        with patch.object(server, 'RECORDER', None):
+            emit()
+            self.assertEqual(lib.clCEEGArtifacts_GetArtifactByChannel.call_count, limit)
+            lib.clCEEGArtifacts_GetTimestampMilli.assert_not_called()
+        emit()
+        view = self.client.get('/api/device/status').json()['eeg_artifacts']
+        self.assertEqual((len(view['channels']), view['channel_count']), (limit, limit + 3))
+        self.rec.close()
+        rows = (self.path / 'metrics.jsonl').read_text().splitlines()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(json.loads(rows[0])['channels']), limit + 3)
 
 
 class NativeCalibrationBindingTests(unittest.TestCase):
