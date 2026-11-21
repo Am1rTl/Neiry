@@ -122,16 +122,26 @@
     state.charts.forEach(c => c.destroy());
     state.charts = [];
   }
-  function signalZoomPlugin() {
+  const zoomGroups=new Map();
+  function signalZoomPlugin(axis) {
+    if(!zoomGroups.has(axis))zoomGroups.set(axis,{range:null,listeners:new Set()});
+    const group=zoomGroups.get(axis);
+    function broadcast(range){
+      group.range=range;
+      for(const listener of group.listeners)listener(range);
+    }
     let dispose;
     return {
       id:'signalRangeZoom',
       afterInit(plot) {
         const canvas=plot.canvas, shell=canvas.parentElement;
         const original={min:plot.options.scales.x.min,max:plot.options.scales.x.max};
+        const xs=plot.data.datasets.flatMap(series=>series.data.filter(p=>Number.isFinite(p.y)).map(p=>p.x));
+        const first=xs.reduce((a,b)=>Math.min(a,b),Infinity),last=xs.reduce((a,b)=>Math.max(a,b),-Infinity);
+        const hint=axis==='time'?'Выделите время на любом графике':'Выделите диапазон частот';
         const controls=document.createElement('div');
         controls.className='control-row';
-        controls.innerHTML='<span class="chart-caption">Выделите диапазон по горизонтали</span><button type="button" class="button subtle">Приблизить ×2</button><button type="button" class="button subtle" disabled>Сбросить масштаб</button>';
+        controls.innerHTML=`<span class="chart-caption">${hint}</span><button type="button" class="button subtle">Приблизить ×2</button><button type="button" class="button subtle" disabled>Сбросить масштаб</button>`;
         shell.after(controls);
         const [zoom,reset]=controls.querySelectorAll('button');
         const band=document.createElement('div');
@@ -146,21 +156,23 @@
           return {x:(e.clientX-rect.left)*plot.width/rect.width,y:(e.clientY-rect.top)*plot.height/rect.height};
         };
         const clamp=x=>Math.min(plot.chartArea.right,Math.max(plot.chartArea.left,x));
+        function setRange(range){
+          Object.assign(plot.options.scales.x,range||original);
+          reset.disabled=!range;
+          controls.firstElementChild.textContent=range&&(range.max<first||range.min>last)
+            ? 'В выбранном диапазоне нет данных этого графика' : hint;
+        }
+        const update=range=>{setRange(range);plot.update('none');};
+        group.listeners.add(update);
+        setRange(group.range);
         function apply(min,max){
-          if(!(max>min))return;
-          Object.assign(plot.options.scales.x,{min,max});
-          plot.update('none');
-          reset.disabled=false;
+          if(max>min)broadcast({min,max});
         }
         zoom.onclick=()=>{
           const {min,max}=plot.scales.x, inset=(max-min)/4;
           apply(min+inset,max-inset);
         };
-        reset.onclick=()=>{
-          Object.assign(plot.options.scales.x,original);
-          plot.update('none');
-          reset.disabled=true;
-        };
+        reset.onclick=()=>broadcast(null);
         canvas.style.touchAction='pan-y';
         canvas.style.cursor='crosshair';
         listen('pointerdown',e=>{
@@ -182,7 +194,7 @@
         });
         listen('lostpointercapture',clear);
         listen('pointercancel',clear);
-        dispose=()=>{events.abort();controls.remove();band.remove();canvas.style.touchAction='';canvas.style.cursor='';};
+        dispose=()=>{group.listeners.delete(update);events.abort();controls.remove();band.remove();canvas.style.touchAction='';canvas.style.cursor='';};
       },
       afterDestroy(){dispose?.();}
     };
@@ -190,17 +202,27 @@
   function chart(id, datasets, opts = {}) {
     const canvas = $(`#${id}`);
     if (!canvas || !window.Chart) return;
+    const zoomable=['overview','signals'].includes(state.view);
+    if(zoomable&&!opts.frequency){
+      const streams=state.analysis?.session?.streams||{};
+      const source=id.startsWith('ppg-')?'ppg':id==='motion-chart'?'mems':'eeg';
+      const starts=Object.values(streams).map(stream=>stream.first_timestamp).filter(Number.isFinite);
+      // Impedance is already relative to the first recorded stream.
+      const offset=id!=='impedance-chart'&&starts.length&&Number.isFinite(streams[source]?.first_timestamp)
+        ? streams[source].first_timestamp-Math.min(...starts) : 0;
+      if(offset)datasets=datasets.map(series=>({...series,data:series.data.map(p=>({...p,x:p.x+offset}))}));
+    }
     const options = {
       responsive:true, maintainAspectRatio:false, animation:false, normalized:true, parsing:false,
       interaction:{mode:'nearest',axis:'x',intersect:false},
       plugins:{legend:{display:false},tooltip:{backgroundColor:'#1c2a3d',titleColor:'#ecf2f8',bodyColor:'#c4d1e1',padding:11,displayColors:true,cornerRadius:7,borderColor:'#3c4c64',borderWidth:1,
         callbacks:{title: items => `${fmt(items[0]?.parsed.x, opts.frequency?2:1)} ${opts.frequency?'Гц':'с'}`,label:ctx=>`${ctx.dataset.label}: ${fmt(ctx.parsed.y, opts.digits??2)}${opts.suffix||''}`}}},
       elements:{point:{radius:0,hitRadius:6,hoverRadius:3},line:{borderWidth:1.7,tension:0,fill:false}},
-      scales:{x:{type:'linear',min:opts.xmin??undefined,max:opts.xmax??undefined,border:{display:false},grid:{color:'#25324560',drawTicks:false},ticks:{color:'#7f91aa',font:{size:9},maxTicksLimit:8,padding:10},title:{display:true,text:opts.xtitle||(opts.frequency?'Частота, Гц':'Время от начала потока, с'),color:'#71839e',font:{size:9}}},
+      scales:{x:{type:'linear',min:opts.xmin??undefined,max:opts.xmax??undefined,border:{display:false},grid:{color:'#25324560',drawTicks:false},ticks:{color:'#7f91aa',font:{size:9},maxTicksLimit:8,padding:10},title:{display:true,text:opts.xtitle||(opts.frequency?'Частота, Гц':'Время записи, с'),color:'#71839e',font:{size:9}}},
         y:{type:opts.log?'logarithmic':'linear',min:opts.ymin??undefined,max:opts.ymax??undefined,border:{display:false},grid:{color:'#25324580',drawTicks:false},ticks:{color:'#7f91aa',font:{size:9},maxTicksLimit:5,padding:10,callback:v => Math.abs(v)>=10000||Math.abs(v)>0&&Math.abs(v)<.001 ? Number(v).toExponential(0) : fmt(v,Math.abs(v)<1?3:1)},title:{display:!!opts.ytitle,text:opts.ytitle,color:'#71839e',font:{size:9}}}}
     };
     try { state.charts.push(new Chart(canvas,{type:opts.type||'line',data:{datasets},options,
-      plugins:state.view==='signals' && datasets.some(s=>s.data.some(p=>Number.isFinite(p.y)))?[signalZoomPlugin()]:[]})); }
+      plugins:zoomable && datasets.some(s=>s.data.some(p=>Number.isFinite(p.y)))?[signalZoomPlugin(opts.frequency?'frequency':'time')]:[]})); }
     catch (error) { console.error('Chart rendering:',error); canvas.parentElement.innerHTML = empty('График недоступен','Числовые результаты остаются доступны в таблицах и экспорте.'); }
   }
   function points(xs, ys, positive = false) { return arr(xs).map((x, i) => ({x:Number(x),y:num(arr(ys)[i])!==null&&(!positive||Number(ys[i])>0)?Number(ys[i]):null})); }
@@ -307,7 +329,7 @@
     if (renderId === state.renderId) renderComparison(results);
   }
   async function render({refreshList = false} = {}) {
-    const renderId = ++state.renderId; destroyCharts(); notify('');
+    const renderId = ++state.renderId; destroyCharts(); zoomGroups.clear(); notify('');
     state.analysis = null;
     updateExports();
     if (state.view === 'experiments') {
@@ -506,7 +528,6 @@
         const bandLabel = b => compare ? `${c.name} · ${b.name}` : b.name;
         const borderDash = stroke(leadIndex).dash;
         const time = arr(c.excerpt?.time_s);
-        const excerptTime = compare ? time.map(t => t - time[0]) : time;
         if (selected.some(b=>arr(c.band_waveforms?.[b.id]).length)) {
           const start = `${fmt(c.excerpt.start_s,1)} с`;
           starts.push(compare ? `${c.name} · ${start}` : start);
@@ -518,15 +539,15 @@
           byTime.push(dataset(bandLabel(b),data,b.color,{borderDash,pointRadius:({dataIndex:i}) =>
             data[i]?.y != null && data[i-1]?.y == null && data[i+1]?.y == null ? 2 : 0}));
           if (arr(c.band_waveforms?.[b.id]).length) {
-            waveforms.push(dataset(bandLabel(b),points(excerptTime,c.band_waveforms[b.id]),b.color,{borderDash}));
+            waveforms.push(dataset(bandLabel(b),points(time,c.band_waveforms[b.id]),b.color,{borderDash}));
           }
         }
       });
       renderRhythmPlot('rhythm-timeline',byTime,{ymin:0,ymax:100,ytitle:'Доля мощности, %',suffix:' %'});
       const waveform = renderRhythmPlot('rhythm-waveform',waveforms,
-        {xtitle:compare?'Время от начала фрагмента, с':undefined,ytitle:cleanUnits(a.eeg?.units),digits:5});
+        {ytitle:cleanUnits(a.eeg?.units),digits:5});
       $('[data-rhythm-waveform-note]').textContent = waveform
-        ? `Начало в записи (${starts.join(', ')}). Полосовая фильтрация, отдельно от расчёта долей мощности.` : '';
+        ? `Начало от запуска потока ЭЭГ (${starts.join(', ')}). Полосовая фильтрация, отдельно от расчёта долей мощности.` : '';
       const quality = leads.filter(c=>c.quality?.total_windows).map(c=>
         `${compare ? c.name+' · ' : ''}${integer(c.quality.usable_windows)} из ${integer(c.quality.total_windows)}`);
       $('[data-rhythm-note]').textContent = (raw.checked
