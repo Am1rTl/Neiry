@@ -122,6 +122,71 @@
     state.charts.forEach(c => c.destroy());
     state.charts = [];
   }
+  function signalZoomPlugin() {
+    let dispose;
+    return {
+      id:'signalRangeZoom',
+      afterInit(plot) {
+        const canvas=plot.canvas, shell=canvas.parentElement;
+        const original={min:plot.options.scales.x.min,max:plot.options.scales.x.max};
+        const controls=document.createElement('div');
+        controls.className='control-row';
+        controls.innerHTML='<span class="chart-caption">Выделите диапазон по горизонтали</span><button type="button" class="button subtle">Приблизить ×2</button><button type="button" class="button subtle" disabled>Сбросить масштаб</button>';
+        shell.after(controls);
+        const [zoom,reset]=controls.querySelectorAll('button');
+        const band=document.createElement('div');
+        band.className='studio-selection';
+        shell.append(band);
+        const events=new AbortController();
+        const listen=(type,fn)=>canvas.addEventListener(type,fn,{signal:events.signal});
+        let anchor, pointer=null;
+        const clear=()=>{pointer=null;band.style.display='none';};
+        const position=e=>{
+          const rect=canvas.getBoundingClientRect();
+          return {x:(e.clientX-rect.left)*plot.width/rect.width,y:(e.clientY-rect.top)*plot.height/rect.height};
+        };
+        const clamp=x=>Math.min(plot.chartArea.right,Math.max(plot.chartArea.left,x));
+        function apply(min,max){
+          if(!(max>min))return;
+          Object.assign(plot.options.scales.x,{min,max});
+          plot.update('none');
+          reset.disabled=false;
+        }
+        zoom.onclick=()=>{
+          const {min,max}=plot.scales.x, inset=(max-min)/4;
+          apply(min+inset,max-inset);
+        };
+        reset.onclick=()=>{
+          Object.assign(plot.options.scales.x,original);
+          plot.update('none');
+          reset.disabled=true;
+        };
+        canvas.style.touchAction='pan-y';
+        canvas.style.cursor='crosshair';
+        listen('pointerdown',e=>{
+          const {x,y}=position(e), area=plot.chartArea;
+          if(pointer!==null||e.button!==0||x<area.left||x>area.right||y<area.top||y>area.bottom)return;
+          pointer=e.pointerId;anchor=x;canvas.setPointerCapture(pointer);
+        });
+        listen('pointermove',e=>{
+          if(e.pointerId!==pointer)return;
+          const x=clamp(position(e).x), area=plot.chartArea;
+          Object.assign(band.style,{display:'block',left:Math.min(x,anchor)+'px',width:Math.abs(x-anchor)+'px',
+            top:area.top+'px',height:(area.bottom-area.top)+'px'});
+        });
+        listen('pointerup',e=>{
+          if(e.pointerId!==pointer)return;
+          const x=clamp(position(e).x), scale=plot.scales.x;
+          clear();
+          if(Math.abs(x-anchor)>=5)apply(scale.getValueForPixel(Math.min(x,anchor)),scale.getValueForPixel(Math.max(x,anchor)));
+        });
+        listen('lostpointercapture',clear);
+        listen('pointercancel',clear);
+        dispose=()=>{events.abort();controls.remove();band.remove();canvas.style.touchAction='';canvas.style.cursor='';};
+      },
+      afterDestroy(){dispose?.();}
+    };
+  }
   function chart(id, datasets, opts = {}) {
     const canvas = $(`#${id}`);
     if (!canvas || !window.Chart) return;
@@ -134,7 +199,8 @@
       scales:{x:{type:'linear',min:opts.xmin??undefined,max:opts.xmax??undefined,border:{display:false},grid:{color:'#25324560',drawTicks:false},ticks:{color:'#7f91aa',font:{size:9},maxTicksLimit:8,padding:10},title:{display:true,text:opts.xtitle||(opts.frequency?'Частота, Гц':'Время от начала потока, с'),color:'#71839e',font:{size:9}}},
         y:{type:opts.log?'logarithmic':'linear',min:opts.ymin??undefined,max:opts.ymax??undefined,border:{display:false},grid:{color:'#25324580',drawTicks:false},ticks:{color:'#7f91aa',font:{size:9},maxTicksLimit:5,padding:10,callback:v => Math.abs(v)>=10000||Math.abs(v)>0&&Math.abs(v)<.001 ? Number(v).toExponential(0) : fmt(v,Math.abs(v)<1?3:1)},title:{display:!!opts.ytitle,text:opts.ytitle,color:'#71839e',font:{size:9}}}}
     };
-    try { state.charts.push(new Chart(canvas,{type:opts.type||'line',data:{datasets},options})); }
+    try { state.charts.push(new Chart(canvas,{type:opts.type||'line',data:{datasets},options,
+      plugins:state.view==='signals' && datasets.some(s=>s.data.some(p=>Number.isFinite(p.y)))?[signalZoomPlugin()]:[]})); }
     catch (error) { console.error('Chart rendering:',error); canvas.parentElement.innerHTML = empty('График недоступен','Числовые результаты остаются доступны в таблицах и экспорте.'); }
   }
   function points(xs, ys, positive = false) { return arr(xs).map((x, i) => ({x:Number(x),y:num(arr(ys)[i])!==null&&(!positive||Number(ys[i])>0)?Number(ys[i]):null})); }
