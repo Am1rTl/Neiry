@@ -7,7 +7,11 @@
   const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const fmt=(v,d=1)=>Number.isFinite(Number(v))&&v!==null?Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d}):'—';
   const btn=(label,act,style='subtle',disabled=false)=>`<button class="button ${style}" data-studio="${esc(act)}" ${disabled?'disabled':''}>${esc(label)}</button>`;
-  let ctx={},view=null,poller=null,chart=null,sessions=[];
+  let ctx={},view=null,poller=null,sessions=[];
+  const segmentCharts=[];
+  function clearSegmentCharts(){
+    for(const plot of segmentCharts.splice(0)) plot.destroy();
+  }
   let viewEvents, doorRun, presentedPhase, doorAway, experimentBusy=false;
   let bounds=null, segmentRequest, displayed=null;
   let visibilityRequest=Promise.resolve();
@@ -49,7 +53,7 @@
     bounds=null; displayed=null;
     clearTimeout(poller);
     poller=null;
-    if(chart){chart.destroy();chart=null;}
+    clearSegmentCharts();
     view=null;
   }
   function card(title,body,subtitle=''){return `<section class="card"><div class="card-header"><div><h2>${esc(title)}</h2>${subtitle?`<p class="card-subtitle">${esc(subtitle)}</p>`:''}</div></div>${body}</section>`;}
@@ -267,7 +271,7 @@
     segmentRequest?.abort();
     segmentRequest=new AbortController();
     const signal=AbortSignal.any([viewEvents.signal,segmentRequest.signal]);
-    chart?.destroy();chart=null;displayed=null;
+    clearSegmentCharts();displayed=null;
     const area=$('#studio-segment-result');area.innerHTML='<div class="loading-panel">Читаем выбранный участок…</div>';
     try{
       const d=await api(`/api/lab/segment/${encodeURIComponent(id)}?start_s=${start+offset}&duration_s=${duration}`,{signal});
@@ -276,10 +280,39 @@
       displayed={start_s:d.start_s,duration_s:d.duration_s};
       const from=Math.max(0,d.start_s-offset), to=bounds?Math.min(bounds.end_s-offset,from+d.duration_s):from+d.duration_s;
       setRange(from,to);
-      const table=d.bands.map(b=>`<tr><td>${esc(b.channel)}</td>${Object.values(b.bands||{}).map(v=>`<td>${fmt(v,1)}%</td>`).join('')||'<td colspan="5">Недоступно</td>'}</tr>`).join('');
-      area.innerHTML=`<div class="live-canvas studio-plot"><canvas id="studio-segment-chart" aria-label="Фрагмент ЭЭГ"></canvas></div><p class="chart-caption">${esc(d.sample_count)} отсчётов · ${fmt(d.sample_rate_hz)} Гц · ${esc(d.notice)}</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Канал</th><th>Дельта</th><th>Тета</th><th>Альфа</th><th>Бета</th><th>30–45</th></tr></thead><tbody>${table}</tbody></table></div>`;
-      if(window.Chart){chart=new Chart($('#studio-segment-chart'),{type:'line',data:{datasets:d.channels.map((name,i)=>({label:name,data:d.points.map(p=>({x:p.t-offset,y:p.values[i]})),borderColor:['#7ce3cb','#8ca9ff','#e4a2ad'][i%3],pointRadius:0,borderWidth:1.5,spanGaps:false}))},options:{animation:false,responsive:true,maintainAspectRatio:false,parsing:false,normalized:true,scales:{x:{type:'linear',min:from,max:to,ticks:{color:'#90a3bd'},title:{display:true,text:bounds?'От начала эксперимента, с':'От начала ЭЭГ, с',color:'#90a3bd'}},y:{ticks:{color:'#90a3bd'}}},plugins:{legend:{labels:{color:'#b6c6d6'}}}}});bindSelection(chart);}
-    }catch(e){if(signal.aborted)return;area.innerHTML=`<p class="device-error">${esc(e.message)}</p>`;}
+      const timeLabel=bounds?'От начала эксперимента, с':'От начала ЭЭГ, с';
+      const tracks=d.channels.map((name,i)=>{
+        const title=`Канал ${esc(name)}`;
+        const hasSignal=d.points.some(p=>Number.isFinite(p.values[i]));
+        return `<section><h3>${title}</h3>${hasSignal
+          ? `<div class="live-canvas studio-plot"><canvas data-channel="${i}" role="img" aria-label="Сигнал ЭЭГ канала ${esc(name)}"></canvas></div>`
+          : '<p>В выбранном интервале у этого канала нет значений.</p>'}</section>`;
+      }).join('');
+      const bands=['delta','theta','alpha','beta','30-45 Hz'];
+      const table=d.bands.map(b=>`<tr><th scope="row">${esc(b.channel)}</th>${b.bands
+        ? bands.map(key=>`<td>${Number.isFinite(b.bands[key])?fmt(b.bands[key])+'%':'—'}</td>`).join('')
+        : `<td colspan="5">${d.duration_s>120?'Выберите до 120 секунд':esc(b.reason||'Недоступно')}</td>`}</tr>`).join('');
+      area.innerHTML=`<h2>Сигнал ЭЭГ по каналам</h2><p>Каждая линия показывает, как менялся сигнал одной пары электродов. Время общее для всех каналов, шкала амплитуды у каждого своя. Значения приведены в единицах устройства.</p>
+        ${window.Chart?tracks:'<p>Не удалось загрузить графики.</p>'}
+        <p class="chart-caption">${fmt(d.sample_count,0)} отсчётов на канал · ${fmt(d.sample_rate_hz)} Гц · ${esc(d.notice)}</p>
+        <h3>Доля мощности ритмов за выбранный интервал</h3>
+        <p class="chart-caption">Проценты показывают долю мощности каждого диапазона в общей мощности сигнала от 1 до 45 Гц.</p>
+        <div class="table-wrap"><table class="data-table"><thead><tr><th>Канал</th><th>Дельта · 1–4 Гц</th><th>Тета · 4–8 Гц</th><th>Альфа · 8–13 Гц</th><th>Бета · 13–30 Гц</th><th>30–45 Гц</th></tr></thead><tbody>${table}</tbody></table></div>`;
+      for(const canvas of area.querySelectorAll('canvas[data-channel]')){
+        const i=Number(canvas.dataset.channel);
+        const plot=new Chart(canvas,{
+          type:'line',
+          data:{datasets:[{label:d.channels[i],data:d.points.map(p=>({x:p.t-offset,y:p.values[i]})),
+            borderColor:['#7ce3cb','#8ca9ff','#e4a2ad'][i%3],pointRadius:d.points.length===1?3:0,borderWidth:1.5,spanGaps:false}]},
+          options:{animation:false,responsive:true,maintainAspectRatio:false,parsing:false,normalized:true,
+            scales:{x:{type:'linear',min:from,max:to,title:{display:true,text:timeLabel}},
+              y:{title:{display:true,text:'Амплитуда, ед. SDK'}}},
+            plugins:{legend:{display:false}}}
+        });
+        segmentCharts.push(plot);
+        bindSelection(plot);
+      }
+    }catch(e){if(signal.aborted)return;clearSegmentCharts();area.innerHTML=`<p class="device-error">${esc(e.message)}</p>`;}
   }
   function setRange(start,end){
     $('#studio-start').value=start;
