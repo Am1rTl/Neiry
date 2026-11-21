@@ -750,7 +750,7 @@
       });
     }
     window.addEventListener('hashchange', () => {
-      const view = location.hash.slice(1);
+      const view = location.hash.slice(1).split('?')[0];
       if (Object.hasOwn(titles, view)) nav(view);
       else if (!view) nav('overview');
     });
@@ -794,7 +794,8 @@
       let saved=null;try{saved=localStorage.getItem('neuroscope.session');}catch(_){}
       const query=new URLSearchParams(location.search).get('session');
       state.current=(state.sessions.find(s=>s.id===(query||saved))||state.sessions.find(s=>!s.active)||state.sessions[0])?.id||null;
-      state.view=Object.hasOwn(titles,location.hash.slice(1))?location.hash.slice(1):'overview';renderSessions();nav(state.view,false);
+      const initialView=location.hash.slice(1).split('?')[0];
+      state.view=Object.hasOwn(titles,initialView)?initialView:'overview';renderSessions();nav(state.view,false);
     } catch(error) {
       $('#content').innerHTML=`<div class="error-panel"><h2>Список записей недоступен</h2><p>${esc(error.message)}</p><button class="button primary" id="initial-retry">Повторить загрузку</button></div>`;
       $('#initial-retry')?.addEventListener('click',()=>location.reload());

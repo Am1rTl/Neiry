@@ -9,6 +9,7 @@
   const btn=(label,act,style='subtle',disabled=false)=>`<button class="button ${style}" data-studio="${esc(act)}" ${disabled?'disabled':''}>${esc(label)}</button>`;
   let ctx={},view=null,poller=null,chart=null,sessions=[];
   let viewEvents, doorRun, presentedPhase, doorAway, experimentBusy=false;
+  let bounds=null, segmentRequest, displayed=null;
   let visibilityRequest=Promise.resolve();
   const doorProtocol='door_imagery';
   const doorStopReasons={
@@ -44,6 +45,8 @@
   function shutdown(){
     if(view==='experiments')void setDoorAway(true);
     viewEvents?.abort();
+    segmentRequest?.abort();
+    bounds=null; displayed=null;
     clearTimeout(poller);
     poller=null;
     if(chart){chart.destroy();chart=null;}
@@ -136,6 +139,7 @@
       area.innerHTML=`<div class="studio-state"><strong>${active?'Идёт протокол':s.state==='completed'?'Протокол завершён':s.state==='aborted'?'Протокол остановлен':'Нет активного протокола'}</strong>
        <span>${active&&!doorActive?`Этап ${s.phase_index+1}/${s.total_phases}: ${esc(phase?.label)} · осталось ${fmt(s.remaining_s,0)} с`:
                  `Устройство ${d.connected?'подключено':'не подключено'} · Запись ${d.recording?'активна':'не запущена'}`}</span>
+       ${!active&&s.session_id&&s.run_id?`<a class="button primary" href="#segment?session=${encodeURIComponent(s.session_id)}&amp;run=${encodeURIComponent(s.run_id)}">ЭЭГ эксперимента</a>`:''}
        ${active&&!doorActive?`<progress value="${Math.max(0,(phase.duration_s-s.remaining_s))}" max="${phase.duration_s}" style="width:100%"></progress>`:''}</div>`;
       const eegReady=d.connected&&d.validity?.eeg&&!d.stream_stale;
       $$('[data-studio^="start:"]').forEach(b=>{
@@ -214,34 +218,111 @@
       if (!signal.aborted) content().innerHTML=card('История недоступна',`<p>${esc(error.message)}</p>`);
     }
   }
+  function resetRange(){
+    const session=sessions.find(row=>row.id===$('#studio-session')?.value);
+    setRange(0,bounds?bounds.end_s-bounds.start_s:Math.min(session?.eeg_duration_s||10,86400));
+  }
   async function showSegment(){
-    const r=await api('/api/lab/sessions');sessions=(r.sessions||[]).filter(s=>s.id);
-    content().innerHTML=card('Исследователь фрагментов',
-      `<div class="studio-controls"><label>Сессия<select id="studio-session">${sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.id)}</option>`).join('')}</select></label>`+
-      `<label>Начало, с<input id="studio-start" type="number" min="0" max="72000" step="1" value="0"></label>`+
-      `<label>Длина, с<input id="studio-duration" type="number" min="2" max="120" step="1" value="10"></label>${btn('Исследовать','segment','primary')}</div>`+
-      '<p class="chart-caption">Отсчёты сохраняют исходный порядок. Для обзорных графиков применено прореживание с сохранением минимумов/максимумов. Спектральные оценки выбранного интервала не прошли полный контроль артефактов.</p><div id="studio-segment-result"></div>')+
+    const signal=viewEvents.signal;
+    const params=new URLSearchParams(location.hash.split('?')[1]);
+    const session=params.get('session'), run=params.get('run');
+    try {
+      if(run){
+        bounds=await api(`/api/lab/segment/${encodeURIComponent(session)}/experiment/${encodeURIComponent(run)}`,{signal});
+        sessions=[{id:session}];
+      }else{
+        const r=await api('/api/lab/sessions',{signal});
+        sessions=(r.sessions||[]).filter(s=>s.id);
+      }
+    }catch(e){
+      if(!signal.aborted)content().innerHTML=card('ЭЭГ недоступна',`<p>${esc(e.message)}</p>`);
+      return;
+    }
+    if(signal.aborted)return;
+    content().innerHTML=card(run?'ЭЭГ эксперимента':'Исследователь фрагментов',
+      (bounds?`<p>${esc(bounds.name)} · ${fmt(bounds.end_s-bounds.start_s,3)} с · начало в записи: ${fmt(bounds.start_s,3)} с${bounds.approximate?' · границы приблизительные, по времени маркеров':''}</p>`:'')+
+      `<div class="studio-controls"><label>Сессия<select id="studio-session" ${run?'disabled':''}>${sessions.map(s=>`<option value="${esc(s.id)}">${esc(s.id)}</option>`).join('')}</select></label>`+
+      `<label>От, с<input id="studio-start" type="number" min="0" step="any" value="0"></label>`+
+      `<label>До, с<input id="studio-end" type="number" min="0" step="any" value="${bounds?bounds.end_s-bounds.start_s:10}"></label>${btn('Показать','segment','primary')}${btn('Сбросить масштаб','reset')}</div>`+
+      '<p class="chart-caption">Потяните по графику, чтобы приблизить участок. Для оценки мощности ритмов выберите от 2 до 120 секунд.</p><div id="studio-segment-result" aria-live="polite"></div>')+
       card('Рецензирование участка',`<div class="studio-controls"><label>Тип<select id="studio-annotation-kind"><option value="note">Заметка</option><option value="artifact">Артефакт</option><option value="event">Событие</option></select></label><label>Описание<input id="studio-annotation-label" maxlength="120" placeholder="Что видно в сигнале"></label>${btn('Сохранить аннотацию','annotation')}</div><div id="studio-annotations"></div><p class="chart-caption">Аннотации сохраняются отдельно от исходных файлов. Пометка артефакта не пересчитывает автоматически все метрики.</p>`)+
-      card('Экспорт в EEG-BIDS',`<p>Доступен только после проверки физического масштаба ЭЭГ в SDK. Неизвестные единицы нельзя объявлять микровольтами автоматически.</p><div class="studio-controls"><label>Участник<input id="studio-subject" value="01" pattern="[A-Za-z0-9]+"></label><label>Подтверждённые единицы<select id="studio-units"><option value="">Не подтверждены</option><option>uV</option><option>mV</option><option>V</option></select></label><label class="studio-confirm"><input type="checkbox" id="studio-units-confirm">Масштаб проверен по документации SDK</label>${btn('Экспортировать BIDS','bids')}</div><p class="chart-caption">Требуется отдельная установка requirements-research.txt. Аппаратная синхронизация и расположение электродов не восстанавливаются.</p>`);
-    bindActions();if(sessions.length)await Promise.all([fetchSegment(),fetchAnnotations()]);
+      (run?'':card('Экспорт в EEG-BIDS',`<p>Доступен только после проверки физического масштаба ЭЭГ в SDK. Неизвестные единицы нельзя объявлять микровольтами автоматически.</p><div class="studio-controls"><label>Участник<input id="studio-subject" value="01" pattern="[A-Za-z0-9]+"></label><label>Подтверждённые единицы<select id="studio-units"><option value="">Не подтверждены</option><option>uV</option><option>mV</option><option>V</option></select></label><label class="studio-confirm"><input type="checkbox" id="studio-units-confirm">Масштаб проверен по документации SDK</label>${btn('Экспортировать BIDS','bids')}</div><p class="chart-caption">Требуется отдельная установка requirements-research.txt. Аппаратная синхронизация и расположение электродов не восстанавливаются.</p>`));
+    bindActions();
+    if(sessions.length){
+      resetRange();
+      await Promise.all([fetchSegment(),fetchAnnotations()]);
+    }else{
+      $('#studio-segment-result').textContent='Пока нет записей ЭЭГ.';
+    }
   }
   async function fetchSegment(){
     if(view!=='segment')return;
-    const id=$('#studio-session')?.value, start=Number($('#studio-start').value), duration=Number($('#studio-duration').value);
+    const id=$('#studio-session')?.value;
     if(!id)return;
+    const start=$('#studio-start').valueAsNumber, end=$('#studio-end').valueAsNumber;
+    const duration=end-start, offset=bounds?.start_s||0;
+    if(!Number.isFinite(duration)||start<0||duration<=0||(bounds&&end>bounds.end_s-offset+1e-9)){
+      message('Укажите начало и конец внутри записи. Конец должен быть позже начала.',true);return;
+    }
+    segmentRequest?.abort();
+    segmentRequest=new AbortController();
+    const signal=AbortSignal.any([viewEvents.signal,segmentRequest.signal]);
+    chart?.destroy();chart=null;displayed=null;
     const area=$('#studio-segment-result');area.innerHTML='<div class="loading-panel">Читаем выбранный участок…</div>';
     try{
-      const d=await api(`/api/lab/segment/${encodeURIComponent(id)}?start_s=${start}&duration_s=${duration}`);
+      const d=await api(`/api/lab/segment/${encodeURIComponent(id)}?start_s=${start+offset}&duration_s=${duration}`,{signal});
+      if(signal.aborted)return;
       if(!d.available){area.innerHTML=`<p>${esc(d.reason||'Нет данных')}</p>`;return;}
+      displayed={start_s:d.start_s,duration_s:d.duration_s};
+      const from=Math.max(0,d.start_s-offset), to=bounds?Math.min(bounds.end_s-offset,from+d.duration_s):from+d.duration_s;
+      setRange(from,to);
       const table=d.bands.map(b=>`<tr><td>${esc(b.channel)}</td>${Object.values(b.bands||{}).map(v=>`<td>${fmt(v,1)}%</td>`).join('')||'<td colspan="5">Недоступно</td>'}</tr>`).join('');
       area.innerHTML=`<div class="live-canvas studio-plot"><canvas id="studio-segment-chart" aria-label="Фрагмент ЭЭГ"></canvas></div><p class="chart-caption">${esc(d.sample_count)} отсчётов · ${fmt(d.sample_rate_hz)} Гц · ${esc(d.notice)}</p><div class="table-wrap"><table class="data-table"><thead><tr><th>Канал</th><th>Дельта</th><th>Тета</th><th>Альфа</th><th>Бета</th><th>30–45</th></tr></thead><tbody>${table}</tbody></table></div>`;
-      if(chart){chart.destroy();chart=null;}
-      if(window.Chart){chart=new Chart($('#studio-segment-chart'),{type:'line',data:{datasets:d.channels.map((name,i)=>({label:name,data:d.points.map(p=>({x:p.t,y:p.values[i]})),borderColor:['#7ce3cb','#8ca9ff','#e4a2ad'][i%3],pointRadius:0,borderWidth:1.5,spanGaps:false}))},options:{animation:false,responsive:true,maintainAspectRatio:false,parsing:false,normalized:true,scales:{x:{type:'linear',ticks:{color:'#90a3bd'},title:{display:true,text:'Время от начала ЭЭГ, с',color:'#90a3bd'}},y:{ticks:{color:'#90a3bd'}}},plugins:{legend:{labels:{color:'#b6c6d6'}}}}});}
-    }catch(e){area.innerHTML=`<p class="device-error">${esc(e.message)}</p>`;}
+      if(window.Chart){chart=new Chart($('#studio-segment-chart'),{type:'line',data:{datasets:d.channels.map((name,i)=>({label:name,data:d.points.map(p=>({x:p.t-offset,y:p.values[i]})),borderColor:['#7ce3cb','#8ca9ff','#e4a2ad'][i%3],pointRadius:0,borderWidth:1.5,spanGaps:false}))},options:{animation:false,responsive:true,maintainAspectRatio:false,parsing:false,normalized:true,scales:{x:{type:'linear',min:from,max:to,ticks:{color:'#90a3bd'},title:{display:true,text:bounds?'От начала эксперимента, с':'От начала ЭЭГ, с',color:'#90a3bd'}},y:{ticks:{color:'#90a3bd'}}},plugins:{legend:{labels:{color:'#b6c6d6'}}}}});bindSelection(chart);}
+    }catch(e){if(signal.aborted)return;area.innerHTML=`<p class="device-error">${esc(e.message)}</p>`;}
+  }
+  function setRange(start,end){
+    $('#studio-start').value=start;
+    $('#studio-end').value=end;
+  }
+  function bindSelection(plot){
+    const canvas=plot.canvas, overlay=document.createElement('div');
+    overlay.className='studio-selection';
+    canvas.parentElement.append(overlay);
+    const pixel=e=>Math.max(plot.chartArea.left,Math.min(plot.chartArea.right,
+      (e.clientX-canvas.getBoundingClientRect().left)*plot.width/canvas.getBoundingClientRect().width));
+    let anchor=null, pointer=null;
+    canvas.onpointerdown=e=>{
+      if(e.button!==0||pointer!==null)return;
+      const y=e.clientY-canvas.getBoundingClientRect().top;
+      if(y<plot.chartArea.top||y>plot.chartArea.bottom)return;
+      anchor=pixel(e);pointer=e.pointerId;
+      canvas.setPointerCapture(pointer);
+    };
+    canvas.onpointermove=e=>{
+      if(e.pointerId!==pointer)return;
+      const x=pixel(e);
+      Object.assign(overlay.style,{display:'block',left:Math.min(anchor,x)+'px',width:Math.abs(anchor-x)+'px',
+        top:plot.chartArea.top+'px',height:plot.chartArea.height+'px'});
+    };
+    canvas.onlostpointercapture=()=>{pointer=null;overlay.style.display='none';};
+    canvas.onpointerup=e=>{
+      if(e.pointerId!==pointer)return;
+      const x=pixel(e);
+      if(Math.abs(x-anchor)<4)return;
+      const scale=plot.scales.x;
+      setRange(scale.getValueForPixel(Math.min(anchor,x)),scale.getValueForPixel(Math.max(anchor,x)));
+      void fetchSegment();
+    };
   }
   async function fetchAnnotations(){
     const id=$('#studio-session')?.value;if(!id)return;
-    try{const d=await api(`/api/lab/annotations/${encodeURIComponent(id)}`);const el=$('#studio-annotations');if(el)el.innerHTML=(d.items||[]).map(a=>`<div class="studio-state"><strong>${esc(a.category)} · ${fmt(a.start_s)} с</strong><span>${esc(a.label)}</span></div>`).join('')||'<p class="chart-caption">Нет аннотаций</p>';}catch(e){message(e.message,true);}
+    const signal=viewEvents.signal;
+    try{const d=await api(`/api/lab/annotations/${encodeURIComponent(id)}`,{signal});
+      if(signal.aborted||$('#studio-session')?.value!==id)return;
+      const el=$('#studio-annotations');
+      const items=(d.items||[]).filter(a=>!bounds||(a.start_s>=bounds.start_s&&a.start_s<bounds.end_s));
+      if(el)el.innerHTML=items.map(a=>`<div class="studio-state"><strong>${esc(a.category)} · ${fmt(a.start_s-(bounds?.start_s||0))} с</strong><span>${esc(a.label)}</span></div>`).join('')||'<p class="chart-caption">Нет аннотаций</p>';}catch(e){if(!signal.aborted)message(e.message,true);}
   }
   async function exportBids(){
     const id=$('#studio-session').value;
@@ -275,10 +356,12 @@
             else if(!signal.aborted)renderDoor(result,{recording:result.session_id},signal);
           }else if(!signal.aborted)message('Протокол запущен. Маркеры будут сохранены с записью.');
         }
+        else if(action==='reset'){resetRange();await fetchSegment();}
         else if(action==='segment'){await fetchSegment();}
         else if(action==='annotation'){
+          if(!displayed)throw Error('Сначала откройте участок ЭЭГ');
           const label=$('#studio-annotation-label').value.trim();if(!label)throw Error('Введите описание');
-          await api(`/api/lab/annotations/${encodeURIComponent($('#studio-session').value)}`,{method:'POST',body:JSON.stringify({label,category:$('#studio-annotation-kind').value,start_s:Number($('#studio-start').value),duration_s:Number($('#studio-duration').value)})});
+          await api(`/api/lab/annotations/${encodeURIComponent($('#studio-session').value)}`,{method:'POST',body:JSON.stringify({label,category:$('#studio-annotation-kind').value,...displayed})});
           $('#studio-annotation-label').value='';await fetchAnnotations();message('Аннотация сохранена.');
         } else if(action==='bids'){await exportBids();}
       }catch(err){if(!signal.aborted)message(err.message||'Ошибка',true);}finally{
@@ -286,7 +369,7 @@
         if(!experiment)button.disabled=false;
       }
     },{signal});
-    const select=$('#studio-session');if(select)select.addEventListener('change',()=>{fetchSegment();fetchAnnotations();});
+    const select=$('#studio-session');if(select)select.addEventListener('change',()=>{resetRange();fetchSegment();fetchAnnotations();});
   }
   async function renderView(next,options){shutdown();view=next;ctx=options;viewEvents=new AbortController();
     if(options.preview){content().innerHTML=card('Доступно в локальном приложении','Эксперименты, BIDS-экспорт и выделение произвольных участков требуют запущенного сервера. Автономный HTML хранит только рассчитанные ранее результаты.');return;}

@@ -325,6 +325,12 @@ class SessionRecorder:
             return False
         stamp = time.time() if timestamp is None else timestamp
         rec = {"ts_unix": stamp, "ts_iso": _iso(stamp), "type": type_, **fields}
+        if type_ in {"protocol_start", "protocol_complete", "protocol_aborted",
+                     "experiment_lab_start", "experiment_lab_finish"}:
+            with self._lock:
+                rec["eeg_row"] = self.counts["eeg_samples"]
+                self._flush_csv_file_locked("eeg")
+                return self._jsonl("events", "events.jsonl", rec, "events", flush=True)
         return self._jsonl("events", "events.jsonl", rec, "events", flush=flush)
 
     # ── быстрые потоки (CSV) ────────────────────────────────────────────────

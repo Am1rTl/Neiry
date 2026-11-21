@@ -602,3 +602,7 @@ body:has(#checkpoint-dock:not([hidden])) .workspace-footer { padding-bottom: 76p
 @media (max-width: 800px) {
   .rhythm-plots { grid-template-columns: minmax(0, 1fr); }
 }
+
+.studio-plot { position: relative; }
+.studio-plot canvas { cursor: crosshair; touch-action: pan-y; }
+.studio-selection { display: none; position: absolute; pointer-events: none; background: rgba(124,227,203,.22); border-inline: 1px solid #7ce3cb; }

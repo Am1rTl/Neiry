@@ -313,6 +313,10 @@
       ${q.warnings?.length?`<ul class="ex-warnings">${q.warnings.map(w=>`<li>${esc(w)}</li>`).join('')}</ul>`:''}
       <p class="ex-copy">${esc(q.timestamp_note || 'Метки экрана и ЭЭГ сопоставлены по программным часам.')}</p>`;
   }
+  function eegLink(run) {
+    if (!run.session_id || run.status==='running') return '';
+    return `<a class="button primary" href="#segment?session=${encodeURIComponent(run.session_id)}&amp;run=${encodeURIComponent(run.id)}">ЭЭГ эксперимента</a>`;
+  }
   async function openResult(s,id,known) {
     s.chart?.destroy();s.chart=null;s.result=null;
     s.resultId=id;
@@ -321,18 +325,22 @@
     if (!detail) return;
     const key=++s.readKey;
     detail.innerHTML='<section class="ex-panel ex-result" role="status">Загружаем результат…</section>';
+    let run;
     try {
-      const [run,a]=await Promise.all([known ? Promise.resolve(known) : request(s,path(id)), analysisFor(s,id)]);
+      run=known || await request(s,path(id));
+      if (!current(s)||key!==s.readKey||!detail.isConnected) return;
+      detail.innerHTML=`<section class="ex-panel ex-result">${eegLink(run)}<p role="status">Загружаем показатели эксперимента…</p></section>`;
+      const a=await analysisFor(s,id);
       if (!current(s)||key!==s.readKey||!detail.isConnected) return;
       s.result={run,analysis:a};
       const contactText = finite(run.settings?.clock_round_trip_ms) ? `Отклик сервера при сопоставлении часов ${fmt(run.settings.clock_round_trip_ms)} мс.` : '';
-      detail.innerHTML=`<section class="ex-panel ex-result"><div class="ex-archive-head"><div><h2>Результат сессии</h2><p>${esc(catalog[run.kind].name)} · ${esc(stageName(run))} · ${date(run.started_at)} · ${modeName(run.mode)}</p></div><div class="ex-result-actions"><button type="button" class="button subtle" data-ex-export>${icon('download')} JSON</button>${run.session_id?`<a class="button subtle" href="/api/records/${encodeURIComponent(run.session_id)}/download">${icon('folder')} Сырые данные</a>`:''}</div></div>
+      detail.innerHTML=`<section class="ex-panel ex-result"><div class="ex-archive-head"><div><h2>Результат сессии</h2><p>${esc(catalog[run.kind].name)} · ${esc(stageName(run))} · ${date(run.started_at)} · ${modeName(run.mode)}</p></div><div class="ex-result-actions"><button type="button" class="button subtle" data-ex-export>${icon('download')} JSON</button>${run.session_id?`${eegLink(run)}<a class="button subtle" href="/api/records/${encodeURIComponent(run.session_id)}/download">${icon('folder')} Сырые данные</a>`:''}</div></div>
         ${run.status==='aborted'?'<p class="ex-copy">Сохранена часть сессии. Она доступна в журнале, а в сравнении используются завершённые сессии.</p>':''}
         ${resultMetrics(a,run)}${run.kind==='feedback' && (run.events||[]).some(e=>e.type==='feedback') ? '<div class="ex-chart"><canvas aria-label="Измеренная альфа-мощность и состояние сферы" role="img"></canvas></div>' : ''}${quality(a,run)}${resultContext(run)}<p class="ex-copy">${esc(contactText)}</p>${run.mode==='live'?'<p class="ex-copy">Показатели описывают выполнение задачи и наблюдаемую ЭЭГ. Измерения отдельных синапсов в этом протоколе недоступны.</p>':''}
       </section>`;
       feedbackChart(s,run,$('canvas',detail));
     } catch (err) {
-      if (current(s)&&key===s.readKey&&detail.isConnected) detail.innerHTML=`<section class="ex-panel ex-result"><p>${esc(errorText(err))}</p><button class="button subtle" type="button" data-ex-result="${esc(id)}">Загрузить снова</button></section>`;
+      if (current(s)&&key===s.readKey&&detail.isConnected) detail.innerHTML=`<section class="ex-panel ex-result">${run?eegLink(run):''}<p>${esc(errorText(err))}</p><button class="button subtle" type="button" data-ex-result="${esc(id)}">Загрузить снова</button></section>`;
     }
   }
   function resultContext(run) {

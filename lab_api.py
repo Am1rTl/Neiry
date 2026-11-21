@@ -355,6 +355,10 @@ class AnalysisStore:
                        "quality_status": "pending", "usable_eeg_pct": None, "summary": "",
                        "analysis_state": state, "analysis_ready": state == "ready", "active": state == "active",
                        "analysis_revision": verified.revision if verified else None}
+                sample_rate = (meta.get("sample_rates") or {}).get("eeg", 250)
+                sample_count = counts.get("eeg_samples")
+                if isinstance(sample_count, int) and isinstance(sample_rate, (int, float)) and sample_rate > 0:
+                    row["eeg_duration_s"] = sample_count / sample_rate
                 if verified:
                     row.update(verified.summary)
                 if include_history:
@@ -555,10 +559,19 @@ def create_lab_router(records: Path, reports: Path, static: Path, active: Callab
     async def history():
         return finite_json(await run_in_threadpool(store.history))
 
+    @router.get("/segment/{ident}/experiment/{run_id}")
+    async def experiment_window(ident: str, run_id: str):
+        from segments import experiment_bounds
+        folder = store.session(ident)
+        try:
+            return await run_in_threadpool(experiment_bounds, folder, run_id)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+
     @router.get("/segment/{ident}")
     async def segment_window(ident: str,
                              start_s: float = Query(0,ge=0,le=72000),
-                             duration_s: float = Query(10,ge=2,le=120)):
+                             duration_s: float = Query(10,gt=0,le=86400)):
         folder=store.session(ident)
         from segments import segment
         try: return finite_json(await run_in_threadpool(segment,folder,start_s,duration_s))
@@ -577,7 +590,7 @@ def create_lab_router(records: Path, reports: Path, static: Path, active: Callab
         category=payload.get('category','note')
         label=payload.get('label','')
         if (not isinstance(start,(int,float)) or isinstance(start,bool) or not 0 <= start <= 72000
-                or not isinstance(duration,(int,float)) or isinstance(duration,bool) or not 0 <= duration <= 120
+                or not isinstance(duration,(int,float)) or isinstance(duration,bool) or not 0 <= duration <= 86400
                 or category not in ('note','artifact','event') or not isinstance(label,str) or not 1<=len(label.strip())<=120):
             raise HTTPException(400,'Некорректная аннотация')
         def save():
