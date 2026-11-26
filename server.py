@@ -1780,6 +1780,11 @@ async def local_origin_guard(request, call_next):
 STATIC_DIR = os.path.join(HERE, "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# Serve the companion atlas on the same origin as the existing read-only EEG stream.
+atlas_dir = Path(HERE).parent / "neuro-atlas" / "dist"
+if (atlas_dir / "index.html").is_file():
+    app.mount("/atlas", StaticFiles(directory=atlas_dir, html=True), name="neuro_atlas")
+
 
 @app.get("/")
 async def index() -> FileResponse:

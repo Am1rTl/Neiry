@@ -1,0 +1,4 @@
+# NeuroScope's offline CLI runs without the Capsule SDK or web server.
+numpy==2.3.5
+scipy==1.17.0
+matplotlib==3.11.2

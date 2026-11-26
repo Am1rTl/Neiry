@@ -862,6 +862,12 @@
   }
 
   async function start() {
+    const atlasNavigation = $('#atlas-navigation');
+    if (!preview && atlasNavigation) {
+      fetch('/atlas/index.html', {method: 'HEAD'}).then(response => {
+        if (response.ok) atlasNavigation.replaceWith(atlasNavigation.content.cloneNode(true));
+      }).catch(() => {});
+    }
     if (preview) {
       $('.sidebar-foot span').textContent = 'Автономный отчёт';
       $('#refresh-button').hidden=true;
